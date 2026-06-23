@@ -56,7 +56,7 @@ function Hero() {
 function StatLedger() {
   const stats: Array<[string, string]> = [
     ['0', 'servers'],
-    ['~290 MB', 'one-time download'],
+    ['~290 MB', 'text, downloaded once'],
     ['1', 'script tag'],
     ['$0', 'per message'],
   ]

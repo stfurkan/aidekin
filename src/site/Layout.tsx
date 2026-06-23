@@ -170,8 +170,13 @@ function SiteFooter() {
     <footer className="border-t border-border">
       <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-5 py-8 text-sm text-muted-foreground sm:flex-row">
         <div className="flex items-center gap-2.5">
-          <AidekinMark className="size-4 text-foreground" coreClassName="fill-primary" />
-          <span>aidekin, your own voice and text agent, running 100% in the browser.</span>
+          <AidekinMark className="size-4 shrink-0 text-foreground" coreClassName="fill-primary" />
+          <span>
+            <span className="font-medium text-foreground">aidekin</span>
+            <span className="hidden sm:inline">
+              , your own voice and text agent, running 100% in the browser.
+            </span>
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <Link to="/docs" className="hover:text-foreground">
