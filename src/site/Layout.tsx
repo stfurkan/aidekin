@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from 'react'
-import { Link, NavLink } from 'react-router-dom'
-import { Moon, Sun } from 'lucide-react'
+import { useState, useEffect, type ReactNode } from 'react'
+import { Link, NavLink, useLocation } from 'react-router-dom'
+import { Menu, Moon, Sun, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GithubIcon, AidekinMark } from './icons'
 import { SiteWidget } from './SiteWidget'
@@ -37,23 +37,34 @@ function Logo() {
   )
 }
 
+const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+  cn(
+    'rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
+    isActive && 'bg-secondary text-foreground',
+  )
+
 function SiteHeader() {
+  const [open, setOpen] = useState(false)
+  const { pathname } = useLocation()
+
+  // Close the mobile menu whenever the route changes (e.g. after tapping a link).
+  useEffect(() => setOpen(false), [pathname])
+
+  // Close on Escape while the mobile menu is open.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
   return (
     <header className="glass sticky top-0 z-40 border-x-0 border-t-0">
       <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-5">
         <Logo />
         <nav className="ml-4 hidden items-center gap-1 md:flex">
           {NAV.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              className={({ isActive }) =>
-                cn(
-                  'rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
-                  isActive && 'bg-secondary text-foreground',
-                )
-              }
-            >
+            <NavLink key={n.to} to={n.to} className={navLinkClass}>
               {n.label}
             </NavLink>
           ))}
@@ -71,12 +82,49 @@ function SiteHeader() {
           </a>
           <Link
             to="/configure"
-            className="ml-1 hidden rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 sm:inline-block"
+            className="ml-1 hidden rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 md:inline-block"
           >
             Get your snippet
           </Link>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-label={open ? 'Close menu' : 'Open menu'}
+            aria-expanded={open}
+            aria-controls="mobile-nav"
+            className="grid size-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground md:hidden"
+          >
+            {open ? <X className="size-5" /> : <Menu className="size-5" />}
+          </button>
         </div>
       </div>
+
+      {open && (
+        <nav id="mobile-nav" className="border-t border-border px-5 py-3 md:hidden">
+          <div className="mx-auto flex max-w-6xl flex-col gap-1">
+            {NAV.map((n) => (
+              <NavLink
+                key={n.to}
+                to={n.to}
+                className={({ isActive }) =>
+                  cn(
+                    'rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
+                    isActive && 'bg-secondary text-foreground',
+                  )
+                }
+              >
+                {n.label}
+              </NavLink>
+            ))}
+            <Link
+              to="/configure"
+              className="mt-1 rounded-md bg-primary px-4 py-2.5 text-center text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+            >
+              Get your snippet
+            </Link>
+          </div>
+        </nav>
+      )}
     </header>
   )
 }
