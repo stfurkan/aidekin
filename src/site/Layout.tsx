@@ -100,30 +100,42 @@ function SiteHeader() {
       </div>
 
       {open && (
-        <nav id="mobile-nav" className="border-t border-border px-5 py-3 md:hidden">
-          <div className="mx-auto flex max-w-6xl flex-col gap-1">
-            {NAV.map((n) => (
-              <NavLink
-                key={n.to}
-                to={n.to}
-                className={({ isActive }) =>
-                  cn(
-                    'rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
-                    isActive && 'bg-secondary text-foreground',
-                  )
-                }
+        <>
+          {/* Backdrop: overlays the page (does not shift it) and closes on an outside tap. */}
+          <div
+            aria-hidden="true"
+            onClick={() => setOpen(false)}
+            className="fixed inset-x-0 bottom-0 top-16 bg-black/20 md:hidden"
+          />
+          {/* Menu: absolutely positioned just under the bar, so it floats over content. */}
+          <nav
+            id="mobile-nav"
+            className="glass absolute inset-x-0 top-full border-b border-border shadow-xl md:hidden"
+          >
+            <div className="mx-auto flex max-w-6xl flex-col gap-1 px-5 py-3">
+              {NAV.map((n) => (
+                <NavLink
+                  key={n.to}
+                  to={n.to}
+                  className={({ isActive }) =>
+                    cn(
+                      'rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
+                      isActive && 'bg-secondary text-foreground',
+                    )
+                  }
+                >
+                  {n.label}
+                </NavLink>
+              ))}
+              <Link
+                to="/configure"
+                className="mt-1 rounded-md bg-primary px-4 py-2.5 text-center text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
               >
-                {n.label}
-              </NavLink>
-            ))}
-            <Link
-              to="/configure"
-              className="mt-1 rounded-md bg-primary px-4 py-2.5 text-center text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
-            >
-              Get your snippet
-            </Link>
-          </div>
-        </nav>
+                Get your snippet
+              </Link>
+            </div>
+          </nav>
+        </>
       )}
     </header>
   )
