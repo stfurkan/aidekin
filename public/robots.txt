@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+# The widget is an embedded iframe app (already noindex); no value in crawling it.
+Disallow: /widget/
+
+Sitemap: https://aidekin.com/sitemap.xml
