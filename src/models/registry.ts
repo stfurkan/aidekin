@@ -17,7 +17,7 @@ export const RUNTIME_VERSIONS = {
   vite: '8.0.16',
   typescript: '6.0.3',
   transformers: '4.2.0', //  @huggingface/transformers (Transformers.js v4 — confirmed real)
-  onnxruntimeWeb: '1.26.0',
+  onnxruntimeWeb: '1.27.0',
   vadWeb: '0.0.30', //          @ricky0123/vad-web (bundles Silero VAD v4 default / v5 opt-in)
   fftJs: '4.0.4',
 } as const
