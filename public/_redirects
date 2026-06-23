@@ -1,6 +1,0 @@
-# Cloudflare Pages redirects. https://developers.cloudflare.com/pages/configuration/redirects/
-# Static files (assets, /loader.js, /widget/index.html, /aidekin-knowledge.bin, og.png,
-# favicon) are served directly and take precedence over this rule. Everything else is a
-# client-side route in the single-page app, so fall back to index.html with a 200 (not a
-# 301) to let the React router resolve it.
-/*    /index.html   200

@@ -2,9 +2,10 @@
 
 aidekin is a fully static site plus an embeddable widget. There is no backend to run. A
 production build is just files in `dist/`, and every model weight streams from a public CDN
-into the visitor's browser on first use, then caches. This guide uses **Cloudflare Pages**
-(free, unlimited bandwidth, custom headers), but any static host that lets you set response
-headers works.
+into the visitor's browser on first use, then caches. This guide targets **Cloudflare Workers
+(Static Assets)**, Cloudflare's recommended path for new projects (free, unlimited requests,
+custom headers), with Cloudflare Pages documented as an alternative. Any static host that lets
+you set response headers works.
 
 ## What gets built
 
@@ -22,51 +23,19 @@ npm run build      # typecheck + app build + loader build -> dist/
 | `loader.js` | the ~2 KB script customers drop into their site |
 | `assets/*` | content-hashed JS, CSS, and WASM |
 | `aidekin-knowledge.bin` | the RAG index for the on-site assistant |
-| `_headers`, `_redirects` | Cloudflare Pages routing + headers (copied from `public/`) |
+| `_headers` | response headers incl. COOP/COEP (copied from `public/`) |
 | `og.png`, `favicon.svg`, `embed-example.html` | static assets |
 
-> `_headers` and `_redirects` live in `public/` so the build copies them to the `dist/`
-> root, where Cloudflare reads them (Pages and Workers both support these files natively). Do
-> not move them out of `public/`.
+> `_headers` lives in `public/` so the build copies it to the `dist/` root, where Cloudflare
+> reads it (supported natively by both Workers and Pages). Do not move it out of `public/`.
+> The SPA fallback is configured in `wrangler.jsonc` (`not_found_handling`), not a `_redirects`
+> file: Workers rejects the Pages-style `/* /index.html 200` rule as an infinite loop.
 
-## Cloudflare Pages
+## Deploy to Cloudflare Workers (Static Assets)
 
-> Cloudflare now points new projects at **Workers (Static Assets)** and focuses new investment
-> there. Pages is **not** deprecated: it stays fully supported (free plan, unlimited
-> bandwidth, custom domains), and for a pure static site it is the lowest-friction option, so
-> it is the default here. The recommended Workers path is documented below; the build output,
-> `_headers`, and `_redirects` are identical either way.
-
-### Option A: connect the Git repo (recommended)
-
-1. Push this repo to GitHub: `https://github.com/stfurkan/aidekin`
-2. In the Cloudflare dashboard: **Workers & Pages -> Create -> Pages -> Connect to Git**.
-3. Pick the repo and set:
-   - **Build command:** `npm run build`
-   - **Build output directory:** `dist`
-   - **Node version:** 24, the current Active LTS. The repo ships a `.node-version` file pinned to `24`, which Cloudflare reads automatically, so you normally need to set nothing. To override, add a `NODE_VERSION` environment variable. This matches `engines` in package.json (`>=24.0.0`).
-4. Deploy. Every push to the production branch redeploys.
-
-`aidekin-knowledge.bin` is committed to the repo, so the Cloudflare build does **not**
-rebuild it. When you change anything in `content/`, regenerate and commit it:
-
-```bash
-npm run build-knowledge -- --in content --out public/aidekin-knowledge.bin
-npm run verify-knowledge -- public/aidekin-knowledge.bin
-```
-
-### Option B: direct upload
-
-```bash
-npm run build
-npx wrangler pages deploy dist --project-name aidekin
-```
-
-## Cloudflare Workers (Static Assets)
-
-Workers Static Assets is Cloudflare's recommended target for new projects. This site runs on
-it unchanged: same `npm run build`, same `dist/`, same `_headers`. Add a `wrangler.jsonc` at
-the repo root:
+The repo ships a `wrangler.jsonc` that serves `dist/` as static assets and uses
+`not_found_handling: "single-page-application"` so unknown paths fall back to `index.html`
+(200) for the client-side router:
 
 ```jsonc
 {
@@ -79,23 +48,46 @@ the repo root:
 }
 ```
 
-Then build and deploy:
+### Option A: connect the Git repo (recommended)
+
+1. Push this repo to GitHub: `https://github.com/stfurkan/aidekin`
+2. In the Cloudflare dashboard: **Workers & Pages -> Create -> Workers -> Import a repository**, and pick the repo.
+3. Cloudflare auto-detects the Vite build (`npm run build`) and serves `dist/` per `wrangler.jsonc`, so you do not set build/output manually. Node is pinned by the committed `.node-version` (`24`, the current Active LTS); set a `NODE_VERSION` build variable only to override.
+4. Deploy. Every push to the production branch redeploys.
+
+### Option B: direct deploy from your machine
 
 ```bash
 npm run build
 npx wrangler deploy
 ```
 
-`not_found_handling: "single-page-application"` is the native SPA fallback, equivalent to the
-`/* /index.html 200` rule in `_redirects` (you can drop `_redirects` on this path; keep
-`_headers`, which Workers reads natively). Custom domains work as on Pages, with one caveat:
-Workers only serves custom domains whose nameservers are managed by Cloudflare, which aidekin
-already uses.
+`aidekin-knowledge.bin` is committed to the repo, so the build does **not** regenerate it.
+When you change anything in `content/`, rebuild and commit it:
+
+```bash
+npm run build-knowledge -- --in content --out public/aidekin-knowledge.bin
+npm run verify-knowledge -- public/aidekin-knowledge.bin
+```
+
+## Alternative: Cloudflare Pages
+
+Pages is still fully supported (free, unlimited bandwidth, custom domains). To use it instead
+of Workers: create a **Pages** project connected to the repo with build command
+`npm run build` and output directory `dist`, then **delete `wrangler.jsonc`** (Pages ignores
+it) and add a `public/_redirects` file for the SPA fallback (Pages does not use
+`not_found_handling`):
+
+```
+/*    /index.html   200
+```
+
+`_headers` works identically on both targets.
 
 ## Custom domains
 
-Add both of these as custom domains on the same Pages project, so they serve identical
-content:
+Add both of these as custom domains on the same project (Workers or Pages), so they serve
+identical content:
 
 - **`aidekin.com`**: the site.
 - **`cdn.aidekin.com`**: the loader. The snippet uses `https://cdn.aidekin.com/loader.js`,
@@ -104,7 +96,8 @@ content:
 
 If you serve the loader only from the apex, change the snippet to
 `https://aidekin.com/loader.js` (the configurator at `/configure` emits whatever origin you
-point it at). Customers can always override with `data-widget-origin`.
+point it at). Customers can always override with `data-widget-origin`. (Workers serves custom
+domains only for zones whose nameservers are on Cloudflare, which aidekin already uses.)
 
 ## Headers: why the site is cross-origin isolated
 
@@ -139,9 +132,9 @@ curl -sI https://cdn.aidekin.com/loader.js | grep -i 'cross-origin-resource\|cac
 # expect: cross-origin-resource-policy: cross-origin
 ```
 
-Confirm the SPA catch-all is not masking missing files: these must return their real content
-type, not `text/html` (an HTML body means the `/* -> /index.html 200` fallback served the app
-shell instead of the real asset, which then fails as "Failed to load module script").
+Confirm the SPA fallback is not masking missing files: these must return their real content
+type, not `text/html` (an HTML body means the single-page-application fallback served the app
+shell instead of the real asset, which then fails as "Failed to load module script"):
 
 ```bash
 curl -sI https://aidekin.com/widget/      | grep -i content-type   # expect: text/html

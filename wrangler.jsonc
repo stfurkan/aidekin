@@ -1,0 +1,13 @@
+{
+  // Cloudflare Workers (Static Assets) deploy config.
+  // https://developers.cloudflare.com/workers/static-assets/
+  "name": "aidekin",
+  "compatibility_date": "2026-06-23",
+  "assets": {
+    "directory": "./dist/",
+    // SPA fallback: serve index.html (200) for any path that is not a real asset, so the
+    // React router resolves client-side routes. This is the Workers-native equivalent of a
+    // Pages `_redirects` `/* /index.html 200` rule, which Workers rejects as an infinite loop.
+    "not_found_handling": "single-page-application"
+  }
+}
