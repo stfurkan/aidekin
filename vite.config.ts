@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vite'
@@ -34,8 +35,20 @@ function crossOriginIsolation(): Plugin {
   }
 }
 
+// Read the EXACT installed version of a dependency whose wasm/assets we load from a versioned
+// jsDelivr URL at runtime, so that CDN pin can never drift from the bundled JS. Single source
+// of truth = package.json / the lockfile. Injected as globals consumed in src/models/registry.ts.
+function installedVersion(pkg: string): string {
+  const url = new URL(`./node_modules/${pkg}/package.json`, import.meta.url)
+  return (JSON.parse(readFileSync(url, 'utf8')) as { version: string }).version
+}
+
 export default defineConfig({
   plugins: [react(), tailwindcss(), crossOriginIsolation()],
+  define: {
+    __ORT_VERSION__: JSON.stringify(installedVersion('onnxruntime-web')),
+    __VAD_VERSION__: JSON.stringify(installedVersion('@ricky0123/vad-web')),
+  },
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },

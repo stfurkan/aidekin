@@ -12,15 +12,15 @@ export type Runtime =
   | 'onnxruntime-web'
   | 'vad-web'
 
-/** Pinned runtime versions (npm). */
-export const RUNTIME_VERSIONS = {
-  vite: '8.0.16',
-  typescript: '6.0.3',
-  transformers: '4.2.0', //  @huggingface/transformers (Transformers.js v4 — confirmed real)
-  onnxruntimeWeb: '1.27.0',
-  vadWeb: '0.0.30', //          @ricky0123/vad-web (bundles Silero VAD v4 default / v5 opt-in)
-  fftJs: '4.0.4',
-} as const
+// Versions of the two runtimes whose wasm/assets load from a versioned jsDelivr URL at RUNTIME
+// (onnxruntime-web wasm; @ricky0123/vad-web model + worklet). They are injected from the EXACT
+// installed package at build time (see `define` in vite.config.ts), so the CDN version can never
+// drift from the bundled JS. Single source of truth = package.json. The 'latest' fallback only
+// applies outside the Vite build (e.g. a Node/tsx script), which never fetches these assets.
+declare const __ORT_VERSION__: string | undefined
+declare const __VAD_VERSION__: string | undefined
+const ortVersion = typeof __ORT_VERSION__ === 'string' ? __ORT_VERSION__ : 'latest'
+const vadVersion = typeof __VAD_VERSION__ === 'string' ? __VAD_VERSION__ : 'latest'
 
 // ── LLM (the "brain"): PrismML Bonsai via transformers.js ─────────────────────
 // Bonsai is a Qwen3-architecture model compressed to ternary weights, exported to
@@ -172,7 +172,7 @@ export const ASSET_PATHS = {
 const HF_RESOLVE = (repo: string): string => `https://huggingface.co/${repo}/resolve/main`
 
 /** onnxruntime-web wasm runtime, served from jsDelivr (CORS + CORP clean → COEP-ok). */
-export const ORT_WASM_CDN = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${RUNTIME_VERSIONS.onnxruntimeWeb}/dist/`
+export const ORT_WASM_CDN = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortVersion}/dist/`
 
 /**
  * Base URL for a model role's weights. NOTHING is self-hosted by default — dev and
@@ -188,5 +188,5 @@ export function modelSource(role: 'asr' | 'tts' | 'vad'): string {
   if (cdn) return `${cdn}/${role}`
   if (role === 'asr') return HF_RESOLVE(ASR.hfModelId)
   if (role === 'tts') return HF_RESOLVE(TTS.hfModelId)
-  return `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${RUNTIME_VERSIONS.vadWeb}/dist`
+  return `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${vadVersion}/dist`
 }
