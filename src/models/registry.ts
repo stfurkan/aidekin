@@ -19,7 +19,7 @@ export const RUNTIME_VERSIONS = {
   transformers: '4.2.0', //  @huggingface/transformers (Transformers.js v4 — confirmed real)
   onnxruntimeWeb: '1.26.0',
   vadWeb: '0.0.30', //          @ricky0123/vad-web (bundles Silero VAD v4 default / v5 opt-in)
-  fftJs: '4.0.3',
+  fftJs: '4.0.4',
 } as const
 
 // ── LLM (the "brain"): PrismML Bonsai via transformers.js ─────────────────────

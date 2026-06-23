@@ -26,9 +26,16 @@ npm run build      # typecheck + app build + loader build -> dist/
 | `og.png`, `favicon.svg`, `embed-example.html` | static assets |
 
 > `_headers` and `_redirects` live in `public/` so the build copies them to the `dist/`
-> root, where Cloudflare Pages reads them. Do not move them out of `public/`.
+> root, where Cloudflare reads them (Pages and Workers both support these files natively). Do
+> not move them out of `public/`.
 
 ## Cloudflare Pages
+
+> Cloudflare now points new projects at **Workers (Static Assets)** and focuses new investment
+> there. Pages is **not** deprecated: it stays fully supported (free plan, unlimited
+> bandwidth, custom domains), and for a pure static site it is the lowest-friction option, so
+> it is the default here. The recommended Workers path is documented below; the build output,
+> `_headers`, and `_redirects` are identical either way.
 
 ### Option A: connect the Git repo (recommended)
 
@@ -37,7 +44,7 @@ npm run build      # typecheck + app build + loader build -> dist/
 3. Pick the repo and set:
    - **Build command:** `npm run build`
    - **Build output directory:** `dist`
-   - **Node version:** 22.12 or newer (set `NODE_VERSION = 22` as an environment variable if the default is older), matching the `engines` field in package.json.
+   - **Node version:** 24, the current Active LTS. The repo ships a `.node-version` file pinned to `24`, which Cloudflare reads automatically, so you normally need to set nothing. To override, add a `NODE_VERSION` environment variable. This matches `engines` in package.json (`>=24.0.0`).
 4. Deploy. Every push to the production branch redeploys.
 
 `aidekin-knowledge.bin` is committed to the repo, so the Cloudflare build does **not**
@@ -54,6 +61,36 @@ npm run verify-knowledge -- public/aidekin-knowledge.bin
 npm run build
 npx wrangler pages deploy dist --project-name aidekin
 ```
+
+## Cloudflare Workers (Static Assets)
+
+Workers Static Assets is Cloudflare's recommended target for new projects. This site runs on
+it unchanged: same `npm run build`, same `dist/`, same `_headers`. Add a `wrangler.jsonc` at
+the repo root:
+
+```jsonc
+{
+  "name": "aidekin",
+  "compatibility_date": "2026-06-23",
+  "assets": {
+    "directory": "./dist/",
+    "not_found_handling": "single-page-application"
+  }
+}
+```
+
+Then build and deploy:
+
+```bash
+npm run build
+npx wrangler deploy
+```
+
+`not_found_handling: "single-page-application"` is the native SPA fallback, equivalent to the
+`/* /index.html 200` rule in `_redirects` (you can drop `_redirects` on this path; keep
+`_headers`, which Workers reads natively). Custom domains work as on Pages, with one caveat:
+Workers only serves custom domains whose nameservers are managed by Cloudflare, which aidekin
+already uses.
 
 ## Custom domains
 
