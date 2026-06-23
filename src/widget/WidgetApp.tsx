@@ -37,6 +37,7 @@ interface Props {
 
 export function WidgetApp({ config, embedded, persistKey, loadOnMount, onMessage, onClose }: Props) {
   const [caps, setCaps] = useState<WidgetCapabilities | null>(null)
+  const [tryAnyway, setTryAnyway] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -62,6 +63,8 @@ export function WidgetApp({ config, embedded, persistKey, loadOnMount, onMessage
         </Centered>
       ) : caps.effectiveMode === 'unsupported' ? (
         <Unsupported reason={caps.reason} />
+      ) : caps.constrained && !tryAnyway ? (
+        <ConstrainedNotice reason={caps.constrainedReason} onProceed={() => setTryAnyway(true)} />
       ) : (
         <ChatPanel
           config={config}
@@ -523,6 +526,30 @@ function Unsupported({ reason }: { reason?: string }) {
         <p className="text-xs text-muted-foreground">
           {reason ?? 'WebGPU is required.'} Try the latest Chrome or Edge on desktop, or Safari 26+.
         </p>
+      </div>
+    </Centered>
+  )
+}
+
+// WebGPU is present but the device looks too small for a ~1.7B model (phone/tablet, low memory).
+// We warn before the multi-hundred-MB download instead of letting it OOM or reload, but still
+// let the visitor proceed, since the check is a heuristic.
+function ConstrainedNotice({ reason, onProceed }: { reason?: string; onProceed: () => void }) {
+  return (
+    <Centered>
+      <div className="max-w-xs px-6 text-center">
+        <p className="mb-1.5 text-sm font-medium">This device may not have enough memory</p>
+        <p className="text-xs text-muted-foreground">
+          {reason ?? 'aidekin runs the model on your device and works best on desktop.'} For the best
+          experience, open it in Chrome or Edge on a desktop.
+        </p>
+        <button
+          type="button"
+          onClick={onProceed}
+          className="mt-4 rounded-md border border-border px-4 py-2 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
+        >
+          Try anyway
+        </button>
       </div>
     </Centered>
   )

@@ -20,6 +20,8 @@ export interface CapabilityReport {
   readonly webgpu: WebGpuInfo
   readonly hardwareConcurrency: number
   readonly deviceMemoryGB: number | null
+  /** Phone/tablet (UA-CH mobile flag, mobile UA, or coarse-pointer touch device). */
+  readonly isMobile: boolean
 }
 
 // Canonical WASM SIMD feature-detect module (GoogleChromeLabs/wasm-feature-detect).
@@ -71,6 +73,17 @@ export async function probeCapabilities(): Promise<CapabilityReport> {
     'storage' in navigator &&
     typeof navigator.storage?.getDirectory === 'function'
 
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
+  const coarseTouch =
+    typeof navigator !== 'undefined' &&
+    navigator.maxTouchPoints > 1 &&
+    typeof matchMedia === 'function' &&
+    matchMedia('(pointer: coarse)').matches
+  const isMobile =
+    (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData?.mobile === true ||
+    /iPhone|iPad|iPod|Android/i.test(ua) ||
+    coarseTouch
+
   return {
     crossOriginIsolated: coi,
     sharedArrayBuffer: sab,
@@ -81,6 +94,7 @@ export async function probeCapabilities(): Promise<CapabilityReport> {
     webgpu: await detectWebGpu(),
     hardwareConcurrency: navigator.hardwareConcurrency || 1,
     deviceMemoryGB: (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? null,
+    isMobile,
   }
 }
 
@@ -136,6 +150,13 @@ export interface WidgetCapabilities {
   readonly effectiveMode: WidgetMode | 'unsupported'
   /** Human-readable note when something requested isn't available. */
   readonly reason?: string
+  /**
+   * WebGPU is present, but the device (phone/tablet, low memory, or low GPU limits) probably
+   * can't actually load a ~1.7B model. The widget warns before the heavy download yet still
+   * lets the visitor try, since the check is a heuristic, not a guarantee.
+   */
+  readonly constrained: boolean
+  readonly constrainedReason?: string
 }
 
 /** Decide what the widget can run, given device capabilities + the owner's request. */
@@ -149,20 +170,37 @@ export function resolveWidgetCapabilities(r: CapabilityReport, requested: Widget
       voiceAvailable: false,
       effectiveMode: 'unsupported',
       reason: r.webgpu.reason ?? 'WebGPU is required to run the assistant on this device.',
+      constrained: false,
     }
   }
+
+  // WebGPU is present, but a phone/tablet or a low-memory device usually can't actually load a
+  // ~1.7B model: it OOMs, and on iOS the tab is killed before any error fires. Flag it so the
+  // widget warns before the heavy download, while still allowing "try anyway".
+  // deviceMemory is only exposed by Chromium and caps at 8, so <= 4 means a genuinely small
+  // machine; Safari/Firefox report null and are not flagged here (a desktop Mac should still
+  // try). We deliberately do NOT use the WebGPU buffer limits: they default to the spec minimum
+  // on many capable desktops, which would false-flag them. Mobile is the reliable signal.
+  const lowMemory = r.deviceMemoryGB != null && r.deviceMemoryGB <= 4
+  const constrained = r.isMobile || lowMemory
+  const constrainedReason = constrained
+    ? 'aidekin runs the AI model on your device, which needs a desktop browser with enough memory. Phones and tablets usually cannot load it.'
+    : undefined
+
   if (requested === 'text') {
-    return { textAvailable, voiceAvailable, effectiveMode: 'text' }
+    return { textAvailable, voiceAvailable, effectiveMode: 'text', constrained, constrainedReason }
   }
   if (requested === 'voice') {
     return voiceAvailable
-      ? { textAvailable, voiceAvailable, effectiveMode: 'voice' }
+      ? { textAvailable, voiceAvailable, effectiveMode: 'voice', constrained, constrainedReason }
       : {
           textAvailable,
           voiceAvailable,
           effectiveMode: 'text',
           reason:
             'Voice needs the host page to enable cross-origin isolation (COOP/COEP). Falling back to text chat.',
+          constrained,
+          constrainedReason,
         }
   }
   // 'both' — text always works; voice is offered only where supported.
@@ -173,5 +211,7 @@ export function resolveWidgetCapabilities(r: CapabilityReport, requested: Widget
     reason: voiceAvailable
       ? undefined
       : 'Voice needs cross-origin isolation on the host page; only text chat is available here.',
+    constrained,
+    constrainedReason,
   }
 }
