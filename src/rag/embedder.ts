@@ -1,0 +1,57 @@
+// Embedding model (all-MiniLM-L6-v2) via transformers.js. Shared by the browser
+// (query + builder) and the Node CLI — using the SAME model + dtype is what keeps the
+// query vectors compatible with the precomputed index. WASM backend in the browser so
+// it never competes with the LLM for the GPU. Dynamically imported, so transformers
+// only loads when RAG is actually used.
+
+import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers'
+import { EMBED } from '../models/registry'
+
+env.allowRemoteModels = true
+
+export type EmbedProgress = (p: {
+  status?: string
+  file?: string
+  loaded?: number
+  total?: number
+  progress?: number
+}) => void
+
+let pipePromise: Promise<FeatureExtractionPipeline> | null = null
+
+export function loadEmbedder(onProgress?: EmbedProgress): Promise<FeatureExtractionPipeline> {
+  if (!pipePromise) {
+    const isBrowser = typeof window !== 'undefined'
+    pipePromise = pipeline('feature-extraction', EMBED.hfModelId, {
+      dtype: EMBED.dtype as never,
+      // Browser: pin WASM (CPU) so the GPU stays free for the LLM. Node: let
+      // transformers pick onnxruntime-node.
+      ...(isBrowser ? { device: 'wasm' as never } : {}),
+      progress_callback: onProgress as never,
+    }) as Promise<FeatureExtractionPipeline>
+  }
+  return pipePromise
+}
+
+const opts = { pooling: EMBED.pooling as 'mean', normalize: EMBED.normalize }
+
+/** Embed a single string → a unit-normalized 384-dim vector. */
+export async function embedOne(text: string, onProgress?: EmbedProgress): Promise<Float32Array> {
+  const ext = await loadEmbedder(onProgress)
+  const out = await ext(text, opts)
+  return Float32Array.from(out.data as Float32Array)
+}
+
+/** Embed a batch in one forward pass → one vector per input. */
+export async function embedMany(texts: string[], onProgress?: EmbedProgress): Promise<Float32Array[]> {
+  if (texts.length === 0) return []
+  const ext = await loadEmbedder(onProgress)
+  const out = await ext(texts, opts)
+  const dim = EMBED.dim
+  const data = out.data as Float32Array
+  const result: Float32Array[] = []
+  for (let i = 0; i < texts.length; i++) {
+    result.push(Float32Array.from(data.subarray(i * dim, (i + 1) * dim)))
+  }
+  return result
+}

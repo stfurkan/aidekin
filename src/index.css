@@ -1,0 +1,210 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/* Type system — a deliberate trio (not the system-font default): Space Grotesk
+   (display), Inter (body), JetBrains Mono (the "proof" voice: snippets, figures,
+   section indices). The font files are loaded via <link> in the HTML <head> — a CSS
+   @import gets hoisted below Tailwind's generated rules and warns "must precede". */
+
+/* Radix Colors — jade is the lone accent, red for danger. Neutrals are overridden
+   below with a warm paper/ink scheme (the "Ledger" identity). */
+@import '@radix-ui/colors/slate.css';
+@import '@radix-ui/colors/slate-dark.css';
+@import '@radix-ui/colors/slate-alpha.css';
+@import '@radix-ui/colors/slate-dark-alpha.css';
+@import '@radix-ui/colors/jade.css';
+@import '@radix-ui/colors/jade-dark.css';
+@import '@radix-ui/colors/red.css';
+@import '@radix-ui/colors/red-dark.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Ledger palette: warm paper & ink, one rationed jade accent ──────────────── */
+:root {
+  --background: #fbfbf9; /* warm paper, not pure white */
+  --foreground: #17191c; /* ink */
+  --card: #f4f4f0; /* raised paper */
+  --card-foreground: #17191c;
+  --popover: #ffffff;
+  --popover-foreground: #17191c;
+  --primary: var(--jade-9);
+  --primary-foreground: #ffffff;
+  --secondary: #ecece7;
+  --secondary-foreground: #17191c;
+  --muted: #f0f0ec;
+  --muted-foreground: #5b6068;
+  --accent: var(--jade-11);
+  --accent-foreground: #17191c;
+  --destructive: var(--red-9);
+  --destructive-foreground: #ffffff;
+  --border: #e4e3dd; /* hairline */
+  --input: #dcdbd3;
+  --ring: var(--jade-8);
+  --orb-idle: var(--slate-8);
+  color-scheme: light;
+}
+.dark {
+  --background: #0b0c0e; /* near-black, faint cool cast */
+  --foreground: #edeef0;
+  --card: #131518;
+  --card-foreground: #edeef0;
+  --popover: #16181b;
+  --popover-foreground: #edeef0;
+  --secondary: #1b1e22;
+  --secondary-foreground: #edeef0;
+  --muted: #14171a;
+  --muted-foreground: #9aa0a8;
+  --accent: var(--jade-11);
+  --accent-foreground: #edeef0;
+  --border: rgba(255, 255, 255, 0.09);
+  --input: rgba(255, 255, 255, 0.14);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Space Grotesk', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Tailwind v4's Preflight resets interactive elements to cursor:default. Restore a
+   pointer cursor on all enabled buttons / clickable controls (shadcn relies on this). */
+@layer base {
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  label[for],
+  summary,
+  a[href] {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role='button'][aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--jade-9) 26%, transparent);
+  }
+}
+
+@layer utilities {
+  /* Frosted header bar — flat, hairline, no color cloud. */
+  .glass {
+    background: color-mix(in srgb, var(--background) 82%, transparent);
+    backdrop-filter: blur(12px) saturate(120%);
+    border: 1px solid var(--border);
+  }
+  /* Mono "kicker" / section index — the Ledger identity label. */
+  .mono-kicker {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+  /* Faint engineering dot-grid substrate (flat, no blur), opt-in per section. */
+  .substrate {
+    background-image: radial-gradient(color-mix(in srgb, var(--foreground) 7%, transparent) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  /* A solid-jade accent word in a headline (never a gradient). */
+  .ink-accent {
+    color: var(--jade-11);
+  }
+}
+
+/* ── Sonar ping (voice visualization) — the in-widget voice motif: a source +
+   emanating waves. Sized by the parent (set width/height on .sonar). ─────────── */
+.sonar {
+  --hue: var(--jade-9);
+  --level: 0;
+  position: relative;
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+}
+.sonar-core {
+  width: 26%;
+  aspect-ratio: 1;
+  border-radius: 9999px;
+  background: var(--hue);
+  box-shadow: 0 0 24px -2px color-mix(in srgb, var(--hue) 70%, transparent);
+  transform: scale(calc(1 + var(--level) * 0.55));
+  transition: transform 0.08s ease-out, background 0.3s ease;
+}
+.sonar-wave {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid color-mix(in srgb, var(--hue) 60%, transparent);
+  opacity: 0;
+}
+@keyframes sonar-ping {
+  0% { transform: scale(0.26); opacity: 0.7; }
+  100% { transform: scale(1); opacity: 0; }
+}
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.05); opacity: 1; }
+}
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+@keyframes indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+.sonar-idle { --hue: var(--slate-8); }
+.sonar-idle .sonar-core { animation: breathe 4s ease-in-out infinite; }
+.sonar-idle .sonar-wave { animation: sonar-ping 3.2s ease-out infinite; }
+.sonar-listening { --hue: var(--jade-9); }
+.sonar-listening .sonar-wave { animation: sonar-ping 2.1s ease-out infinite; }
+.sonar-thinking { --hue: var(--jade-10); }
+.sonar-thinking .sonar-core { animation: pulse 0.9s ease-in-out infinite; }
+.sonar-thinking .sonar-wave { animation: sonar-ping 1.6s ease-out infinite; }
+.sonar-speaking { --hue: var(--jade-9); }
+.sonar-speaking .sonar-wave { animation: sonar-ping 1.1s ease-out infinite; }
+.sonar-wave:nth-child(2) { animation-delay: 0.7s; }
+.sonar-wave:nth-child(3) { animation-delay: 1.4s; }
+
+.convo-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.convo-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+}

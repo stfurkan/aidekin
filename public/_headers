@@ -1,0 +1,52 @@
+# Cloudflare Pages headers. https://developers.cloudflare.com/pages/configuration/headers/
+# Matching rules are merged; when the same header name appears in more than one matching
+# rule, the later / more specific match wins.
+
+# Cross-origin isolation for the WHOLE site. SharedArrayBuffer + threaded WASM (used by
+# voice: the VAD and the ASR decoder) require the page to be cross-origin isolated, and an
+# embedded iframe can only be isolated if its top-level page is too. Applying this site-wide
+# is what lets voice run on /demo (mounted inline) and through the on-site widget iframe.
+# Text needs only WebGPU and is unaffected. Every cross-origin resource we load (Google
+# Fonts, Hugging Face, jsDelivr) sends Cross-Origin-Resource-Policy, so all pass require-corp.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# The embeddable widget document. It is loaded cross-origin inside customer pages, so it
+# must stay embeddable even when the customer page is itself cross-origin isolated
+# (require-corp): hence Cross-Origin-Resource-Policy: cross-origin. The inherited COOP/COEP
+# let the iframe BE isolated when the customer's page is, enabling full-speed voice there.
+/widget/*
+  Cross-Origin-Resource-Policy: cross-origin
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+
+# The loader is a classic <script> customers reference from their own pages. It must load
+# even from a cross-origin-isolated customer page (Cross-Origin-Resource-Policy). Its URL is
+# stable (not content-hashed), so keep the cache short to push loader fixes out quickly.
+/loader.js
+  Cross-Origin-Resource-Policy: cross-origin
+  Cache-Control: public, max-age=600, stale-while-revalidate=86400
+
+# Content-hashed build assets are immutable: cache them for a year.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The on-site knowledge index. Small and updated when content changes, so revalidate often;
+# expose it cross-origin in case anyone references it from another origin.
+/aidekin-knowledge.bin
+  Cache-Control: public, max-age=300, must-revalidate
+  Access-Control-Allow-Origin: *
+  Cross-Origin-Resource-Policy: cross-origin
+
+# HTML shells must always revalidate so a new deploy is picked up immediately and a stale
+# shell never points at hashed chunks that were removed by the next build. (These paths do
+# not overlap the cached asset rules above, so there is no conflicting Cache-Control.)
+/
+  Cache-Control: public, max-age=0, must-revalidate
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+/widget/index.html
+  Cache-Control: public, max-age=0, must-revalidate

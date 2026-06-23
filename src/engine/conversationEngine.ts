@@ -1,0 +1,478 @@
+// ConversationEngine — the shared brain for BOTH the text widget and the voice
+// orchestrator. It owns the conversation state (messages[] + system prompt),
+// optional RAG retrieval, history persistence + trimming, and the streaming LLM
+// turn. It knows NOTHING about mic / VAD / ASR / TTS — voice wraps it with
+// ASR-in (sendUserMessage) and TTS-out (the onAssistantClause callback).
+//
+// Two ownership modes for the LLM worker, so we never break the voice path:
+//   • loadLlm()          → the engine CREATES + initializes its own worker
+//                          (the text widget: no speech workers ever spin up).
+//   • adoptLlmWorker(w)  → the engine REUSES the orchestrator's already-loaded
+//                          worker; the orchestrator keeps routing the worker's
+//                          messages and forwards token/done via handleLlmMessage().
+// In adopted mode the orchestrator stays in charge of load/ready/error lifecycle,
+// so its existing load UI + error handling are byte-identical.
+
+import { LLM } from '../models/registry'
+import type { ChatMessage, Device, LlmIn, LlmOut } from '../protocol/messages'
+import { SentenceChunker } from '../pipeline/sentenceChunker'
+
+/** One retrieved chunk of grounding context returned by the RAG retriever. */
+export interface RetrievedChunk {
+  readonly text: string
+  readonly score?: number
+  readonly source?: string
+}
+
+/** Pluggable retriever — null = no RAG, and then nothing RAG-related ever loads. */
+export interface Retriever {
+  retrieve(query: string, k: number): Promise<RetrievedChunk[]>
+}
+
+export interface EngineCallbacks {
+  /** Cumulative assistant text as it streams (done=true on the final, recorded reply). */
+  onAssistantText?: (text: string, done: boolean) => void
+  /** A completed clause — voice routes this to TTS. Only emitted when chunkClauses=true. */
+  onAssistantClause?: (clause: string) => void
+  /** Fired when a generation starts (voice → setState('thinking')). */
+  onGenerationStart?: () => void
+  /** Fired when a generation ends or aborts (voice → settle to idle). */
+  onGenerationEnd?: () => void
+  /** Owned-worker load progress: pct in [0,1] + a human detail (e.g. "142 / 290 MB"). */
+  onLoadStatus?: (pct: number, detail: string) => void
+  onError?: (where: string, message: string) => void
+  /** RAG telemetry: how many chunks were injected and how long retrieval took. */
+  onRetrieval?: (info: { used: number; tookMs: number }) => void
+  /** Fired when the sliding window dropped old turns so the UI can show a subtle
+   *  "earlier messages trimmed" marker instead of forgetting silently. */
+  onHistoryTrimmed?: (info: { dropped: number }) => void
+}
+
+export interface EngineOptions {
+  systemPrompt: string
+  /** LLM device for the owned-worker path (default 'webgpu'). */
+  device?: Device
+  /** null disables RAG entirely (no embedder, no query embedding). */
+  retriever?: Retriever | null
+  /** Top-k chunks to retrieve when RAG is on (kept small for a 1.7B model). */
+  ragTopK?: number
+  /** Hard char budget for the injected context block. */
+  ragCharBudget?: number
+  /** Minimum cosine score for a chunk to be injected. Below this, the chunk is dropped
+   *  — so an off-topic message doesn't pull (and recite) unrelated content. */
+  ragMinScore?: number
+  /** Voice splits the stream into clauses for low-latency TTS; text does not. */
+  chunkClauses?: boolean
+  /** Let the model think on EVERY turn (slower, more accurate). RAG turns always think
+   *  regardless; this controls plain (non-RAG) turns. Default false (fast). */
+  reasoning?: boolean
+  /** localStorage key to persist history across reloads (per host origin). Unset = no persistence. */
+  persistKey?: string
+  /** Approximate token budget for retained history (system prompt is never dropped). */
+  maxHistoryTokens?: number
+  callbacks?: EngineCallbacks
+}
+
+const DEFAULT_MAX_HISTORY_TOKENS = 6000
+// Rough token estimate (≈4 chars/token) — good enough for a sliding-window trim.
+const approxTokens = (s: string): number => Math.ceil(s.length / 4)
+
+export class ConversationEngine {
+  private readonly cb: EngineCallbacks
+  private readonly device: Device
+  private retriever: Retriever | null
+  private readonly ragTopK: number
+  private readonly ragCharBudget: number
+  private readonly ragMinScore: number
+  private chunkClauses: boolean
+  private alwaysThink: boolean
+  private clauseSink: ((clause: string) => void) | null = null
+  private readonly persistKey?: string
+  private readonly maxHistoryTokens: number
+
+  private systemPrompt: string
+  private messages: ChatMessage[]
+  private readonly chunker = new SentenceChunker()
+
+  private llm: Worker | null = null
+  private ownsWorker = false
+  // Track the largest file being downloaded (the model weights dominate) → one smooth
+  // 0→100 bar, without per-file resets or the bogus totals from summing reused keys.
+  private dlTotal = 0
+  private dlLoaded = 0
+
+  private genId = 0
+  private currentId = -1
+  // When the history prefix changes non-append (reset / clear / system-prompt change /
+  // sliding-window trim), the worker's KV cache is stale — flag the next generate to
+  // rebuild it. Set here, sent once, then cleared.
+  private cacheDirty = false
+  private assistant = ''
+  private pending: { id: number; resolve: (text: string) => void } | null = null
+  private ready: { resolve: () => void; reject: (e: Error) => void } | null = null
+
+  constructor(opts: EngineOptions) {
+    this.cb = opts.callbacks ?? {}
+    this.device = opts.device ?? 'webgpu'
+    this.retriever = opts.retriever ?? null
+    this.ragTopK = opts.ragTopK ?? 3
+    this.ragCharBudget = opts.ragCharBudget ?? 1500
+    this.ragMinScore = opts.ragMinScore ?? 0.35
+    this.chunkClauses = opts.chunkClauses ?? false
+    this.alwaysThink = opts.reasoning ?? false
+    this.persistKey = opts.persistKey
+    this.maxHistoryTokens = opts.maxHistoryTokens ?? DEFAULT_MAX_HISTORY_TOKENS
+    this.systemPrompt = opts.systemPrompt
+    this.messages = this.hydrate()
+  }
+
+  // ── worker ownership ────────────────────────────────────────────────────────
+
+  /** Text path: create + initialize a dedicated LLM worker. */
+  async loadLlm(): Promise<void> {
+    if (this.llm) return
+    this.dlTotal = 0
+    this.dlLoaded = 0
+    // Literal `new Worker(new URL(...), {type:'module'})` — the exact form Vite bundles.
+    const w = new Worker(new URL('../workers/llm.worker.ts', import.meta.url), { type: 'module' })
+    this.llm = w
+    this.ownsWorker = true
+    w.onmessage = (e: MessageEvent<LlmOut>) => this.onOwnedMessage(e.data)
+    w.onerror = (e: ErrorEvent) => {
+      this.cb.onError?.('LLM', e.message || 'worker crashed at load')
+      this.ready?.reject(new Error(e.message || 'LLM worker crashed'))
+      this.ready = null
+    }
+    const init: LlmIn = {
+      kind: 'init',
+      model: LLM.hfModelId,
+      dtype: LLM.dtype,
+      device: this.device,
+      eosTokenId: LLM.eosTokenId,
+    }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.ready = { resolve, reject }
+        w.postMessage(init)
+      })
+    } catch (err) {
+      // Init failed (download/OOM/quota) — tear down so a retry recreates a fresh worker.
+      this.ready = null
+      this.ownsWorker = false
+      this.llm = null
+      try {
+        w.terminate()
+      } catch {
+        /* already gone */
+      }
+      throw err
+    }
+  }
+
+  /** Voice path: reuse the orchestrator's already-initialized worker. */
+  adoptLlmWorker(w: Worker): void {
+    this.llm = w
+    this.ownsWorker = false
+  }
+
+  /** Voice path: the orchestrator forwards the worker's token/done events here. */
+  handleLlmMessage(m: LlmOut): void {
+    this.processGeneration(m)
+  }
+
+  private onOwnedMessage(m: LlmOut): void {
+    if (m.kind === 'load') {
+      // Follow the largest file (the weights). Tiny tokenizer/config files finish in a
+      // blink and must not reset the bar; we never sum reused keys (that inflated totals).
+      if (m.total > this.dlTotal) {
+        this.dlTotal = m.total
+        this.dlLoaded = m.loaded
+      } else if (m.total === this.dlTotal) {
+        this.dlLoaded = Math.max(this.dlLoaded, m.loaded)
+      }
+      const pct = this.dlTotal > 0 ? Math.min(1, this.dlLoaded / this.dlTotal) : 0
+      this.cb.onLoadStatus?.(pct, this.dlTotal > 0 ? '' : m.detail || 'Preparing…')
+      return
+    }
+    if (m.kind === 'ready') {
+      this.ready?.resolve()
+      this.ready = null
+      return
+    }
+    if (m.kind === 'error') {
+      this.cb.onError?.('LLM', m.message)
+      this.ready?.reject(new Error(m.message))
+      this.ready = null
+      return
+    }
+    this.processGeneration(m)
+  }
+
+  // ── conversation turn ───────────────────────────────────────────────────────
+
+  /** Run one user turn: record it, (optionally) retrieve context, stream a reply. */
+  sendUserMessage(text: string): Promise<string> {
+    const clean = text.trim()
+    if (!clean) return Promise.resolve('')
+    this.pushUser(clean)
+    // No retriever → build the request synchronously so voice timing is unchanged.
+    // Plain turns think only if reasoning is enabled; RAG turns always think (withRag).
+    if (!this.retriever) return this.generate([...this.messages], this.alwaysThink)
+    return this.withRag(clean)
+  }
+
+  private async withRag(userText: string): Promise<string> {
+    let request: ChatMessage[] = [...this.messages]
+    let grounded = false
+    try {
+      const t0 = performance.now()
+      const hits = await this.retriever!.retrieve(userText, this.ragTopK)
+      // Only ground on chunks that are actually relevant — otherwise an off-topic message
+      // ("hi") still pulls the top-k and the model recites unrelated content.
+      const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
+      this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
+      if (relevant.length) {
+        request = this.injectContext(userText, relevant)
+        grounded = true
+      }
+    } catch (err) {
+      this.cb.onError?.('RAG', (err as Error).message)
+    }
+    // Grounded turns think internally (better reasoning over the context); the <think>
+    // block is stripped. Ungrounded turns think only if reasoning is enabled.
+    return this.generate(request, grounded || this.alwaysThink)
+  }
+
+  /** Inject retrieved context into the LAST user turn; history keeps the plain text. */
+  private injectContext(userText: string, hits: RetrievedChunk[]): ChatMessage[] {
+    let used = ''
+    for (const h of hits) {
+      const next = used ? `${used}\n\n---\n\n${h.text}` : h.text
+      if (next.length > this.ragCharBudget) break
+      used = next
+    }
+    const augmented =
+      'Answer the question using only the information below, in your own words, as if you already ' +
+      'knew it. Reply directly in 1-2 sentences. Do NOT mention this information block or use phrases ' +
+      'like "the reference", "the text says", "based on the context", or "according to". Do not add ' +
+      "unrelated details. If the answer is not below, say you don't have that information.\n\n" +
+      `<info>\n${used}\n</info>\n\nQuestion: ${userText}`
+    const msgs = this.messages.slice(0, -1) // drop the plain last-user we just pushed
+    msgs.push({ role: 'user', content: augmented })
+    return msgs
+  }
+
+  private generate(request: ChatMessage[], think: boolean): Promise<string> {
+    if (!this.llm) {
+      const e = new Error('LLM worker not ready')
+      this.cb.onError?.('LLM', e.message)
+      return Promise.reject(e)
+    }
+    this.genId++
+    const id = this.genId
+    this.currentId = id
+    this.chunker.reset()
+    this.assistant = ''
+    this.cb.onGenerationStart?.()
+    const msg: LlmIn = { kind: 'generate', id, messages: request, think, resetCache: this.cacheDirty }
+    this.cacheDirty = false
+    this.llm.postMessage(msg)
+    return new Promise<string>((resolve) => {
+      this.pending = { id, resolve }
+    })
+  }
+
+  private processGeneration(m: LlmOut): void {
+    if (m.kind === 'token') {
+      if (m.id !== this.currentId) return
+      this.assistant += m.text
+      this.cb.onAssistantText?.(this.assistant, false)
+      if (this.chunkClauses) {
+        const sink = this.clauseSink ?? this.cb.onAssistantClause
+        for (const clause of this.chunker.push(m.text)) sink?.(clause)
+      }
+    } else if (m.kind === 'done') {
+      if (m.id !== this.currentId) return // stale generation (superseded/aborted)
+      this.finish(m.text)
+    }
+  }
+
+  private finish(doneText?: string): void {
+    // Prefer the streamed text; fall back to the final 'done' payload if streaming
+    // produced nothing — the reply still shows even if token messages were missed.
+    const text = this.assistant.trim() ? this.assistant : (doneText ?? '').trim()
+    if (this.chunkClauses) {
+      const sink = this.clauseSink ?? this.cb.onAssistantClause
+      const rest = this.chunker.flush()
+      if (rest) sink?.(rest)
+    }
+    // Skip an empty reply (e.g. all tokens spent in a <think> block) — don't record it.
+    if (text) {
+      this.assistant = text
+      this.pushAssistant(text)
+      this.cb.onAssistantText?.(text, true)
+    }
+    this.currentId = -1
+    this.cb.onGenerationEnd?.()
+    this.pending?.resolve(this.assistant)
+    this.pending = null
+  }
+
+  /** Barge-in / stop: abort the in-flight generation. Does NOT fire onGenerationEnd —
+   *  the caller (voice barge-in) drives its own state, so we avoid a spurious idle. */
+  abort(): void {
+    if (this.currentId >= 0 && this.llm) {
+      const msg: LlmIn = { kind: 'abort', id: this.currentId }
+      this.llm.postMessage(msg)
+    }
+    this.currentId = -1
+    this.chunker.reset()
+    this.pending?.resolve(this.assistant)
+    this.pending = null
+  }
+
+  // ── state ───────────────────────────────────────────────────────────────────
+
+  get isGenerating(): boolean {
+    return this.currentId >= 0
+  }
+
+  get history(): readonly ChatMessage[] {
+    return this.messages
+  }
+
+  /** New session: clear back to just the system prompt (keeps it in storage). */
+  reset(): void {
+    this.abort()
+    this.messages = [{ role: 'system', content: this.systemPrompt }]
+    this.cacheDirty = true
+    this.persist()
+  }
+
+  /** Wipe persisted history too (the widget's "clear chat" control). */
+  clearHistory(): void {
+    this.reset()
+    if (this.persistKey) {
+      try {
+        localStorage.removeItem(this.persistKey)
+      } catch {
+        /* storage may be unavailable (private mode / partitioning) */
+      }
+    }
+  }
+
+  /** Attach (or clear) RAG after construction — the index loads asynchronously. */
+  setRetriever(retriever: Retriever | null): void {
+    this.retriever = retriever
+  }
+
+  /** Toggle internal reasoning on plain (non-RAG) turns. */
+  setReasoning(on: boolean): void {
+    this.alwaysThink = on
+  }
+
+  /** Voice attaches here at runtime: split the stream into clauses and route them to a
+   *  TTS sink. Setting chunkClauses off (text mode) restores plain streaming. */
+  setChunkClauses(on: boolean): void {
+    this.chunkClauses = on
+  }
+
+  setClauseSink(sink: ((clause: string) => void) | null): void {
+    this.clauseSink = sink
+  }
+
+  setSystemPrompt(prompt: string): void {
+    this.systemPrompt = prompt
+    if (this.messages.length && this.messages[0].role === 'system') {
+      this.messages[0] = { role: 'system', content: prompt }
+    } else {
+      this.messages.unshift({ role: 'system', content: prompt })
+    }
+    this.cacheDirty = true // the cached prefix starts with the old system prompt
+    this.persist()
+  }
+
+  dispose(): void {
+    this.abort()
+    if (this.ownsWorker) this.llm?.terminate()
+    this.llm = null
+  }
+
+  /** Free the LLM worker + VRAM but keep the engine reusable — a later loadLlm()
+   *  re-creates the worker (and re-downloads, if the on-disk cache was cleared). */
+  unloadLlm(): void {
+    this.abort()
+    if (this.ownsWorker) this.llm?.terminate()
+    this.llm = null
+    this.ownsWorker = false
+    this.ready = null
+    this.dlTotal = 0
+    this.dlLoaded = 0
+  }
+
+  // ── history helpers ─────────────────────────────────────────────────────────
+
+  private pushUser(text: string): void {
+    this.messages.push({ role: 'user', content: text })
+    this.trim()
+    this.persist()
+  }
+
+  private pushAssistant(text: string): void {
+    this.messages.push({ role: 'assistant', content: text })
+    this.trim()
+    this.persist()
+  }
+
+  /** Sliding window. When over budget, keep three anchors — the system prompt (0)
+   *  and the FIRST user+assistant exchange (1,2) — and drop the OLDEST middle turns
+   *  in user/assistant pairs, always preserving the most recent exchanges. Pinning
+   *  the opening keeps the "attention sink" + the conversation's framing; evicting
+   *  the middle (not the head) is what good local-LLM chats do. */
+  private trim(): void {
+    const budget = this.maxHistoryTokens
+    let total = this.messages.reduce((n, m) => n + approxTokens(m.content), 0)
+    if (total <= budget) return
+    const head = Math.min(3, this.messages.length) // system + first exchange
+    const keepTail = 4 // always keep the last couple of exchanges verbatim
+    let dropped = 0
+    while (total > budget && this.messages.length - dropped > head + keepTail + 1) {
+      // Drop the oldest middle pair (user+assistant) to keep history coherent.
+      const a = this.messages[head]
+      const b = this.messages[head + 1]
+      if (!a) break
+      total -= approxTokens(a.content) + (b ? approxTokens(b.content) : 0)
+      this.messages.splice(head, b ? 2 : 1)
+      dropped += b ? 2 : 1
+    }
+    if (dropped > 0) {
+      this.cacheDirty = true // the prefix changed → worker must re-prefill
+      this.cb.onHistoryTrimmed?.({ dropped })
+    }
+  }
+
+  private hydrate(): ChatMessage[] {
+    const fresh: ChatMessage[] = [{ role: 'system', content: this.systemPrompt }]
+    if (!this.persistKey) return fresh
+    try {
+      const raw = localStorage.getItem(this.persistKey)
+      if (!raw) return fresh
+      const parsed = JSON.parse(raw) as ChatMessage[]
+      if (!Array.isArray(parsed) || !parsed.length) return fresh
+      // Always re-assert the current system prompt as the head (config may have changed).
+      const rest = parsed.filter((m) => m.role !== 'system')
+      return [{ role: 'system', content: this.systemPrompt }, ...rest]
+    } catch {
+      return fresh
+    }
+  }
+
+  private persist(): void {
+    if (!this.persistKey) return
+    try {
+      localStorage.setItem(this.persistKey, JSON.stringify(this.messages))
+    } catch {
+      /* quota / unavailable — history is best-effort, never fatal */
+    }
+  }
+}

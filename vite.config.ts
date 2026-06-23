@@ -1,0 +1,67 @@
+import { fileURLToPath, URL } from 'node:url'
+import type { Plugin } from 'vite'
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+
+// Cross-origin isolation is REQUIRED for SharedArrayBuffer + WASM threads, which
+// onnxruntime-web (threaded) + transformers.js depend on. Safari does NOT support
+// COEP: credentialless, so we use require-corp. All model/runtime assets are loaded
+// from CORS+CORP-clean CDNs (Hugging Face, jsDelivr), so they pass under require-corp.
+const COI_HEADERS: Record<string, string> = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+}
+
+function crossOriginIsolation(): Plugin {
+  const apply = (res: { setHeader(k: string, v: string): void }) => {
+    for (const [k, v] of Object.entries(COI_HEADERS)) res.setHeader(k, v)
+  }
+  return {
+    name: 'aidekin:cross-origin-isolation',
+    configureServer(server) {
+      server.middlewares.use((_req, res, next) => {
+        apply(res)
+        next()
+      })
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((_req, res, next) => {
+        apply(res)
+        next()
+      })
+    },
+  }
+}
+
+export default defineConfig({
+  plugins: [react(), tailwindcss(), crossOriginIsolation()],
+  resolve: {
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+  },
+  worker: { format: 'es' },
+  optimizeDeps: {
+    // Pre-scan the speech workers at startup so their npm deps (fft.js, vad-web) are
+    // bundled up front. Without this, the dep scanner never crawls `new Worker(new
+    // URL(...))` workers, so the FIRST mic tap discovers new deps, re-optimizes, and
+    // force-reloads the page (dev only). Listing the workers here scans them at boot.
+    entries: ['index.html', 'widget/index.html', 'src/workers/*.worker.ts'],
+    exclude: ['onnxruntime-web', '@huggingface/transformers'],
+  },
+  build: {
+    rollupOptions: {
+      // Two entries share /src: the product site (index.html) and the embeddable
+      // widget served at /widget/ (its own minimal bundle, no site code).
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        widget: fileURLToPath(new URL('./widget/index.html', import.meta.url)),
+      },
+    },
+    // The AudioWorklet must be a standalone file for audioWorklet.addModule() —
+    // never inline it as a data: URL (fragile under COEP cross-origin isolation).
+    assetsInlineLimit: (filePath: string) =>
+      filePath.endsWith('pcmWorklet.js') ? false : undefined,
+  },
+  server: { headers: { ...COI_HEADERS } },
+  preview: { headers: { ...COI_HEADERS } },
+})

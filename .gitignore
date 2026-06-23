@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+*.local
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# Local model mirror for offline dev (npm run fetch-models). Never committed —
+# in production every weight streams from a CDN and is cached in the visitor's browser.
+public/models/
