@@ -4,6 +4,7 @@
 // friendly notice when WebGPU is missing.
 
 import {
+  memo,
   useEffect,
   useRef,
   useState,
@@ -218,7 +219,14 @@ function TextView({
 
   return (
     <>
-      <div ref={scrollRef} className="convo-scroll flex flex-1 flex-col gap-2.5 overflow-y-auto px-3.5 py-3">
+      <div
+        ref={scrollRef}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-label="Conversation"
+        className="convo-scroll flex flex-1 flex-col gap-2.5 overflow-y-auto px-3.5 py-3"
+      >
         {turns.length === 0 && <EmptyState greeting={greeting} />}
         {trimmed && turns.length > 0 && (
           <p className="mono-kicker self-center py-1 text-center text-[10px] normal-case tracking-normal">
@@ -333,6 +341,10 @@ function VoiceView({
 
       <div
         ref={scrollRef}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-label="Conversation"
         className="convo-scroll flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-3.5 pb-2"
       >
         {turns.map((t) => (
@@ -388,7 +400,7 @@ function EmptyState({ greeting }: { greeting?: string }) {
   )
 }
 
-function Bubble({ role, text }: { role: WidgetTurn['role']; text: string }) {
+const Bubble = memo(function Bubble({ role, text }: { role: WidgetTurn['role']; text: string }) {
   const isAssistant = role === 'assistant'
   return (
     <div
@@ -404,7 +416,7 @@ function Bubble({ role, text }: { role: WidgetTurn['role']; text: string }) {
       {isAssistant ? (text ? <Markdown text={text} /> : '…') : text || '…'}
     </div>
   )
-}
+})
 
 function TypingDots() {
   return (
@@ -439,7 +451,11 @@ function Dots({ className }: { className?: string }) {
 // bouncing dots so transitional states feel alive instead of being flat text.
 function StatusLabel({ text, busy }: { text: string; busy: boolean }) {
   return (
-    <p className={cn('flex items-center gap-1.5 text-sm font-medium text-foreground', busy && 'animate-pulse')}>
+    <p
+      role="status"
+      aria-live="polite"
+      className={cn('flex items-center gap-1.5 text-sm font-medium text-foreground', busy && 'animate-pulse')}
+    >
       {text}
       {busy && <Dots className="text-primary" />}
     </p>
@@ -505,7 +521,10 @@ function LoadBar({ pct, detail, cached }: { pct: number; detail: string; cached:
 
 function ErrorBar({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
-    <div className="flex items-center justify-between gap-2 border-t border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
+    <div
+      role="alert"
+      className="flex items-center justify-between gap-2 border-t border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive"
+    >
       <span className="truncate">{error}</span>
       <button
         type="button"
@@ -633,6 +652,8 @@ function SettingsMenu({
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label="Settings"
+        aria-haspopup="menu"
+        aria-expanded={open}
         className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
       >
         <Settings className="size-4" />

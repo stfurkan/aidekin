@@ -3,7 +3,7 @@
 // small LLMs actually emit: paragraphs, line breaks, **bold**, *italic*, `code`, fenced
 // ```code```, bullet/numbered lists, headings, and [links](url) (http(s) only).
 
-import { type ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 
 const INLINE = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*|_[^_]+_)|(\[[^\]]+\]\([^)]+\))/g
 
@@ -51,7 +51,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
 
 const isListItem = (l: string) => /^\s*([-*+]|\d+\.)\s+/.test(l)
 
-export function Markdown({ text }: { text: string }) {
+function parseMarkdown(text: string): ReactNode[] {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   const blocks: ReactNode[] = []
   let i = 0
@@ -131,5 +131,12 @@ export function Markdown({ text }: { text: string }) {
     blocks.push(<p key={key++}>{inner}</p>)
   }
 
+  return blocks
+}
+
+// Memoize the parse so token streaming (which updates only the streaming bubble's text) does
+// not re-parse every other bubble's markdown on every token.
+export function Markdown({ text }: { text: string }) {
+  const blocks = useMemo(() => parseMarkdown(text), [text])
   return <div className="flex flex-col gap-2">{blocks}</div>
 }
