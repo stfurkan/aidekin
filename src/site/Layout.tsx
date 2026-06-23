@@ -110,7 +110,7 @@ function SiteHeader() {
           {/* Menu: absolutely positioned just under the bar, so it floats over content. */}
           <nav
             id="mobile-nav"
-            className="glass absolute inset-x-0 top-full border-b border-border shadow-xl md:hidden"
+            className="absolute inset-x-0 top-full border-b border-border bg-background shadow-xl md:hidden"
           >
             <div className="mx-auto flex max-w-6xl flex-col gap-1 px-5 py-3">
               {NAV.map((n) => (
