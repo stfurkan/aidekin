@@ -16,11 +16,15 @@ import {
   type PreTrainedTokenizer,
 } from '@huggingface/transformers'
 import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
+import { installOpfsModelCache } from '../core/opfsModelCache'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: LlmOut): void => ctx.postMessage(m)
 
 env.allowRemoteModels = true // stream model files from the HF Hub
+// Cache the ~290 MB model in OPFS, not Cache Storage (which errors on an entry this large, so
+// the weights would otherwise re-download every visit). Best-effort: see opfsModelCache.ts.
+installOpfsModelCache(env)
 
 // ── Qwen3 <think> stripping ──────────────────────────────────────────────────
 // Bonsai keeps Qwen3's chat template and can emit <think>…</think> blocks we must
