@@ -2,9 +2,9 @@
 // Aidekin model + runtime registry — the SINGLE SOURCE OF TRUTH.
 //
 // Every repo ID and version below was VERIFIED against npm + the Hugging Face Hub
-// on 2026-06-17 (see README → "Resolved versions"). To swap a model, edit one
-// entry here; each model stays behind its interface in /pipeline/interfaces.ts so
-// the swap is a one-liner everywhere else.
+// on 2026-06-17 (see README → "Models"). To swap a model, edit one entry here; each
+// model is consumed behind its per-role Worker in src/workers/, so the swap is a
+// one-liner everywhere else.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type Runtime =

@@ -1,4 +1,4 @@
-// Embedding model (all-MiniLM-L6-v2) via transformers.js. Shared by the browser
+// Embedding model (bge-small-en-v1.5, see registry EMBED) via transformers.js. Shared by the browser
 // (query + builder) and the Node CLI — using the SAME model + dtype is what keeps the
 // query vectors compatible with the precomputed index. WASM backend in the browser so
 // it never competes with the LLM for the GPU. Dynamically imported, so transformers
@@ -29,6 +29,12 @@ export function loadEmbedder(onProgress?: EmbedProgress): Promise<FeatureExtract
       ...(isBrowser ? { device: 'wasm' as never } : {}),
       progress_callback: onProgress as never,
     }) as Promise<FeatureExtractionPipeline>
+    // If the first load fails (network / wasm / OOM), clear the cached promise so the next call
+    // retries instead of re-throwing the stale rejection forever (which would silently kill RAG
+    // for the whole session). The current caller still sees this rejection.
+    pipePromise.catch(() => {
+      pipePromise = null
+    })
   }
   return pipePromise
 }
