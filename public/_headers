@@ -14,14 +14,14 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
 
-# The embeddable widget document. It is loaded cross-origin inside customer pages, so it
-# must stay embeddable even when the customer page is itself cross-origin isolated
-# (require-corp): hence Cross-Origin-Resource-Policy: cross-origin. The inherited COOP/COEP
-# let the iframe BE isolated when the customer's page is, enabling full-speed voice there.
+# The embeddable widget document. It is loaded cross-origin inside customer pages, so it must
+# stay embeddable even when the customer page is itself cross-origin isolated (require-corp):
+# hence Cross-Origin-Resource-Policy: cross-origin. COOP/COEP are already applied by the /*
+# rule above (Cloudflare merges matching rules), which is what lets the iframe BE isolated when
+# the customer's page is, enabling full-speed voice there. Re-declaring them here would just
+# emit duplicate headers.
 /widget/*
   Cross-Origin-Resource-Policy: cross-origin
-  Cross-Origin-Opener-Policy: same-origin
-  Cross-Origin-Embedder-Policy: require-corp
 
 # The loader is a classic <script> customers reference from their own pages. It must load
 # even from a cross-origin-isolated customer page (Cross-Origin-Resource-Policy). Its URL is
