@@ -220,7 +220,10 @@ async function generate(
     temperature: 0.5,
     top_k: 20,
     top_p: 0.85,
-    repetition_penalty: 1.05,
+    // Small ternary models degenerate into phrase loops on out-of-distribution input. 1.05 was
+    // too weak; bump the penalty and hard-block any repeated 3-gram so a loop is impossible.
+    repetition_penalty: 1.15,
+    no_repeat_ngram_size: 3,
     eos_token_id: eosTokenId,
     streamer,
     stopping_criteria: stopper,
