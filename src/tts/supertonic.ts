@@ -67,10 +67,13 @@ export class SupertonicTts {
 
   private async inferOne(raw: string, totalStep: number, speed: number): Promise<Float32Array> {
     const text = this.preprocess(raw)
-    const len = text.length
+    // Iterate Unicode code points (not UTF-16 units) so non-BMP chars (e.g. emoji) map to one
+    // id each instead of desyncing on surrogate pairs. Identical to char indexing for BMP text.
+    const cps = [...text]
+    const len = cps.length
     const ids = new BigInt64Array(len)
     for (let j = 0; j < len; j++) {
-      const cp = text.codePointAt(j) ?? 0
+      const cp = cps[j].codePointAt(0) ?? 0
       ids[j] = BigInt(cp < this.indexer.length ? this.indexer[cp] : -1)
     }
     const textIds = new ort.Tensor('int64', ids, [1, len])

@@ -120,6 +120,11 @@ export class VectorStore {
     o += metaLen
     const textLen = dv.getUint32(o, true); o += 4
     const texts = JSON.parse(dec.decode(new Uint8Array(buf, o, textLen))) as string[]
+    if (texts.length !== count || meta.length !== count) {
+      throw new Error(
+        `Corrupt knowledge file: header says ${count} chunks but found ${texts.length} texts and ${meta.length} sources.`,
+      )
+    }
     return new VectorStore(int8, scales, texts, meta.map((m) => m.source), dim, count, header)
   }
 
