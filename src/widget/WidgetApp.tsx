@@ -318,12 +318,12 @@ function VoiceView({
 
   const status = loadingVoice
     ? { text: 'Loading voice', busy: true }
-    : muted
-      ? { text: 'Muted', busy: false }
-      : voiceState === 'thinking'
-        ? { text: 'Thinking', busy: true }
-        : voiceState === 'speaking'
-          ? { text: 'Speaking', busy: true }
+    : voiceState === 'thinking'
+      ? { text: 'Thinking', busy: true }
+      : voiceState === 'speaking'
+        ? { text: 'Speaking', busy: true }
+        : muted
+          ? { text: 'Muted', busy: false }
           : { text: 'Listening, just speak', busy: false }
 
   return (
