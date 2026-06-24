@@ -10,7 +10,7 @@ you set response headers works.
 ## What gets built
 
 ```bash
-npm install
+npm ci             # reproducible install from the committed package-lock.json
 npm run build      # typecheck + app build + loader build -> dist/
 ```
 
