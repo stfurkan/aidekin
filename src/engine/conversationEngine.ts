@@ -274,6 +274,15 @@ export class ConversationEngine {
       this.cb.onError?.('LLM', e.message)
       return Promise.reject(e)
     }
+    // Latest-response-wins: if a generation is still in flight (a newer user turn arrived
+    // before the previous reply finished), abort it on the worker and settle its promise so
+    // turns don't queue and balloon ttft. No transcript is lost — only the superseded reply.
+    if (this.currentId >= 0) {
+      const abortMsg: LlmIn = { kind: 'abort', id: this.currentId }
+      this.llm.postMessage(abortMsg)
+      this.pending?.resolve(this.assistant)
+      this.pending = null
+    }
     this.genId++
     const id = this.genId
     this.currentId = id

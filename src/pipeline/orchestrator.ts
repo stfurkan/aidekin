@@ -478,11 +478,10 @@ export class Orchestrator {
       if (m.id !== undefined && m.id !== this.currentAsrId) return
       this.cb.onUserTranscript?.(m.text, false)
     } else if (m.kind === 'final') {
-      // Latest-utterance-wins: drop a final whose turn was already superseded by a newer one
-      // (the user started speaking again before this final flushed back), so two quick
-      // utterances don't both get sent to the LLM and pile up. A final for the current turn
-      // (or one without an id) is always applied.
-      if (m.id !== undefined && m.id !== this.currentAsrId) return
+      // Always apply a final (show the transcript) so the user's words are never lost, even
+      // when turns arrive back-to-back. Latest-RESPONSE-wins is handled in the engine instead
+      // (a new generation aborts the in-flight one in generate()), so rapid turns don't pile
+      // up on the LLM — without dropping any spoken text.
       this.cb.onUserTranscript?.(m.text, true)
       const text = m.text.trim()
       console.info(`[aidekin] ASR final: "${text}"`)
@@ -554,6 +553,9 @@ export class Orchestrator {
   }
 
   private settleAfterGeneration(): void {
+    // A superseded turn resolves its promise too; don't settle to idle if a newer generation
+    // is already running (it owns the state now).
+    if (this.engine.isGenerating) return
     // Generation finished naturally: if nothing is queued or playing, settle to idle.
     if (this.liveTtsIds.size === 0 && !this.playback.playing && this.state !== 'cold' && this.state !== 'ready') {
       this.setState('idle')
