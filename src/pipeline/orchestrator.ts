@@ -99,6 +99,7 @@ export class Orchestrator {
   private inUserTurn = false
   private vadSpeaking = false
   private turnReady = false
+  private muted = false
   // Rolling ~500 ms of the most recent mic audio, always on, used to seed each new
   // ASR stream so the first word is never clipped by VAD onset latency.
   private preBuffer: Float32Array[] = []
@@ -311,6 +312,20 @@ export class Orchestrator {
     this.setState('ready')
   }
 
+  /** Mute/unmute the mic without ending the session. Muted = mic frames are dropped (no VAD /
+   *  ASR), so the assistant stops listening; unmuting resumes instantly. Does not interrupt an
+   *  in-progress reply. */
+  setMuted(muted: boolean): void {
+    this.muted = muted
+    if (muted) {
+      // Discard any half-captured utterance so it isn't finalized after unmuting.
+      this.clearFinalizeTimer()
+      this.inUserTurn = false
+      this.vadSpeaking = false
+      if (this.state === 'listening') this.setState('idle')
+    }
+  }
+
   async dispose(): Promise<void> {
     this.clearFinalizeTimer()
     await this.mic?.stop()
@@ -337,13 +352,17 @@ export class Orchestrator {
   // ── mic → VAD (+ live ASR stream) ─────────────────────────────────────────
   // The mic drives the VAD gate, fills the rolling pre-onset buffer, and — while a
   // turn is active — STREAMS frames to the ASR worker so transcription happens live.
-  // Software echo handling: browser AEC is OFF (it hurts ASR), so while our TTS is
-  // playing we drop mic frames — otherwise the mic hears the TTS through the speakers
-  // and false-triggers the VAD. (Trade-off: no barge-in mid-reply; replies are short.)
+  // Software echo handling: browser AEC is OFF (it hurts ASR), so we drop mic frames while our
+  // TTS is audible OR a clause is still queued/synthesizing (liveTtsIds). Gating on liveTtsIds
+  // (not just playback.playing) closes the gap BETWEEN clauses, where playback.playing briefly
+  // flips false and the mic would otherwise hear the next clause and false-trigger the VAD.
+  // Barge-in while THINKING still works (no TTS is pending then); mid-speech interrupt is the
+  // mute button's job (true interrupt-during-speech needs acoustic echo cancellation).
   private onMicFrame(samples: Float32Array): void {
-    if (this.playback.playing) return
+    if (this.playback.playing || this.liveTtsIds.size > 0) return
     const keep = samples.slice() // retained in the rolling pre-onset buffer
     this.pushPreBuffer(keep)
+    if (this.muted) return // muted: keep the pre-onset buffer fresh, but do not listen
     if (this.inUserTurn) {
       // Auto-gain the ASR copy only (NOT the VAD frame — boosting room tone would
       // false-trigger the gate). process() may return `samples` itself when no boost is
@@ -459,8 +478,11 @@ export class Orchestrator {
       if (m.id !== undefined && m.id !== this.currentAsrId) return
       this.cb.onUserTranscript?.(m.text, false)
     } else if (m.kind === 'final') {
-      // A final is a completed flush — always apply it (a barge-in cancels the
-      // RESPONSE, not the ASR; the prior turn's final was processed before the barge).
+      // Latest-utterance-wins: drop a final whose turn was already superseded by a newer one
+      // (the user started speaking again before this final flushed back), so two quick
+      // utterances don't both get sent to the LLM and pile up. A final for the current turn
+      // (or one without an id) is always applied.
+      if (m.id !== undefined && m.id !== this.currentAsrId) return
       this.cb.onUserTranscript?.(m.text, true)
       const text = m.text.trim()
       console.info(`[aidekin] ASR final: "${text}"`)
@@ -482,6 +504,13 @@ export class Orchestrator {
   }
 
   private onLlm(m: LlmOut): void {
+    // During load the orchestrator owns the lifecycle (waiters + load UI). After load, a
+    // generation 'error' must reach the engine so the in-flight turn settles instead of
+    // hanging on "thinking".
+    if (m.kind === 'error' && this.loaded && this.engine.isGenerating) {
+      this.engine.handleLlmMessage(m)
+      return
+    }
     if (this.lifecycle('LLM', m)) return
     // The shared engine owns generation state (ids, streaming, history) and drives
     // playback via the onAssistantClause callback wired in the constructor.

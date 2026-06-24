@@ -200,9 +200,15 @@ export class ConversationEngine {
       return
     }
     if (m.kind === 'error') {
-      this.cb.onError?.('LLM', m.message)
-      this.ready?.reject(new Error(m.message))
-      this.ready = null
+      if (this.ready) {
+        // Load-phase error → reject the load promise (existing behaviour).
+        this.cb.onError?.('LLM', m.message)
+        this.ready.reject(new Error(m.message))
+        this.ready = null
+      } else {
+        // Generation-phase error → settle the in-flight turn so it doesn't hang on "thinking".
+        this.settleGenerationError(m.message)
+      }
       return
     }
     this.processGeneration(m)
@@ -294,7 +300,22 @@ export class ConversationEngine {
     } else if (m.kind === 'done') {
       if (m.id !== this.currentId) return // stale generation (superseded/aborted)
       this.finish(m.text)
+    } else if (m.kind === 'error') {
+      // Generation error reaching the adopted (voice) path — settle so it doesn't hang.
+      this.settleGenerationError(m.message)
     }
+  }
+
+  /** Settle an in-flight generation that errored: report it, drop the turn, and resolve the
+   *  pending promise + fire onGenerationEnd so the UI leaves "thinking" instead of hanging. */
+  private settleGenerationError(message: string): void {
+    this.cb.onError?.('LLM', message)
+    if (this.currentId < 0) return
+    this.currentId = -1
+    this.chunker.reset()
+    this.cb.onGenerationEnd?.()
+    this.pending?.resolve(this.assistant)
+    this.pending = null
   }
 
   private finish(doneText?: string): void {
