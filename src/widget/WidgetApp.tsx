@@ -12,7 +12,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react'
-import { Send, Square, Trash2, X, Loader2, Settings, HardDrive, Mic, Keyboard, Sun, Moon } from 'lucide-react'
+import { Send, Square, Trash2, X, Loader2, Settings, HardDrive, Mic, MicOff, Keyboard, Sun, Moon } from 'lucide-react'
 import {
   probeCapabilities,
   resolveWidgetCapabilities,
@@ -307,7 +307,7 @@ function VoiceView({
   canText: boolean
   onType: () => void
 }) {
-  const { turns, voiceState, voiceLoadPct, levelRef, error, retry } = controller
+  const { turns, voiceState, voiceLoadPct, levelRef, error, retry, muted, toggleMute } = controller
   const scrollRef = useRef<HTMLDivElement>(null)
   const loadingVoice = voiceState === 'loading' || voiceState === 'cold'
 
@@ -318,11 +318,13 @@ function VoiceView({
 
   const status = loadingVoice
     ? { text: 'Loading voice', busy: true }
-    : voiceState === 'thinking'
-      ? { text: 'Thinking', busy: true }
-      : voiceState === 'speaking'
-        ? { text: 'Speaking', busy: true }
-        : { text: 'Listening, just speak', busy: false }
+    : muted
+      ? { text: 'Muted', busy: false }
+      : voiceState === 'thinking'
+        ? { text: 'Thinking', busy: true }
+        : voiceState === 'speaking'
+          ? { text: 'Speaking', busy: true }
+          : { text: 'Listening, just speak', busy: false }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -354,15 +356,28 @@ function VoiceView({
 
       {error && <ErrorBar error={error} onRetry={retry} />}
 
-      {canText && (
-        <div className="flex justify-center border-t border-border bg-card/60 p-2.5">
-          <button
-            type="button"
-            onClick={onType}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-input px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            <Keyboard className="size-3.5" /> Type instead
-          </button>
+      {(!loadingVoice || canText) && (
+        <div className="flex items-center justify-center gap-2 border-t border-border bg-card/60 p-2.5">
+          {!loadingVoice && (
+            <button
+              type="button"
+              onClick={toggleMute}
+              aria-pressed={muted}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-input px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              {muted ? <MicOff className="size-3.5" /> : <Mic className="size-3.5" />}
+              {muted ? 'Unmute' : 'Mute'}
+            </button>
+          )}
+          {canText && (
+            <button
+              type="button"
+              onClick={onType}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-input px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              <Keyboard className="size-3.5" /> Type instead
+            </button>
+          )}
         </div>
       )}
     </div>

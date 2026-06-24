@@ -44,6 +44,9 @@ export interface TextController {
   voiceLoadPct: number
   levelRef: RefObject<number>
   toggleVoice: () => void
+  /** Voice mic muted: frames are dropped so the assistant stops listening. */
+  muted: boolean
+  toggleMute: () => void
 }
 
 interface Options {
@@ -67,6 +70,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceLoadPct, setVoiceLoadPct] = useState(0)
   const [trimmed, setTrimmed] = useState(false)
+  const [muted, setMuted] = useState(false)
 
   // Has the model been downloaded before? transformers.js caches into 'transformers-cache'.
   useEffect(() => {
@@ -326,6 +330,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     // re-entering voice is instant. The pipeline is only torn down on unmount / forget.
     if (voiceActive) {
       setVoiceActive(false)
+      setMuted(false)
       void orch?.stopListening().catch(() => undefined)
       return
     }
@@ -384,6 +389,14 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     })()
   }, [voiceActive, ensureLoaded, upsertUserTranscript])
 
+  const toggleMute = useCallback(() => {
+    setMuted((m) => {
+      const next = !m
+      orchRef.current?.setMuted(next)
+      return next
+    })
+  }, [])
+
   return {
     turns,
     status,
@@ -402,5 +415,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     voiceLoadPct,
     levelRef,
     toggleVoice,
+    muted,
+    toggleMute,
   }
 }
