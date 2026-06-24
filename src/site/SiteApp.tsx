@@ -3,6 +3,8 @@ import { Route, Routes } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { Layout } from './Layout'
 import { Landing } from './pages/Landing'
+import { NotFound } from './pages/NotFound'
+import { useRouteMeta } from './useRouteMeta'
 
 // Code-split the heavier / future routes so the landing stays light (lean by default).
 const Demo = lazy(() => import('./pages/Demo'))
@@ -13,6 +15,7 @@ const Privacy = lazy(() => import('./pages/Privacy'))
 const Terms = lazy(() => import('./pages/Terms'))
 
 export function SiteApp() {
+  useRouteMeta()
   return (
     <Layout>
       <Suspense fallback={<PageSpinner />}>
@@ -24,7 +27,7 @@ export function SiteApp() {
           <Route path="/docs/*" element={<Docs />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/terms" element={<Terms />} />
-          <Route path="*" element={<Landing />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
     </Layout>
