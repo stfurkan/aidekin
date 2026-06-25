@@ -1,6 +1,6 @@
 // React hook wrapping the ConversationEngine for the TEXT widget. Owns the engine,
 // projects its history into UI turns, streams the assistant reply, and gates model
-// loading: the ~290 MB LLM downloads on first open (loadOnMount) or first send —
+// loading: the ~290 MB LLM downloads on first open (loadOnMount) or first send -
 // nothing heavy loads before the widget is opened.
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
@@ -40,11 +40,12 @@ export interface TextController {
   /** Orb state while voice is active ('listening' | 'thinking' | 'speaking' | …). */
   voiceState: AgentState
   voiceActive: boolean
-  /** Speech-model (ASR/TTS/VAD/Turn) download progress, 0–1. */
+  /** Speech-model (ASR/TTS/VAD/Turn) download progress, 0-1. */
   voiceLoadPct: number
-  /** True once the speech weights are already on this device, so loading voice is a fast
-   *  read from cache (no ~1.6 GB download). Drives the loading copy. */
-  voiceCached: boolean
+  /** Whether the speech weights are already on this device. null = still checking (shows a
+   *  neutral message); true = fast read from cache; false = needs the ~1.6 GB download. Drives
+   *  the loading copy, with the null state avoiding a "downloading" flash before the check. */
+  voiceCached: boolean | null
   levelRef: RefObject<number>
   toggleVoice: () => void
   /** Voice mic muted: frames are dropped so the assistant stops listening. */
@@ -72,12 +73,12 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const [voiceState, setVoiceState] = useState<AgentState>('cold')
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceLoadPct, setVoiceLoadPct] = useState(0)
-  const [voiceCached, setVoiceCached] = useState(false)
+  const [voiceCached, setVoiceCached] = useState<boolean | null>(null)
   const [trimmed, setTrimmed] = useState(false)
   const [muted, setMuted] = useState(false)
 
   // Has the LLM been downloaded before? It caches to OPFS (see opfsModelCache.ts), so check
-  // there — NOT Cache Storage, which only holds the optional Smart-Turn/embedder configs and
+  // there - NOT Cache Storage, which only holds the optional Smart-Turn/embedder configs and
   // is absent for a plain text widget (which would make repeat visits always say "Downloading").
   useEffect(() => {
     void import('@/core/opfsModelCache')
@@ -128,7 +129,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
           onAssistantText: (text, done) => {
             // Side effects (id allocation, ref writes) MUST stay OUT of the setState
             // updater: StrictMode double-invokes updaters, so an impure one silently
-            // drops the append on its second pass — that was the missing-reply bug.
+            // drops the append on its second pass - that was the missing-reply bug.
             let id = streamingId.current
             if (id == null) {
               id = nextId()
@@ -195,7 +196,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     engineRef.current?.setReasoning(config.reasoning ?? false)
   }, [config.reasoning])
 
-  // Load the RAG retriever when a knowledge URL is set (lazy — pulls in the embedder +
+  // Load the RAG retriever when a knowledge URL is set (lazy - pulls in the embedder +
   // index only then). Clearing the URL detaches RAG so the widget stays a plain chat.
   useEffect(() => {
     const url = config.knowledgeUrl
@@ -204,7 +205,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       return
     }
     let alive = true
-    // Debounce: in the configurator the URL changes on every keystroke — only load once
+    // Debounce: in the configurator the URL changes on every keystroke - only load once
     // the field settles, so we don't fire a fetch (and a console warning) per character.
     const timer = setTimeout(() => {
       void import('@/rag/retriever')
@@ -230,7 +231,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       .then(() => {
         setStatus((s) => (s === 'loading' ? 'ready' : s))
         // Ask the browser to make this site's cached model eviction-resistant. Caches are
-        // partitioned per top-level site, so this only helps repeat visits to THIS site —
+        // partitioned per top-level site, so this only helps repeat visits to THIS site -
         // it can't share across the different sites that embed the widget.
         void requestPersist().catch(() => false)
       })
@@ -286,7 +287,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   }, [])
 
   const forgetModel = useCallback(async (): Promise<ClearResult> => {
-    // Voice shares the engine + uses OPFS-locked speech weights — tear it down (and
+    // Voice shares the engine + uses OPFS-locked speech weights - tear it down (and
     // await it) BEFORE clearing caches, so the OPFS locks are released first.
     const orch = orchRef.current
     orchRef.current = null
@@ -307,7 +308,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   // Show the user's live speech transcript as a streaming user turn (pure updaters).
   const upsertUserTranscript = useCallback((text: string, final: boolean) => {
     // Final with nothing recognized → drop the placeholder turn instead of leaving a
-    // dangling "…" bubble. (It's never added to the model context either — the
+    // dangling "…" bubble. (It's never added to the model context either - the
     // orchestrator only sends non-empty finals to the engine.)
     if (final && !text.trim()) {
       const id = userStreamingId.current
@@ -354,7 +355,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       return
     }
     // First activation: ensure the shared LLM is loaded, then lazy-load the orchestrator
-    // (speech models) and start listening — one model, continuous context with text.
+    // (speech models) and start listening - one model, continuous context with text.
     const engine = engineRef.current
     if (!engine) {
       setVoiceActive(false)
@@ -406,7 +407,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
         await created.startListening()
       } catch (e) {
         // If the user abandoned voice mid-load (toggleVoice cleared/replaced orchRef and already
-        // disposed), this rejection is the intentional cancel — clean up quietly, no error shown.
+        // disposed), this rejection is the intentional cancel - clean up quietly, no error shown.
         if (orchRef.current !== created) {
           void created?.dispose().catch(() => undefined)
           return

@@ -157,7 +157,7 @@ function ModePicker({
           <button
             type="button"
             onClick={onType}
-            aria-label="Type — recommended, no microphone needed"
+            aria-label="Type - recommended, no microphone needed"
             className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl bg-primary px-4 py-3 font-semibold text-primary-foreground transition-opacity hover:opacity-90"
           >
             <span className="inline-flex items-center gap-2 text-sm">
@@ -170,7 +170,7 @@ function ModePicker({
           <button
             type="button"
             onClick={onTalk}
-            aria-label="Talk (beta) — uses your microphone, about 1.6 GB downloaded on first use"
+            aria-label="Talk (beta) - uses your microphone, about 1.6 GB downloaded on first use"
             className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl border border-input px-4 py-3 font-semibold transition-colors hover:bg-secondary"
           >
             <span className="inline-flex items-center gap-2 text-sm">
@@ -353,9 +353,11 @@ function VoiceView({
                 fast read from disk (no download); otherwise it's the one-time ~1.6 GB fetch. The
                 "Use text instead" button below actually cancels + cleans up (see toggleVoice). */}
             <p className="max-w-60 text-center text-[11px] leading-snug text-muted-foreground">
-              {voiceCached
-                ? 'Loading the voice models from your device (already downloaded).'
-                : 'One-time ~1.6 GB download. This can take a few minutes, and you can switch to text anytime.'}
+              {voiceCached === null
+                ? 'Setting up voice...'
+                : voiceCached
+                  ? 'Loading the voice models from your device (already downloaded).'
+                  : 'One-time ~1.6 GB download. This can take a few minutes, and you can switch to text anytime.'}
             </p>
           </>
         )}
@@ -507,7 +509,7 @@ function formatEta(s: number): string {
 function LoadBar({ pct, detail, cached }: { pct: number; detail: string; cached: boolean }) {
   const [eta, setEta] = useState<string | null>(null)
   // Anchor at the first real progress sample and extrapolate a smoothed remaining time
-  // from the average rate so far (stable, "somewhat correct" — network speed varies).
+  // from the average rate so far (stable, "somewhat correct" - network speed varies).
   const anchor = useRef<{ t: number; pct: number } | null>(null)
   const smooth = useRef<number | null>(null)
 
