@@ -62,6 +62,9 @@ export default defineConfig({
     exclude: ['onnxruntime-web', '@huggingface/transformers'],
   },
   build: {
+    // The large chunks (transformers, onnxruntime, pdf.js, the embedder) are all loaded via
+    // dynamic import() and never on the initial path, so the default 500 kB warning is noise.
+    chunkSizeWarningLimit: 700,
     rollupOptions: {
       // Two entries share /src: the product site (index.html) and the embeddable
       // widget served at /widget/ (its own minimal bundle, no site code).

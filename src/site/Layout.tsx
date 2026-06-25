@@ -50,12 +50,17 @@ function SiteHeader() {
   // Close the mobile menu whenever the route changes (e.g. after tapping a link).
   useEffect(() => setOpen(false), [pathname])
 
-  // Close on Escape while the mobile menu is open.
+  // While the mobile menu is open: close on Escape and lock background scroll (the backdrop
+  // overlays the page), restoring both on close.
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    document.documentElement.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.documentElement.style.overflow = ''
+    }
   }, [open])
 
   return (

@@ -31,11 +31,22 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Non-render-blocking (media=print → all on load) so first paint isn't gated on the
+         Google Fonts round-trip; system-font fallback shows instantly, then swaps. -->
     <link
       rel="stylesheet"
       crossorigin
+      media="print"
+      onload="this.media='all'"
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
     />
+    <noscript>
+      <link
+        rel="stylesheet"
+        crossorigin
+        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      />
+    </noscript>
     <title>aidekin: your own on-device voice and text agent</title>
     <script>
       // Apply the saved/system theme before paint to avoid a flash.

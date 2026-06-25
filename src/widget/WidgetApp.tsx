@@ -157,18 +157,20 @@ function ModePicker({
           <button
             type="button"
             onClick={onType}
+            aria-label="Type — recommended, no microphone needed"
             className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl bg-primary px-4 py-3 font-semibold text-primary-foreground transition-opacity hover:opacity-90"
           >
             <span className="inline-flex items-center gap-2 text-sm">
               <Keyboard className="size-4" /> Type
             </span>
-            <span className="text-[10px] font-normal text-primary-foreground/90">recommended · no microphone needed</span>
+            <span className="text-[10px] font-normal text-primary-foreground">recommended · no microphone needed</span>
           </button>
         )}
         {canVoice && (
           <button
             type="button"
             onClick={onTalk}
+            aria-label="Talk (beta) — uses your microphone, about 1.6 GB downloaded on first use"
             className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl border border-input px-4 py-3 font-semibold transition-colors hover:bg-secondary"
           >
             <span className="inline-flex items-center gap-2 text-sm">
@@ -318,7 +320,10 @@ function VoiceView({
 
   useEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    // Only auto-scroll if already near the bottom, so a user reading earlier messages
+    // (incl. screen-reader users) isn't yanked down on each new message.
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight
   }, [turns, voiceState])
 
   const status = loadingVoice
@@ -376,6 +381,7 @@ function VoiceView({
               type="button"
               onClick={toggleMute}
               aria-pressed={muted}
+              aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
               className="inline-flex items-center gap-1.5 rounded-xl border border-input px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
             >
               {muted ? <MicOff className="size-3.5" /> : <Mic className="size-3.5" />}
@@ -618,11 +624,18 @@ function ThemeToggle() {
     } catch {
       /* storage unavailable */
     }
-    // Tell the host loader so its launcher + loading overlay match on the next open. The loader
-    // validates the source is this iframe; theme is non-sensitive, so '*' is fine. Skipped inline.
+    // Tell the host loader so its launcher + loading overlay match on the next open. Target the
+    // embedding page's exact origin (from the referrer), not '*'. Skipped when run inline.
     try {
-      if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ kind: 'aidekin:theme-changed', theme }, '*')
+      const hostOrigin = (() => {
+        try {
+          return new URL(document.referrer).origin
+        } catch {
+          return ''
+        }
+      })()
+      if (hostOrigin && window.parent && window.parent !== window) {
+        window.parent.postMessage({ kind: 'aidekin:theme-changed', theme }, hostOrigin)
       }
     } catch {
       /* parent unavailable */
@@ -666,7 +679,13 @@ function SettingsMenu({
   }
 
   useEffect(() => {
-    if (open) refreshStorage()
+    if (!open) return
+    refreshStorage()
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
   const removeModel = () => {

@@ -79,7 +79,7 @@ npm run dev        # serves the site + /widget/ with the required COOP/COEP head
 npm run build      # typecheck + app build + loader build → dist/
 ```
 
-Open the printed URL in a WebGPU-capable browser. Model weights stream from CDNs on first use (Hugging Face for the models, jsDelivr for the onnxruntime-web runtime + VAD), then cache to OPFS / Cache Storage. The repo ships **no weights**; a production build is just the app bundle (tens of MB).
+Open the printed URL in a WebGPU-capable browser. Model weights stream from CDNs on first use (Hugging Face for the models, jsDelivr for the onnxruntime-web runtime + VAD), then cache on-device: the LLM and the speech weights in **OPFS**, the small Smart-Turn/embedder configs in **Cache Storage**. The repo ships **no weights**; a production build is just the app bundle (tens of MB).
 
 **Cross-origin isolation.** WASM threads / `SharedArrayBuffer` (used by voice) require the page to be cross-origin isolated. Vite dev/preview send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` (see `vite.config.ts`); send the same two headers in production for full-speed voice. Text is unaffected.
 

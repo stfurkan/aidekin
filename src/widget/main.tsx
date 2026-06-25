@@ -45,13 +45,18 @@ const dark = storedTheme
     (config.theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches)
 if (dark) document.documentElement.classList.add('dark')
 
-const post = (m: WidgetMessage): void => window.parent?.postMessage(m, hostOrigin || '*')
+// Post to the embedding page ONLY (its exact origin). If the referrer is stripped so the
+// origin is unknown, drop the message rather than broadcast widget/chat data with '*'.
+const post = (m: WidgetMessage): void => {
+  if (hostOrigin) window.parent?.postMessage(m, hostOrigin)
+}
 
 function Bridge() {
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
-      // Only the embedding page (or explicitly allowed origins) may drive the widget.
-      if (allowed.size && !allowed.has(e.origin)) return
+      // Only the embedding page (or explicitly allowed origins) may drive the widget. Fail
+      // CLOSED: if the allow-set is empty (unknown origin), reject every message.
+      if (!allowed.has(e.origin)) return
       if (!isAidekinMessage(e.data)) return
       const m = e.data as HostMessage
       if (m.kind === 'aidekin:theme') {
