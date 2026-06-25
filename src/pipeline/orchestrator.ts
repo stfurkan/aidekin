@@ -444,6 +444,20 @@ export class Orchestrator {
       } else {
         this.finalizeUserTurn()
       }
+    } else if (m.kind === 'misfire') {
+      // Silero retracted a too-short blip (a cough/click, under minSpeechMs). speech-start
+      // already opened a provisional turn, so cancel it: drop the partial ASR stream, clear
+      // the "..." transcript placeholder, and settle the orb back to idle. Without this the
+      // turn (and its placeholder) hangs on "Listening" even though no one is speaking.
+      console.info('[aidekin] VAD misfire (too-short blip) - cancelling provisional turn')
+      this.clearFinalizeTimer()
+      this.vadSpeaking = false
+      if (this.inUserTurn) {
+        this.inUserTurn = false
+        this.post(this.asr, { kind: 'reset' })
+        this.cb.onUserTranscript?.('', true) // empty final drops the placeholder bubble
+        this.settleAfterGeneration()
+      }
     }
   }
 
