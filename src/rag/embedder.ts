@@ -1,5 +1,5 @@
 // Embedding model (bge-small-en-v1.5, see registry EMBED) via transformers.js. Shared by the browser
-// (query + builder) and the Node CLI — using the SAME model + dtype is what keeps the
+// (query + builder) and the Node CLI - using the SAME model + dtype is what keeps the
 // query vectors compatible with the precomputed index. WASM backend in the browser so
 // it never competes with the LLM for the GPU. Dynamically imported, so transformers
 // only loads when RAG is actually used.
@@ -52,11 +52,24 @@ export function loadEmbedder(onProgress?: EmbedProgress): Promise<FeatureExtract
 
 const opts = { pooling: EMBED.pooling as 'mean', normalize: EMBED.normalize }
 
-/** Embed a single string → a unit-normalized 384-dim vector. */
+/** Embed a single string to a unit-normalized 384-dim vector. */
 export async function embedOne(text: string, onProgress?: EmbedProgress): Promise<Float32Array> {
   const ext = await loadEmbedder(onProgress)
   const out = await ext(text, opts)
   return Float32Array.from(out.data as Float32Array)
+}
+
+// bge-small-en-v1.5 is an ASYMMETRIC retrieval model: the QUERY is embedded with this
+// instruction prefix while passages are not. Using it (vs the raw query) both improves
+// relevance and widens the score gap between on-topic and off-topic text, which the
+// relevance gate depends on. The index keeps raw-passage vectors (embedMany), so this is a
+// query-side-only change and needs no re-index.
+const QUERY_INSTRUCTION = 'Represent this sentence for searching relevant passages: '
+
+/** Embed a search QUERY (with the bge retrieval instruction). Use this, not embedOne, for
+ *  runtime retrieval against an index built from raw-passage vectors. */
+export async function embedQuery(text: string, onProgress?: EmbedProgress): Promise<Float32Array> {
+  return embedOne(QUERY_INSTRUCTION + text, onProgress)
 }
 
 /** Embed a batch in one forward pass → one vector per input. */

@@ -3,7 +3,7 @@
 // interface. Dynamically imported only when a knowledgeUrl is configured.
 
 import type { Retriever, RetrievedChunk } from '@/engine/conversationEngine'
-import { embedOne } from './embedder'
+import { embedQuery } from './embedder'
 import { VectorStore } from './store'
 
 export interface RetrieverInfo {
@@ -19,7 +19,7 @@ export async function createRetriever(knowledgeUrl: string): Promise<RetrieverIn
 
   const retriever: Retriever = {
     async retrieve(query: string, k: number): Promise<RetrievedChunk[]> {
-      const qvec = await embedOne(query)
+      const qvec = await embedQuery(query)
       return store.search(qvec, k).map((h) => ({ text: h.text, score: h.score, source: h.source }))
     },
   }

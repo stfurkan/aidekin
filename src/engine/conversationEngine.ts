@@ -1,7 +1,7 @@
-// ConversationEngine — the shared brain for BOTH the text widget and the voice
+// ConversationEngine - the shared brain for BOTH the text widget and the voice
 // orchestrator. It owns the conversation state (messages[] + system prompt),
 // optional RAG retrieval, history persistence + trimming, and the streaming LLM
-// turn. It knows NOTHING about mic / VAD / ASR / TTS — voice wraps it with
+// turn. It knows NOTHING about mic / VAD / ASR / TTS - voice wraps it with
 // ASR-in (sendUserMessage) and TTS-out (the onAssistantClause callback).
 //
 // Two ownership modes for the LLM worker, so we never break the voice path:
@@ -24,7 +24,7 @@ export interface RetrievedChunk {
   readonly source?: string
 }
 
-/** Pluggable retriever — null = no RAG, and then nothing RAG-related ever loads. */
+/** Pluggable retriever - null = no RAG, and then nothing RAG-related ever loads. */
 export interface Retriever {
   retrieve(query: string, k: number): Promise<RetrievedChunk[]>
 }
@@ -32,7 +32,7 @@ export interface Retriever {
 export interface EngineCallbacks {
   /** Cumulative assistant text as it streams (done=true on the final, recorded reply). */
   onAssistantText?: (text: string, done: boolean) => void
-  /** A completed clause — voice routes this to TTS. Only emitted when chunkClauses=true. */
+  /** A completed clause - voice routes this to TTS. Only emitted when chunkClauses=true. */
   onAssistantClause?: (clause: string) => void
   /** Fired when a generation starts (voice → setState('thinking')). */
   onGenerationStart?: () => void
@@ -59,7 +59,7 @@ export interface EngineOptions {
   /** Hard char budget for the injected context block. */
   ragCharBudget?: number
   /** Minimum cosine score for a chunk to be injected. Below this, the chunk is dropped
-   *  — so an off-topic message doesn't pull (and recite) unrelated content. */
+   *  - so an off-topic message doesn't pull (and recite) unrelated content. */
   ragMinScore?: number
   /** Voice splits the stream into clauses for low-latency TTS; text does not. */
   chunkClauses?: boolean
@@ -74,14 +74,31 @@ export interface EngineOptions {
 }
 
 const DEFAULT_MAX_HISTORY_TOKENS = 6000
-// Rough token estimate (≈4 chars/token) — good enough for a sliding-window trim.
+// Rough token estimate (about 4 chars/token), good enough for a sliding-window trim.
 const approxTokens = (s: string): number => Math.ceil(s.length / 4)
 
+// Pure greeting / social phrases that never need the knowledge base. Matched against the
+// message stripped to lowercase letters+spaces, so "Hi!" or "thanks :)" still match. Kept to
+// EXACT phrases so a real question ("how do I configure") is never skipped by accident.
+const SMALLTALK = new Set([
+  'hi', 'hii', 'hiya', 'hey', 'heya', 'hello', 'helo', 'yo', 'sup', 'wassup', 'greetings',
+  'thanks', 'thank you', 'thank you very much', 'thanks a lot', 'many thanks', 'thx', 'ty', 'cheers',
+  'how are you', 'how are you doing', 'how is it going', 'hows it going', 'how r u',
+  'hi how are you', 'hello how are you', 'hey how are you',
+  'hi how are you doing', 'hello how are you doing',
+  'good morning', 'good afternoon', 'good evening', 'good night', 'gm', 'gn',
+  'bye', 'goodbye', 'see you', 'see ya', 'see you later', 'later', 'take care',
+  'ok', 'okay', 'kk', 'cool', 'nice', 'great', 'awesome', 'perfect', 'lol', 'haha',
+  'yes', 'no', 'yep', 'nope', 'yeah', 'nah', 'sure',
+])
+const isSmallTalk = (text: string): boolean =>
+  SMALLTALK.has(text.toLowerCase().replace(/[^a-z\s]/g, '').replace(/\s+/g, ' ').trim())
+
 /** One conversation turn. `content` is the plain text (what the user actually said /
- *  the assistant replied) — used for display, persistence and hydration. `model` is the
+ *  the assistant replied) - used for display, persistence and hydration. `model` is the
  *  OPTIONAL augmented form sent to the LLM: a grounded (RAG) user turn carries its
- *  context-injected prompt here. Keeping the augmented form on the turn — instead of
- *  rebuilding it per request and discarding it — is what makes the model-prompt PREFIX
+ *  context-injected prompt here. Keeping the augmented form on the turn - instead of
+ *  rebuilding it per request and discarding it - is what makes the model-prompt PREFIX
  *  stable across turns, so the worker's KV cache reuses it (prefill only the new turn)
  *  rather than re-prefilling the whole transcript every grounded turn. */
 interface Turn {
@@ -111,7 +128,7 @@ export class ConversationEngine {
   private readonly chunker = new SentenceChunker()
 
   /** The conversation as the model sees it (augmented grounded turns), for the request
-   *  and the cache prefix. A fresh array each call — callers consume it immediately. */
+   *  and the cache prefix. A fresh array each call - callers consume it immediately. */
   private modelView(): ChatMessage[] {
     return this.messages.map(toModel)
   }
@@ -126,7 +143,7 @@ export class ConversationEngine {
   private genId = 0
   private currentId = -1
   // When the history prefix changes non-append (reset / clear / system-prompt change /
-  // sliding-window trim), the worker's KV cache is stale — flag the next generate to
+  // sliding-window trim), the worker's KV cache is stale - flag the next generate to
   // rebuild it. Set here, sent once, then cleared.
   private cacheDirty = false
   private assistant = ''
@@ -158,7 +175,7 @@ export class ConversationEngine {
     if (this.llm) return
     this.dlTotal = 0
     this.dlLoaded = 0
-    // Literal `new Worker(new URL(...), {type:'module'})` — the exact form Vite bundles.
+    // Literal `new Worker(new URL(...), {type:'module'})` - the exact form Vite bundles.
     const w = new Worker(new URL('../workers/llm.worker.ts', import.meta.url), { type: 'module' })
     this.llm = w
     this.ownsWorker = true
@@ -181,7 +198,7 @@ export class ConversationEngine {
         w.postMessage(init)
       })
     } catch (err) {
-      // Init failed (download/OOM/quota) — tear down so a retry recreates a fresh worker.
+      // Init failed (download/OOM/quota) - tear down so a retry recreates a fresh worker.
       this.ready = null
       this.ownsWorker = false
       this.llm = null
@@ -252,16 +269,21 @@ export class ConversationEngine {
   }
 
   private async withRag(userText: string): Promise<string> {
-    try {
-      const t0 = performance.now()
-      const hits = await this.retriever!.retrieve(userText, this.ragTopK)
-      // Only ground on chunks that are actually relevant — otherwise an off-topic message
-      // ("hi") still pulls the top-k and the model recites unrelated content.
-      const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
-      this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
-      if (relevant.length) this.applyContext(userText, relevant)
-    } catch (err) {
-      this.cb.onError?.('RAG', (err as Error).message)
+    // Pure small-talk ("hi", "thanks", "how are you") never needs the knowledge base, and a
+    // dense embedder scores even unrelated English moderately, so the relevance gate alone is
+    // not enough. Skip retrieval outright for it so a greeting never recites the docs.
+    if (!isSmallTalk(userText)) {
+      try {
+        const t0 = performance.now()
+        const hits = await this.retriever!.retrieve(userText, this.ragTopK)
+        // Only ground on chunks that clear the relevance gate, so an off-topic message does
+        // not pull the top-k and make the model recite unrelated content.
+        const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
+        this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
+        if (relevant.length) this.applyContext(userText, relevant)
+      } catch (err) {
+        this.cb.onError?.('RAG', (err as Error).message)
+      }
     }
     // RAG turns run NON-thinking: a <think> block is stripped from the stored reply, so it
     // wouldn't round-trip and the worker would have to drop the KV cache every grounded turn.
@@ -271,7 +293,7 @@ export class ConversationEngine {
   }
 
   /** Fold retrieved context into the CURRENT user turn's `model` field. Its plain `content`
-   *  is untouched (display/persist), but the LLM — and the KV-cache prefix — see the
+   *  is untouched (display/persist), but the LLM - and the KV-cache prefix - see the
    *  augmented prompt, which is frozen on the turn so the prefix stays stable next turn. */
   private applyContext(userText: string, hits: RetrievedChunk[]): void {
     let used = ''
@@ -299,7 +321,7 @@ export class ConversationEngine {
     }
     // Latest-response-wins: if a generation is still in flight (a newer user turn arrived
     // before the previous reply finished), abort it on the worker and settle its promise so
-    // turns don't queue and balloon ttft. No transcript is lost — only the superseded reply.
+    // turns don't queue and balloon ttft. No transcript is lost - only the superseded reply.
     if (this.currentId >= 0) {
       const abortMsg: LlmIn = { kind: 'abort', id: this.currentId }
       this.llm.postMessage(abortMsg)
@@ -333,7 +355,7 @@ export class ConversationEngine {
       if (m.id !== this.currentId) return // stale generation (superseded/aborted)
       this.finish(m.text)
     } else if (m.kind === 'error') {
-      // Generation error reaching the adopted (voice) path — settle so it doesn't hang.
+      // Generation error reaching the adopted (voice) path - settle so it doesn't hang.
       this.settleGenerationError(m.message)
     }
   }
@@ -352,14 +374,14 @@ export class ConversationEngine {
 
   private finish(doneText?: string): void {
     // Prefer the streamed text; fall back to the final 'done' payload if streaming
-    // produced nothing — the reply still shows even if token messages were missed.
+    // produced nothing - the reply still shows even if token messages were missed.
     const text = this.assistant.trim() ? this.assistant : (doneText ?? '').trim()
     if (this.chunkClauses) {
       const sink = this.clauseSink ?? this.cb.onAssistantClause
       const rest = this.chunker.flush()
       if (rest) sink?.(rest)
     }
-    // Skip an empty reply (e.g. all tokens spent in a <think> block) — don't record it.
+    // Skip an empty reply (e.g. all tokens spent in a <think> block) - don't record it.
     if (text) {
       this.assistant = text
       this.pushAssistant(text)
@@ -371,7 +393,7 @@ export class ConversationEngine {
     this.pending = null
   }
 
-  /** Barge-in / stop: abort the in-flight generation. Does NOT fire onGenerationEnd —
+  /** Barge-in / stop: abort the in-flight generation. Does NOT fire onGenerationEnd -
    *  the caller (voice barge-in) drives its own state, so we avoid a spurious idle. */
   abort(): void {
     if (this.currentId >= 0 && this.llm) {
@@ -391,7 +413,7 @@ export class ConversationEngine {
   }
 
   get history(): readonly ChatMessage[] {
-    // Expose the PLAIN conversation (no injected RAG context) — for display/hydration.
+    // Expose the PLAIN conversation (no injected RAG context) - for display/hydration.
     return this.messages.map((m) => ({ role: m.role, content: m.content }))
   }
 
@@ -415,7 +437,7 @@ export class ConversationEngine {
     }
   }
 
-  /** Attach (or clear) RAG after construction — the index loads asynchronously. */
+  /** Attach (or clear) RAG after construction - the index loads asynchronously. */
   setRetriever(retriever: Retriever | null): void {
     this.retriever = retriever
   }
@@ -452,7 +474,7 @@ export class ConversationEngine {
     this.llm = null
   }
 
-  /** Free the LLM worker + VRAM but keep the engine reusable — a later loadLlm()
+  /** Free the LLM worker + VRAM but keep the engine reusable - a later loadLlm()
    *  re-creates the worker (and re-downloads, if the on-disk cache was cleared). */
   unloadLlm(): void {
     this.abort()
@@ -478,14 +500,14 @@ export class ConversationEngine {
     this.persist()
   }
 
-  /** Sliding window. When over budget, keep three anchors — the system prompt (0)
-   *  and the FIRST user+assistant exchange (1,2) — and drop the OLDEST middle turns
+  /** Sliding window. When over budget, keep three anchors - the system prompt (0)
+   *  and the FIRST user+assistant exchange (1,2) - and drop the OLDEST middle turns
    *  in user/assistant pairs, always preserving the most recent exchanges. Pinning
    *  the opening keeps the "attention sink" + the conversation's framing; evicting
    *  the middle (not the head) is what good local-LLM chats do. */
   private trim(): void {
     const budget = this.maxHistoryTokens
-    // Count the MODEL form (augmented grounded turns are larger) — that's what actually
+    // Count the MODEL form (augmented grounded turns are larger) - that's what actually
     // fills the context window the worker prefills.
     const tok = (m: Turn): number => approxTokens(m.model ?? m.content)
     let total = this.messages.reduce((n, m) => n + tok(m), 0)
@@ -529,12 +551,12 @@ export class ConversationEngine {
   private persist(): void {
     if (!this.persistKey) return
     try {
-      // Persist the PLAIN conversation only — never the injected RAG context (it's large,
+      // Persist the PLAIN conversation only - never the injected RAG context (it's large,
       // re-derived each turn, and would resurface as visitor-visible text on reload).
       const plain: ChatMessage[] = this.messages.map((m) => ({ role: m.role, content: m.content }))
       localStorage.setItem(this.persistKey, JSON.stringify(plain))
     } catch {
-      /* quota / unavailable — history is best-effort, never fatal */
+      /* quota / unavailable - history is best-effort, never fatal */
     }
   }
 }
