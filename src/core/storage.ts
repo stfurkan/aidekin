@@ -1,22 +1,17 @@
 // Browser storage helpers for the cached model weights. Everything Aidekin caches
 // lives in ORIGIN-SCOPED storage:
-//   • OPFS dir "aidekin-models" → ASR/TTS/VAD weights (our modelStore)
-//   • Cache Storage           → transformers.js (transformers-cache): the Bonsai LLM
-//                               + Smart Turn model/config
-//   • IndexedDB               → our "aidekin" fallback
+//   • OPFS dir "aidekin-llm-cache" → the Bonsai LLM weights (transformers.js via a custom
+//                                    cache — Cache Storage can't hold a ~290 MB entry; see
+//                                    opfsModelCache.ts)
+//   • OPFS dir "aidekin-models"    → ASR/TTS/VAD weights (our modelStore)
+//   • Cache Storage                → transformers.js (transformers-cache): only the small
+//                                    Smart-Turn + embedder model/config files
+//   • IndexedDB                    → our "aidekin" fallback
 // In a normal window this persists on disk across restarts; in a private window
 // it is ephemeral and wiped when the session closes.
-
-import { hasModelAsset } from './modelStore'
-import { LLM } from '@/models/registry'
+// (LLM "is it cached?" detection lives in opfsModelCache.ts → hasLlmCache().)
 
 const OPFS_DIR = 'aidekin-models'
-// transformers.js Cache Storage bucket (Bonsai LLM weights live here).
-const TRANSFORMERS_CACHE = 'transformers-cache'
-// Cache-URL marker for the LLM weights — derived from the registry so it follows a
-// model swap (e.g. 'Bonsai-1.7B-ONNX'). transformers.js keys cache entries by the full
-// HF resolve URL, which contains the repo path.
-const LLM_CACHE_MARKER = LLM.hfModelId.split('/').pop() as string
 
 export interface StorageInfo {
   usageBytes: number
@@ -28,28 +23,6 @@ export interface ClearResult {
   ok: boolean
   cleared: string[]
   errors: string[]
-}
-
-/**
- * True if the heavy model weights are already cached on this device, so a refresh
- * can offer "Start" (a fast load-from-cache) instead of "Download & set up".
- * Checks our OPFS markers (ASR encoder + TTS estimator) and the Bonsai LLM weights
- * in transformers.js's Cache Storage.
- */
-export async function modelsCached(): Promise<boolean> {
-  try {
-    const [asr, tts] = await Promise.all([
-      hasModelAsset('asr/encoder.onnx.data'),
-      hasModelAsset('tts/onnx/vector_estimator.onnx'),
-    ])
-    if (!asr || !tts) return false
-    if (typeof caches === 'undefined') return false
-    if (!(await caches.keys()).includes(TRANSFORMERS_CACHE)) return false
-    const entries = await (await caches.open(TRANSFORMERS_CACHE)).keys()
-    return entries.some((r) => r.url.includes(LLM_CACHE_MARKER))
-  } catch {
-    return false
-  }
 }
 
 export async function estimateStorage(): Promise<StorageInfo | null> {
@@ -166,7 +139,8 @@ export async function clearModelCaches(): Promise<ClearResult> {
     errors.push(`OPFS: ${(e as Error).message}`)
   }
 
-  // 2) Cache Storage — transformers.js (transformers-cache: Bonsai LLM + Smart Turn).
+  // 2) Cache Storage — transformers.js (transformers-cache: small Smart-Turn + embedder
+  //    configs; the LLM weights live in OPFS, swept by (1) above).
   try {
     const keys = await caches.keys()
     const results = await Promise.allSettled(keys.map((k) => caches.delete(k)))

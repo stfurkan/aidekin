@@ -148,3 +148,26 @@ export function installOpfsModelCache(env: CustomCacheEnv): void {
     /* leave the default cache in place */
   }
 }
+
+/**
+ * True if at least one LLM weight file is fully cached in OPFS (a `.done` marker present),
+ * so a repeat visit can show "Loading" instead of "Downloading". Read-only — does NOT create
+ * the directory, and works on the main thread (no sync access handle needed for this check).
+ */
+export async function hasLlmCache(): Promise<boolean> {
+  try {
+    const storage = navigator.storage as StorageManager & {
+      getDirectory?: () => Promise<FileSystemDirectoryHandle>
+    }
+    if (!storage?.getDirectory) return false
+    const root = await storage.getDirectory()
+    const dir = (await root.getDirectoryHandle(DIR).catch(() => null)) as
+      | (FileSystemDirectoryHandle & { entries?: () => AsyncIterableIterator<[string, FileSystemHandle]> })
+      | null
+    if (!dir?.entries) return false
+    for await (const [name] of dir.entries()) if (name.endsWith(MARKER)) return true
+    return false
+  } catch {
+    return false
+  }
+}

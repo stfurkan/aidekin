@@ -72,11 +72,12 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const [trimmed, setTrimmed] = useState(false)
   const [muted, setMuted] = useState(false)
 
-  // Has the model been downloaded before? transformers.js caches into 'transformers-cache'.
+  // Has the LLM been downloaded before? It caches to OPFS (see opfsModelCache.ts), so check
+  // there — NOT Cache Storage, which only holds the optional Smart-Turn/embedder configs and
+  // is absent for a plain text widget (which would make repeat visits always say "Downloading").
   useEffect(() => {
-    if (typeof caches === 'undefined') return
-    void caches
-      .has('transformers-cache')
+    void import('@/core/opfsModelCache')
+      .then(({ hasLlmCache }) => hasLlmCache())
       .then(setCached)
       .catch(() => undefined)
   }, [])
