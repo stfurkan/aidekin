@@ -214,8 +214,20 @@ export async function hasModelAsset(key: string): Promise<boolean> {
  * download that was interrupted (tab closed or worker terminated mid-stream, so the
  * `.catch` cleanup in streamToOpfs never ran). Best-effort, idempotent; call once before
  * a download session so interrupted bytes can't accumulate as orphaned OPFS storage.
+ *
+ * Concurrency-safe: overlapping calls (e.g. an abandon-dispose racing a remount, or a
+ * dispose racing the next load) share ONE in-flight sweep instead of doubling the work.
  */
-export async function pruneIncompleteAssets(): Promise<number> {
+let pruneInFlight: Promise<number> | null = null
+export function pruneIncompleteAssets(): Promise<number> {
+  if (pruneInFlight) return pruneInFlight
+  pruneInFlight = pruneIncompleteAssetsImpl().finally(() => {
+    pruneInFlight = null
+  })
+  return pruneInFlight
+}
+
+async function pruneIncompleteAssetsImpl(): Promise<number> {
   const dir = await opfsDir()
   if (!dir) return 0
   const d = dir as FileSystemDirectoryHandle & {

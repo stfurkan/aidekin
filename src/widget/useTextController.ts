@@ -326,12 +326,20 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
 
   const toggleVoice = useCallback(() => {
     const orch = orchRef.current
-    // Exit voice → back to text, but KEEP the speech models loaded (mic off only), so
-    // re-entering voice is instant. The pipeline is only torn down on unmount / forget.
     if (voiceActive) {
       setVoiceActive(false)
       setMuted(false)
-      void orch?.stopListening().catch(() => undefined)
+      if (orch && orch.isLoaded) {
+        // Loaded → just turn the mic off; KEEP the speech models resident so re-entry is instant.
+        void orch.stopListening().catch(() => undefined)
+      } else {
+        // Still downloading → ABANDON: dispose() terminates the workers (stopping the in-flight
+        // ~1.6 GB download) and sweeps the partial weights, so nothing is left half-installed. A
+        // later re-tap starts a fresh load (resuming from whatever fully downloaded + cached).
+        orchRef.current = null
+        setVoiceState('cold')
+        void orch?.dispose().catch(() => undefined)
+      }
       return
     }
     setVoiceActive(true)
@@ -351,10 +359,18 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     setVoiceLoadPct(0)
     setError(null)
     void (async () => {
+      let created: Orchestrator | null = null
       try {
+        // Pre-check storage: voice adds ~1.6 GB. Fail fast with a clear, actionable message
+        // instead of a QuotaExceededError mid-download (best practice for large downloads).
+        const { estimateStorage } = await import('@/core/storage')
+        const est = await estimateStorage().catch(() => null)
+        if (est && est.quotaBytes > 0 && est.quotaBytes - est.usageBytes < 1_700_000_000) {
+          throw new Error('Not enough free storage for voice (about 1.6 GB needed). Try text instead, or free up space.')
+        }
         await ensureLoaded(engine)
         const { Orchestrator } = await import('@/pipeline/orchestrator')
-        const created = new Orchestrator({
+        created = new Orchestrator({
           device: 'webgpu',
           engine,
           callbacks: {
@@ -379,7 +395,12 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
         await created.load()
         await created.startListening()
       } catch (e) {
-        const created = orchRef.current
+        // If the user abandoned voice mid-load (toggleVoice cleared/replaced orchRef and already
+        // disposed), this rejection is the intentional cancel — clean up quietly, no error shown.
+        if (orchRef.current !== created) {
+          void created?.dispose().catch(() => undefined)
+          return
+        }
         orchRef.current = null
         setVoiceActive(false)
         setVoiceState('cold')

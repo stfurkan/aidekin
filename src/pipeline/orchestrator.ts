@@ -95,6 +95,7 @@ export class Orchestrator {
 
   private state: AgentState = 'cold'
   private loaded = false
+  private disposed = false
 
   private inUserTurn = false
   private vadSpeaking = false
@@ -327,7 +328,24 @@ export class Orchestrator {
   }
 
   async dispose(): Promise<void> {
+    if (this.disposed) return // idempotent: abandon + unmount can both fire
+    this.disposed = true
     this.clearFinalizeTimer()
+    // Detach worker handlers FIRST so a message queued just before terminate() can't fire a
+    // stale callback (setState / onUserTranscript / onState) on a now-disposed orchestrator.
+    for (const w of [this.vad, this.asr, this.llm, this.tts, this.turn]) {
+      if (w) {
+        w.onmessage = null
+        w.onerror = null
+        w.onmessageerror = null
+      }
+    }
+    // Reject any pending worker-init waiters so an in-flight load() rejects instead of hanging
+    // (e.g. the user abandoned voice mid-download — see useTextController.toggleVoice). Snapshot
+    // first: a reject microtask must not mutate the Map mid-iteration.
+    const pending = [...this.waiters.entries()]
+    this.waiters.clear()
+    for (const [label, w] of pending) w.reject(new Error(`${label}: voice load cancelled`))
     await this.mic?.stop()
     this.playback.stop()
     if (this.ownsEngine) {
@@ -338,7 +356,12 @@ export class Orchestrator {
       this.engine.setChunkClauses(false)
       this.engine.setClauseSink(null)
     }
+    // Terminating the workers aborts any in-flight model download — so abandoning voice
+    // mid-load stops the ~1.6 GB transfer immediately instead of draining in the background.
     for (const w of [this.vad, this.asr, this.llm, this.tts, this.turn]) w?.terminate()
+    // Then sweep any partially-written weights the terminated workers left (no .done marker),
+    // so an abandoned install leaves no garbage on the device. Best-effort; also runs on next load.
+    await pruneIncompleteAssets().catch(() => 0)
     this.setState('cold')
   }
 
