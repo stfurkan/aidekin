@@ -15,14 +15,19 @@
 # script-src is required because onnxruntime-web loads its WebGPU backend as a dynamically
 # imported module from a blob: URL (without it the brain fails with "no available backend");
 # blob: in worker-src covers the ORT/VAD workers; connect-src https: covers HF model + jsDelivr
-# wasm fetches (whose CDN hosts redirect). frame-ancestors 'self' here protects the SITE from
-# clickjacking; the /widget/* rule below omits it so the widget stays embeddable cross-origin.
+# wasm fetches (whose CDN hosts redirect). We deliberately do NOT set frame-ancestors: on
+# Workers Static Assets a /widget/* request matches BOTH this rule and the /widget/* rule and
+# the platform emits BOTH CSP headers (they are additive, not override), so a frame-ancestors
+# here would also apply to the widget and block cross-origin embedding, which is the whole
+# product. The marketing site has no login or state-changing actions, so the clickjacking
+# exposure of omitting it is negligible; revisit with a per-path mechanism if the site ever
+# gains sensitive actions.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' blob: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https: blob: data:; worker-src 'self' blob:; frame-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'; frame-ancestors 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' blob: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https: blob: data:; worker-src 'self' blob:; frame-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'
 
 # The embeddable widget document. It is loaded cross-origin inside customer pages, so it must
 # stay embeddable even when the customer page is itself cross-origin isolated (require-corp):
