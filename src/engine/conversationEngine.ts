@@ -77,23 +77,6 @@ const DEFAULT_MAX_HISTORY_TOKENS = 6000
 // Rough token estimate (about 4 chars/token), good enough for a sliding-window trim.
 const approxTokens = (s: string): number => Math.ceil(s.length / 4)
 
-// Pure greeting / social phrases that never need the knowledge base. Matched against the
-// message stripped to lowercase letters+spaces, so "Hi!" or "thanks :)" still match. Kept to
-// EXACT phrases so a real question ("how do I configure") is never skipped by accident.
-const SMALLTALK = new Set([
-  'hi', 'hii', 'hiya', 'hey', 'heya', 'hello', 'helo', 'yo', 'sup', 'wassup', 'greetings',
-  'thanks', 'thank you', 'thank you very much', 'thanks a lot', 'many thanks', 'thx', 'ty', 'cheers',
-  'how are you', 'how are you doing', 'how is it going', 'hows it going', 'how r u',
-  'hi how are you', 'hello how are you', 'hey how are you',
-  'hi how are you doing', 'hello how are you doing',
-  'good morning', 'good afternoon', 'good evening', 'good night', 'gm', 'gn',
-  'bye', 'goodbye', 'see you', 'see ya', 'see you later', 'later', 'take care',
-  'ok', 'okay', 'kk', 'cool', 'nice', 'great', 'awesome', 'perfect', 'lol', 'haha',
-  'yes', 'no', 'yep', 'nope', 'yeah', 'nah', 'sure',
-])
-const isSmallTalk = (text: string): boolean =>
-  SMALLTALK.has(text.toLowerCase().replace(/[^a-z\s]/g, '').replace(/\s+/g, ' ').trim())
-
 /** One conversation turn. `content` is the plain text (what the user actually said /
  *  the assistant replied) - used for display, persistence and hydration. `model` is the
  *  OPTIONAL augmented form sent to the LLM: a grounded (RAG) user turn carries its
@@ -269,21 +252,18 @@ export class ConversationEngine {
   }
 
   private async withRag(userText: string): Promise<string> {
-    // Pure small-talk ("hi", "thanks", "how are you") never needs the knowledge base, and a
-    // dense embedder scores even unrelated English moderately, so the relevance gate alone is
-    // not enough. Skip retrieval outright for it so a greeting never recites the docs.
-    if (!isSmallTalk(userText)) {
-      try {
-        const t0 = performance.now()
-        const hits = await this.retriever!.retrieve(userText, this.ragTopK)
-        // Only ground on chunks that clear the relevance gate, so an off-topic message does
-        // not pull the top-k and make the model recite unrelated content.
-        const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
-        this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
-        if (relevant.length) this.applyContext(userText, relevant)
-      } catch (err) {
-        this.cb.onError?.('RAG', (err as Error).message)
-      }
+    try {
+      const t0 = performance.now()
+      const hits = await this.retriever!.retrieve(userText, this.ragTopK)
+      // Ground only on chunks that clear the relevance gate. The query is embedded with the
+      // bge retrieval instruction (see embedder.embedQuery), which sharpens the on-topic vs
+      // off-topic score gap, so an off-topic message (a greeting, small-talk) scores below the
+      // gate and is dropped here rather than pulled in and recited.
+      const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
+      this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
+      if (relevant.length) this.applyContext(userText, relevant)
+    } catch (err) {
+      this.cb.onError?.('RAG', (err as Error).message)
     }
     // RAG turns run NON-thinking: a <think> block is stripped from the stored reply, so it
     // wouldn't round-trip and the worker would have to drop the KV cache every grounded turn.
