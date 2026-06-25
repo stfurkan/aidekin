@@ -6,8 +6,18 @@
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers'
 import { EMBED } from '../models/registry'
+import { withRetry } from '../core/retry'
+import { selfHostedOrtWasmPaths } from '../core/ortWasm'
 
 env.allowRemoteModels = true
+// Browser only (the Node CLI uses onnxruntime-node): self-host the ORT wasm same-origin instead
+// of transformers.js's dev-tag jsDelivr default (see ortWasm.ts).
+{
+  const onnxWasm = env.backends.onnx?.wasm
+  if (typeof window !== 'undefined' && onnxWasm) {
+    onnxWasm.wasmPaths = selfHostedOrtWasmPaths()
+  }
+}
 
 export type EmbedProgress = (p: {
   status?: string
@@ -22,16 +32,23 @@ let pipePromise: Promise<FeatureExtractionPipeline> | null = null
 export function loadEmbedder(onProgress?: EmbedProgress): Promise<FeatureExtractionPipeline> {
   if (!pipePromise) {
     const isBrowser = typeof window !== 'undefined'
-    pipePromise = pipeline('feature-extraction', EMBED.hfModelId, {
-      dtype: EMBED.dtype as never,
-      // Browser: pin WASM (CPU) so the GPU stays free for the LLM. Node: let
-      // transformers pick onnxruntime-node.
-      ...(isBrowser ? { device: 'wasm' as never } : {}),
-      progress_callback: onProgress as never,
-    }) as Promise<FeatureExtractionPipeline>
-    // If the first load fails (network / wasm / OOM), clear the cached promise so the next call
-    // retries instead of re-throwing the stale rejection forever (which would silently kill RAG
-    // for the whole session). The current caller still sees this rejection.
+    pipePromise = withRetry(
+      () =>
+        pipeline('feature-extraction', EMBED.hfModelId, {
+          dtype: EMBED.dtype as never,
+          // Browser: pin WASM (CPU) so the GPU stays free for the LLM. Node: let
+          // transformers pick onnxruntime-node.
+          ...(isBrowser ? { device: 'wasm' as never } : {}),
+          progress_callback: onProgress as never,
+        }) as Promise<FeatureExtractionPipeline>,
+      {
+        onRetry: (n, _e, ms) =>
+          console.warn(`[aidekin] embedder load failed (transient); retry ${n} in ${ms}ms`),
+      },
+    )
+    // If it still fails after the retries (network / wasm / OOM), clear the cached promise so the
+    // next call retries instead of re-throwing the stale rejection forever (which would silently
+    // kill RAG for the whole session). The current caller still sees this rejection.
     pipePromise.catch(() => {
       pipePromise = null
     })

@@ -17,11 +17,19 @@ import {
 } from '@huggingface/transformers'
 import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
 import { installOpfsModelCache } from '../core/opfsModelCache'
+import { selfHostedOrtWasmPaths } from '../core/ortWasm'
+import { withRetry } from '../core/retry'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: LlmOut): void => ctx.postMessage(m)
 
 env.allowRemoteModels = true // stream model files from the HF Hub
+// Self-host the ORT wasm same-origin (/ort/) instead of transformers.js's dev-tag jsDelivr
+// default, which could be GC'd and silently break the brain (see ortWasm.ts).
+{
+  const onnxWasm = env.backends.onnx?.wasm
+  if (onnxWasm) onnxWasm.wasmPaths = selfHostedOrtWasmPaths()
+}
 // Cache the ~290 MB model in OPFS, not Cache Storage (which errors on an entry this large, so
 // the weights would otherwise re-download every visit). Best-effort: see opfsModelCache.ts.
 installOpfsModelCache(env)
@@ -140,12 +148,22 @@ async function init(id: string, dtype: string, device: string, eos: number): Pro
       post({ kind: 'load', label: 'LLM', file: p.file, detail: `${p.status} ${p.file ?? ''}`.trim(), loaded: 0, total: 0 })
     }
   }
-  tokenizer = await AutoTokenizer.from_pretrained(id, { progress_callback: onProgress as never })
-  model = await AutoModelForCausalLM.from_pretrained(id, {
-    dtype: dtype as never,
-    device: device as never,
-    progress_callback: onProgress as never,
-  })
+  // Retry transient CDN resets / rate limits while downloading the weights.
+  const onRetry = (n: number, _e: unknown, ms: number): void =>
+    console.warn(`[aidekin] LLM load failed (transient); retry ${n} in ${ms}ms`)
+  tokenizer = await withRetry(
+    () => AutoTokenizer.from_pretrained(id, { progress_callback: onProgress as never }),
+    { onRetry },
+  )
+  model = await withRetry(
+    () =>
+      AutoModelForCausalLM.from_pretrained(id, {
+        dtype: dtype as never,
+        device: device as never,
+        progress_callback: onProgress as never,
+      }),
+    { onRetry },
+  )
   post({ kind: 'ready', info: `transformers.js ${id} (${dtype}·${device})` })
 }
 

@@ -10,3 +10,6 @@ dist-ssr
 # Local model mirror for offline dev (npm run fetch-models). Never committed —
 # in production every weight streams from a CDN and is cached in the visitor's browser.
 public/models/
+
+# Self-hosted onnxruntime-web wasm, copied from node_modules at build (scripts/copy-ort.mjs).
+public/ort/
