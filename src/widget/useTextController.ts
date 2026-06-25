@@ -42,6 +42,9 @@ export interface TextController {
   voiceActive: boolean
   /** Speech-model (ASR/TTS/VAD/Turn) download progress, 0–1. */
   voiceLoadPct: number
+  /** True once the speech weights are already on this device, so loading voice is a fast
+   *  read from cache (no ~1.6 GB download). Drives the loading copy. */
+  voiceCached: boolean
   levelRef: RefObject<number>
   toggleVoice: () => void
   /** Voice mic muted: frames are dropped so the assistant stops listening. */
@@ -69,6 +72,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const [voiceState, setVoiceState] = useState<AgentState>('cold')
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceLoadPct, setVoiceLoadPct] = useState(0)
+  const [voiceCached, setVoiceCached] = useState(false)
   const [trimmed, setTrimmed] = useState(false)
   const [muted, setMuted] = useState(false)
 
@@ -358,6 +362,11 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     }
     setVoiceState('loading')
     setVoiceLoadPct(0)
+    // Are the speech weights already on disk? Drives "Loading" vs "~1.6 GB download" copy.
+    void import('@/core/modelStore')
+      .then(({ hasModelAsset }) => hasModelAsset('asr/encoder.onnx.data'))
+      .then(setVoiceCached)
+      .catch(() => undefined)
     setError(null)
     void (async () => {
       let created: Orchestrator | null = null
@@ -435,6 +444,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     voiceState,
     voiceActive,
     voiceLoadPct,
+    voiceCached,
     levelRef,
     toggleVoice,
     muted,

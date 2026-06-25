@@ -314,7 +314,7 @@ function VoiceView({
   canText: boolean
   onType: () => void
 }) {
-  const { turns, voiceState, voiceLoadPct, levelRef, error, retry, muted, toggleMute } = controller
+  const { turns, voiceState, voiceLoadPct, voiceCached, levelRef, error, retry, muted, toggleMute } = controller
   const scrollRef = useRef<HTMLDivElement>(null)
   const loadingVoice = voiceState === 'loading' || voiceState === 'cold'
 
@@ -349,11 +349,13 @@ function VoiceView({
                 style={{ width: `${Math.max(4, voiceLoadPct * 100)}%` }}
               />
             </div>
-            {/* Honest expectation-setting + a visible off-ramp (the "Use text instead" button below
-                actually cancels the download and cleans up — see useTextController.toggleVoice). */}
+            {/* Honest expectation-setting. When the speech weights are already cached, this is a
+                fast read from disk (no download); otherwise it's the one-time ~1.6 GB fetch. The
+                "Use text instead" button below actually cancels + cleans up (see toggleVoice). */}
             <p className="max-w-60 text-center text-[11px] leading-snug text-muted-foreground">
-              One-time ~1.6&nbsp;GB download — this can take a few minutes. You can switch to text
-              anytime.
+              {voiceCached
+                ? 'Loading the voice models from your device (already downloaded).'
+                : 'One-time ~1.6 GB download. This can take a few minutes, and you can switch to text anytime.'}
             </p>
           </>
         )}

@@ -61,19 +61,31 @@ async function match(request: string): Promise<Response | undefined> {
     if (!dir) return undefined
     const name = sanitize(request)
     const expected = await markerSize(dir, name)
-    if (expected === null) return undefined // never completed → miss → re-download
+    if (expected === null) return undefined // never completed, so a miss and re-download
+    // Set Content-Length on the cache hit. Without it, transformers.js logs "Unable to
+    // determine content-length" even though this is served from disk (not the network), and
+    // it can't show load progress. With it: clean log + a real progress bar on cached loads.
+    const headers = { 'Content-Length': String(expected) }
+    const hit = (bytes: number): void => {
+      if (bytes > 10_000_000) {
+        console.info(`[aidekin] LLM weight served from OPFS cache: ${Math.round(bytes / 1048576)} MB (no download)`)
+      }
+    }
     const handle = (await dir.getFileHandle(name)) as SyncCapableFileHandle
     if (!handle.createSyncAccessHandle) {
       const file = await handle.getFile()
-      return file.size === expected ? new Response(file) : undefined
+      if (file.size !== expected) return undefined
+      hit(expected)
+      return new Response(file, { headers })
     }
     const access = await handle.createSyncAccessHandle()
     try {
       const size = access.getSize()
-      if (size !== expected) return undefined // truncated/mismatched → miss
+      if (size !== expected) return undefined // truncated or mismatched, so a miss
       const buf = new ArrayBuffer(size)
       access.read(new Uint8Array(buf), { at: 0 })
-      return new Response(buf)
+      hit(expected)
+      return new Response(buf, { headers })
     } finally {
       access.close()
     }
