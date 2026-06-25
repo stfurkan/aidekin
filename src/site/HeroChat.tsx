@@ -129,7 +129,7 @@ export function HeroChat() {
         <AidekinMark className="size-5 text-foreground" coreClassName="fill-primary" />
         <span className="flex-1 truncate font-display text-sm font-semibold">aidekin</span>
         <span className="mono-kicker text-[10px] normal-case tracking-normal">
-          {phase === 'voice' ? 'voice' : 'on-device'}
+          {phase === 'voice' ? 'voice' : 'text'}
         </span>
       </header>
 
