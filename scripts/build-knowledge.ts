@@ -1,5 +1,5 @@
 // Build a knowledge.bin from local files and/or URLs, using the SAME chunker, embedder
-// and binary format as the browser builder — that shared code is what guarantees the
+// and binary format as the browser builder - that shared code is what guarantees the
 // query vectors match these index vectors (parity). transformers.js uses
 // onnxruntime-node here automatically.
 //
@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   const buf = serializeIndex(chunks, new Date().toISOString())
   await mkdir(dirname(out), { recursive: true })
   await writeFile(out, Buffer.from(buf))
-  console.log(`Wrote ${out} — ${(buf.byteLength / 1024).toFixed(0)} KB, ${chunks.length} chunks.`)
+  console.log(`Wrote ${out} - ${(buf.byteLength / 1024).toFixed(0)} KB, ${chunks.length} chunks.`)
 }
 
 main().catch((e) => {

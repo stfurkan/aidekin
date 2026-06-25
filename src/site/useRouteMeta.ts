@@ -4,7 +4,7 @@ import { useLocation } from 'react-router-dom'
 // Keep the document title + key meta/canonical in sync with the active route. The static tags
 // in index.html are the homepage defaults; this updates them on client navigation so every
 // route reports its own title to browser tabs, history, and JS-executing crawlers. (A non-JS
-// crawler still sees the static homepage tags — build-time prerender would be the deeper fix.)
+// crawler still sees the static homepage tags - build-time prerender would be the deeper fix.)
 
 const SITE = 'aidekin'
 const ORIGIN = 'https://aidekin.com'

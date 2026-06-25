@@ -1,4 +1,4 @@
-// The sonar-ping voice visualization — Aidekin's signature motif. A source core with
+// The sonar-ping voice visualization - Aidekin's signature motif. A source core with
 // waves emanating outward; the core scales with the live mic level. Sized by the parent
 // (pass a size via className, e.g. "size-28").
 

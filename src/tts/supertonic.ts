@@ -1,4 +1,4 @@
-// Supertonic-3 TTS engine — TS port of the official web example
+// Supertonic-3 TTS engine - TS port of the official web example
 // (supertone-inc/supertonic /web/helper.js), specialized to single-utterance
 // synthesis. 4-stage flow-matching pipeline on onnxruntime-web:
 //   text → unicode ids → duration_predictor → text_encoder
@@ -25,7 +25,7 @@ export interface SupertonicSessions {
 }
 
 const DASH_QUOTE: Record<string, string> = {
-  '–': '-', '‑': '-', '—': '-', _: ' ', '“': '"', '”': '"', '‘': "'", '’': "'",
+  '—': '-', '‑': '-', '–': '-', _: ' ', '“': '"', '”': '"', '‘': "'", '’': "'",
   '´': "'", '`': "'", '[': ' ', ']': ' ', '|': ' ', '/': ' ', '#': ' ', '→': ' ', '←': ' ',
 }
 
@@ -99,7 +99,7 @@ export class SupertonicTts {
     const latentLen = Math.max(1, Math.floor((wavLen + chunkSize - 1) / chunkSize))
     const latentMask = new ort.Tensor('float32', new Float32Array(latentLen).fill(1), [1, 1, latentLen])
 
-    // Gaussian noise (Box–Muller). latentMask is all-ones for a single utterance.
+    // Gaussian noise (Box-Muller). latentMask is all-ones for a single utterance.
     let xt = new Float32Array(latentDimVal * latentLen)
     for (let i = 0; i < xt.length; i++) {
       const u1 = Math.max(0.0001, Math.random())

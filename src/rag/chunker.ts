@@ -7,7 +7,7 @@ import { EMBED } from '../models/registry'
 export interface ChunkOptions {
   /** Target chunk size in approximate tokens (kept under the embedder's max). */
   targetTokens?: number
-  /** Fraction of a chunk repeated at the start of the next (0–0.5). */
+  /** Fraction of a chunk repeated at the start of the next (0-0.5). */
   overlapRatio?: number
 }
 

@@ -1,5 +1,5 @@
 // Crash diagnostics that SURVIVE a page reload. A mysterious "the page refreshed
-// on click" is almost always an uncaught error or a renderer/GPU crash — neither of
+// on click" is almost always an uncaught error or a renderer/GPU crash - neither of
 // which is visible after the reload wipes React state. We persist the last error to
 // localStorage and mark "loading in progress" in sessionStorage, so on the next load
 // we can tell the user the page died mid-load and show what killed it.

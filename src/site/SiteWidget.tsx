@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 
 // Dogfood the REAL embed: inject the same loader <script> a customer would paste, so
 // aidekin.com runs the actual product (loader → sandboxed iframe → widget), grounded in
-// our own knowledge file. This is byte-for-byte what an embedder gets — same launcher,
+// our own knowledge file. This is byte-for-byte what an embedder gets - same launcher,
 // same panel. Dev serves the loader from source; the production build emits /loader.js.
 // Because the launcher lives outside React (its own Shadow DOM element), it persists
 // across page navigation, exactly as it would on a customer's site.

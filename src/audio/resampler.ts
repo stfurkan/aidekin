@@ -1,13 +1,13 @@
-// Streaming, state-preserving windowed-sinc (Lanczos) resampler — the SINGLE SOURCE
+// Streaming, state-preserving windowed-sinc (Lanczos) resampler - the SINGLE SOURCE
 // OF TRUTH for mic resampling. The AudioWorklet (pcmWorklet.js) cannot import ES
 // modules at runtime (it is loaded as a standalone asset via addModule), so it keeps
 // a byte-for-byte copy of `lanczos` + `SincResampler` below. KEEP THEM IN SYNC.
-// This module exists so the algorithm is unit-testable headlessly against the ASR —
+// This module exists so the algorithm is unit-testable headlessly against the ASR -
 // the Nemotron encoder degrades badly on aliased input, so a regression here silently
 // breaks transcription in the browser.
 //
 // Quality: Lanczos-a=16 with an anti-alias cutoff at the target Nyquist when
-// downsampling — comparable to ffmpeg's soxr, and far above linear decimation
+// downsampling - comparable to ffmpeg's soxr, and far above linear decimation
 // (which empirically yields blank/garbled transcripts).
 
 export function lanczos(x: number, a: number): number {

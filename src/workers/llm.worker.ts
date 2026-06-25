@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-// LLM worker: the "brain" — PrismML Bonsai (Qwen3-architecture, ternary→ONNX) run on
+// LLM worker: the "brain" - PrismML Bonsai (Qwen3-architecture, ternary→ONNX) run on
 // WebGPU via @huggingface/transformers. Streams tokens, strips Qwen3 <think> blocks,
 // toggles reasoning via the chat template's enable_thinking flag, reuses a cross-turn
 // KV cache (see below), and logs tokens/sec.
@@ -80,12 +80,12 @@ class ThinkFilter {
   }
 }
 
-/** True iff `next` is exactly `cached` plus one new trailing user turn — i.e. a clean
+/** True iff `next` is exactly `cached` plus one new trailing user turn - i.e. a clean
  *  append, so we can extend the KV cache with just that turn instead of re-prefilling.
  *  (We can't compare re-tokenized prompts: Bonsai's template renders an assistant turn
  *  WITH an empty <think> block when it's last but STRIPS it once a newer turn follows,
  *  so a re-tokenized history is never a token-prefix of the cached sequence. We track the
- *  committed MESSAGES instead and append the new turn's delta tokens — see runGeneration.) */
+ *  committed MESSAGES instead and append the new turn's delta tokens - see runGeneration.) */
 function isCleanAppend(cached: readonly ChatMessage[] | null, next: readonly ChatMessage[]): boolean {
   if (!cached || next.length !== cached.length + 1) return false
   if (next[next.length - 1].role !== 'user') return false
@@ -98,7 +98,7 @@ function isCleanAppend(cached: readonly ChatMessage[] | null, next: readonly Cha
 /** Chat-template wrappers, derived from the tokenizer at init so the cache-append never
  *  hardcodes a template. `genPrompt` is what add_generation_prompt appends; `userPrefix`/
  *  `userSuffix` wrap a user turn's content. null when the model isn't standard ChatML, in
- *  which case cache-append is disabled (we fall back to full-prefill — correct, just slower). */
+ *  which case cache-append is disabled (we fall back to full-prefill - correct, just slower). */
 let chatWrap: { genPrompt: string; userPrefix: string; userSuffix: string } | null = null
 
 function deriveChatWrap(tk: PreTrainedTokenizer): typeof chatWrap {
@@ -129,7 +129,7 @@ let stopper: InterruptableStoppingCriteria | null = null
 
 // ── single-flight generation queue (latest-wins) ──────────────────────────────
 // model.generate() must NEVER run twice at once: a second call reassigns the shared
-// `stopper`, orphaning the first run so it keeps chewing the GPU forever — N rapid
+// `stopper`, orphaning the first run so it keeps chewing the GPU forever - N rapid
 // turns then stack N zombie generations that split the GPU N ways (the "stuck for
 // minutes, stops responding" spiral). So we serialize: a new request interrupts the
 // running one and is stashed as `queued`; the in-flight loop picks up only the LATEST
@@ -146,8 +146,8 @@ let queued: GenJob | null = null
 // ── cross-turn KV cache ───────────────────────────────────────────────────────
 // A persistent DynamicCache so each new turn only prefills the NEW turn instead of the
 // whole transcript (the cause of "replies get slower every message").
-//   • kvCache         — the live cache (key/value tensors), kept alive across turns.
-//   • cachedMessages  — the committed conversation (incl. assistant replies) the cache
+//   • kvCache         - the live cache (key/value tensors), kept alive across turns.
+//   • cachedMessages  - the committed conversation (incl. assistant replies) the cache
 //                       physically represents. The cache is reused ONLY when the next
 //                       request is exactly this + one new user turn (isCleanAppend); then
 //                       we feed just that turn's delta tokens. Anything else (think turn,
@@ -206,7 +206,7 @@ async function init(id: string, dtype: string, device: string, eos: number): Pro
   // Derive the ChatML wrappers now so cross-turn cache-append can extend the KV cache with
   // just the new turn. null (non-ChatML template) → cache-append disabled, full-prefill each turn.
   chatWrap = deriveChatWrap(tokenizer)
-  if (!chatWrap) console.warn('[aidekin] LLM: non-ChatML template — cross-turn KV cache disabled')
+  if (!chatWrap) console.warn('[aidekin] LLM: non-ChatML template - cross-turn KV cache disabled')
   model = await withRetry(
     () =>
       AutoModelForCausalLM.from_pretrained(id, {
@@ -230,7 +230,7 @@ async function generate(
   queued = { id, messages, allowThink, resetCache } // latest-wins
   // Stop whatever is mid-flight so the loop can advance to this newest request. A prefill
   // can't be interrupted (the stopper is only checked between decode steps), so the current
-  // run may take a moment to unwind — but it will, and no two runs overlap on the GPU.
+  // run may take a moment to unwind - but it will, and no two runs overlap on the GPU.
   if (currentId !== null && currentId >= 0) {
     invalidateCache = true
     stopper?.interrupt()
@@ -273,7 +273,7 @@ async function runGeneration(
   if (canReuse) {
     // Append the new user turn + generation prompt directly to the live cache. We build the
     // delta from the new turn alone (not by re-tokenizing the history), so the empty-<think>
-    // mismatch never matters — the physical cache stays a self-consistent ChatML transcript.
+    // mismatch never matters - the physical cache stays a self-consistent ChatML transcript.
     const userText = messages[messages.length - 1].content
     const w = chatWrap as NonNullable<typeof chatWrap>
     const deltaStr = `\n${w.userPrefix}${userText}${w.userSuffix}${w.genPrompt}`
@@ -284,7 +284,7 @@ async function runGeneration(
     disposeCache()
     kvCache = new DynamicCache()
     // Toggle reasoning via the template's `enable_thinking` flag (a structural switch the
-    // template understands), NOT by appending "/no_think" to the user text — a small model
+    // template understands), NOT by appending "/no_think" to the user text - a small model
     // can quote that literal string back in its reply (the visible-"/no_think" bug).
     const tplOpts = { add_generation_prompt: true, return_dict: true, enable_thinking: allowThink }
     const inputs = tokenizer.apply_chat_template(
@@ -319,7 +319,7 @@ async function runGeneration(
   })
 
   // We pass past_key_values, so generate() leaves the cache alive (extended by this turn's
-  // tokens) for the next turn. The returned sequence isn't needed — we track the committed
+  // tokens) for the next turn. The returned sequence isn't needed - we track the committed
   // MESSAGES, not token ids (see the cache note above).
   await model.generate({
     ...modelInputs,
@@ -348,7 +348,7 @@ async function runGeneration(
     invalidateCache = false
     disposeCache() // barge-in interrupted mid-generation → cache is unreliable
   } else if (allowThink) {
-    // think turns emit reasoning the stored (stripped) reply won't reproduce — drop the cache.
+    // think turns emit reasoning the stored (stripped) reply won't reproduce - drop the cache.
     disposeCache()
   } else if (full.trim()) {
     // The KV cache now physically holds [prompt(this turn) + reply]. Record the committed

@@ -1,5 +1,5 @@
-// Brand mark — "Bracket Core": two brackets clasping a solid core, [ • ]. Encodes the
-// product truth — a private, self-contained agent that lives INSIDE someone else's page
+// Brand mark - "Bracket Core": two brackets clasping a solid core, [ • ]. Encodes the
+// product truth - a private, self-contained agent that lives INSIDE someone else's page
 // (the brackets read as containment AND as a literal <script> embed; the dot is the
 // on-device core). Deliberately NOT a wifi/sonar arc, sparkle, or chat bubble. The solid
 // core keeps it legible at 16px. currentColor so it inherits theme/accent; the core can

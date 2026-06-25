@@ -1,4 +1,4 @@
-// Soniqo FP16 Nemotron streaming engine — the nvidia FastConformer-RNNT base, with an
+// Soniqo FP16 Nemotron streaming engine - the nvidia FastConformer-RNNT base, with an
 // ONNX streaming contract whose heavy encoder runs on WebGPU. Contract highlights:
 //   • audio_signal is MEL-MAJOR fixed [1, 128, 32]
 //   • language is a 128-wide one-hot `language_mask`, not an int64 lang_id
@@ -8,7 +8,7 @@
 // CRITICAL (matches soniqo's reference speech-core): the mel is computed over the
 // WHOLE continuous audio buffer and each fixed 320 ms window is SLICED from it (with
 // n_fft/2 right-context available before a window is decoded). Computing mel per
-// 320 ms chunk independently — reflect-padding each chunk — creates seam artifacts at
+// 320 ms chunk independently - reflect-padding each chunk - creates seam artifacts at
 // every boundary that garble long words.
 
 import { NemoMelExtractor, type MelConfig } from './melFeatures'
@@ -210,7 +210,7 @@ export class SoniqoStreamingAsr {
     return { ok: true, reason: `ok (min=${mn.toFixed(2)} max=${mx.toFixed(2)})`, output }
   }
 
-  /** Warm the FULL streaming path — encoder + decoder + joint. selfTest() only runs the
+  /** Warm the FULL streaming path - encoder + decoder + joint. selfTest() only runs the
    *  encoder, so without this the FIRST real window would cold-start the decoder/joint
    *  (the first utterance comes back empty/garbled, then it works). Feeds synthetic audio
    *  through the real push/end path, discards the output, and resets to clean state. */
@@ -269,7 +269,7 @@ export class SoniqoStreamingAsr {
           })
           decoderDirty = false
         }
-        const decFrame = decOut[DEC_OUT.out] // [1, 1, 640] — already joint-ready
+        const decFrame = decOut[DEC_OUT.out] // [1, 1, 640] - already joint-ready
         const joinOut = await this.s.joint.run({ [JOIN_IN.enc]: encFrame, [JOIN_IN.dec]: decFrame })
         const best = argmax(joinOut[JOIN_OUT.logits].data as Float32Array)
 

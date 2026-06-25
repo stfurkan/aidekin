@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Check, Copy } from 'lucide-react'
 
 // Docs: a single page with a sticky table-of-contents and anchored sections. No MDX /
-// extra deps — just Ledger-styled React. Content tracks the real implementation
+// extra deps - just Ledger-styled React. Content tracks the real implementation
 // (src/widget/protocol.ts, src/embed/loader.ts, scripts/build-knowledge.ts).
 
 const NAV: { id: string; label: string }[] = [
@@ -204,7 +204,7 @@ export default function Docs() {
               with a voice toggle, or <Code>data-mode="voice"</Code> for a voice-first experience. Voice
               still uses the same language model as text (one shared brain), plus speech recognition and
               synthesis. Those speech models (about 1.6&nbsp;GB) load only the first time a visitor taps the
-              mic, never before — and if a visitor backs out mid-download, the partial files are cleaned up.
+              mic, never before - and if a visitor backs out mid-download, the partial files are cleaned up.
             </P>
             <P>
               Text works on any WebGPU browser with no special setup. Voice&rsquo;s fastest path uses

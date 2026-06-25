@@ -73,7 +73,7 @@ export default defineConfig({
         widget: fileURLToPath(new URL('./widget/index.html', import.meta.url)),
       },
     },
-    // The AudioWorklet must be a standalone file for audioWorklet.addModule() —
+    // The AudioWorklet must be a standalone file for audioWorklet.addModule() -
     // never inline it as a data: URL (fragile under COEP cross-origin isolation).
     assetsInlineLimit: (filePath: string) =>
       filePath.endsWith('pcmWorklet.js') ? false : undefined,

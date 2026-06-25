@@ -1,12 +1,12 @@
 // NeMo FilterbankFeatures-equivalent log-mel extractor for the Nemotron streaming
 // ASR encoder. Reconstructed from genai_config.json + audio_processor_config.json
-// and NeMo's documented preprocessing — the ORT-GenAI C++ (nemo_mel_spectrogram.*)
+// and NeMo's documented preprocessing - the ORT-GenAI C++ (nemo_mel_spectrogram.*)
 // is generated at build time and is NOT in the public repo, so we replicate it and
 // validate empirically by transcript (scripts/asr-spike.ts).
 //
 // Per chunk, matching ORT-GenAI's NemotronStreamingProcessor:
 //   preemphasis(0.97) → STFT(n_fft=512, hop=160, win=400 symmetric-hann, center,
-//   reflect-pad) → power(|·|²) → Slaney mel filterbank(128, 0–8000 Hz)
+//   reflect-pad) → power(|·|²) → Slaney mel filterbank(128, 0-8000 Hz)
 //   → ln(mel + log_eps)
 // Output: Float32Array laid out [num_mels, num_frames] (frequency-major), exactly
 // like the C++ extractor (the streaming processor transposes + caches afterwards).

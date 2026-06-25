@@ -19,7 +19,7 @@ installErrorCapture()
 
 const config = withDefaults(parseConfigFromHash(location.hash))
 
-// The embedding page's origin — used to target postMessage and scope persistence.
+// The embedding page's origin - used to target postMessage and scope persistence.
 const hostOrigin = (() => {
   try {
     return new URL(document.referrer).origin

@@ -1,6 +1,6 @@
 // OPFS-first model-weight cache. Large weights (the ASR encoder data alone is
-// ~690 MB) are STREAMED chunk-by-chunk straight to disk — never accumulated in the
-// JS heap — which avoids the ~2×-per-file memory spike that crashes Safari's
+// ~690 MB) are STREAMED chunk-by-chunk straight to disk - never accumulated in the
+// JS heap - which avoids the ~2×-per-file memory spike that crashes Safari's
 // WebContent process. Writes use OPFS createSyncAccessHandle (worker-only, and the
 // path Safari actually supports), falling back to an in-memory fetch where OPFS is
 // unavailable.
@@ -8,7 +8,7 @@
 // COMPLETENESS: a download is only considered "cached" once it has fully arrived
 // AND its byte length matches Content-Length. We record that by writing a tiny
 // `<key>.done` marker (holding the verified size) ONLY after a successful stream.
-// A file with no marker — or whose size no longer matches — is treated as absent
+// A file with no marker - or whose size no longer matches - is treated as absent
 // and re-downloaded. Without this, a partially-written .onnx.data from an
 // interrupted run is silently handed to ORT and fails with "Out of bounds".
 
@@ -133,7 +133,7 @@ async function streamToOpfs(
     const res = await fetch(url)
     if (!res.ok || !res.body) throw new Error(`fetch ${url} → HTTP ${res.status}`)
     // When the response is compressed (jsDelivr gzips .onnx), Content-Length is the
-    // COMPRESSED size while the stream yields decompressed bytes — so it can't be
+    // COMPRESSED size while the stream yields decompressed bytes - so it can't be
     // used to verify the final size. HF's .onnx.data is uncompressed (identity), so
     // the truncation guard still applies there, which is where it matters most.
     const compressed = !!res.headers.get('content-encoding')
@@ -159,7 +159,7 @@ async function streamToOpfs(
   } catch (err) {
     // Interrupted or failed mid-write: close the handle and DELETE the partial data
     // file so it can't linger as orphaned OPFS bytes. (The marker was already removed
-    // above, so it would be re-fetched anyway — but we drop the bytes eagerly.) A worker
+    // above, so it would be re-fetched anyway - but we drop the bytes eagerly.) A worker
     // TERMINATED mid-write can't run this; pruneIncompleteAssets() sweeps those on next load.
     try {
       access.close()
@@ -210,7 +210,7 @@ export async function hasModelAsset(key: string): Promise<boolean> {
 }
 
 /**
- * Delete any cached data file that has no completion marker — i.e. a partial left by a
+ * Delete any cached data file that has no completion marker - i.e. a partial left by a
  * download that was interrupted (tab closed or worker terminated mid-stream, so the
  * `.catch` cleanup in streamToOpfs never ran). Best-effort, idempotent; call once before
  * a download session so interrupted bytes can't accumulate as orphaned OPFS storage.
@@ -251,7 +251,7 @@ async function pruneIncompleteAssetsImpl(): Promise<number> {
         await dir.removeEntry(name)
         pruned++
       } catch {
-        /* locked by a live worker, or already gone — skip */
+        /* locked by a live worker, or already gone - skip */
       }
     }
   }

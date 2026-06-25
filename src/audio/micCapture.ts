@@ -16,7 +16,7 @@ export interface MicCaptureOptions {
   readonly frameSize?: number
   /**
    * Enable the browser's noise suppression. Default true. Real laptop-mic capture in a
-   * normal room is often only 15–25 dB SNR, so removing background noise meaningfully
+   * normal room is often only 15-25 dB SNR, so removing background noise meaningfully
    * improves ASR accuracy. Set false for a clean/studio mic where suppression's spectral
    * artifacts would otherwise hollow the voice.
    */
@@ -52,9 +52,9 @@ export class MicCapture {
     //  - autoGainControl OFF: it over-amplifies close speech and CLIPS it (peak≈1.0 →
     //    broadband distortion), and boosting signal+noise together doesn't improve SNR.
     //  - echoCancellation OFF: its spectral suppression hollows the voice; barge-in echo
-    //    is handled in software (mic suppressed while our TTS plays — see PlaybackQueue).
+    //    is handled in software (mic suppressed while our TTS plays - see PlaybackQueue).
     //  - noiseSuppression: configurable, DEFAULT ON. Real laptop-mic-in-a-room capture is
-    //    often only 15–25 dB SNR, so removing background noise improves ASR accuracy. Turn
+    //    often only 15-25 dB SNR, so removing background noise improves ASR accuracy. Turn
     //    it off only for a clean/studio mic where suppression artifacts would hurt instead.
     const noiseSuppression = this.opts.noiseSuppression ?? true
     this.stream = await navigator.mediaDevices.getUserMedia({
@@ -73,7 +73,7 @@ export class MicCapture {
     )
 
     // Capture at the device's NATIVE rate and resample to 16 kHz with OUR Lanczos in
-    // the worklet — do NOT force a 16 kHz AudioContext. Forcing it makes the BROWSER
+    // the worklet - do NOT force a 16 kHz AudioContext. Forcing it makes the BROWSER
     // resample, and its built-in resampler can alias enough to degrade the Nemotron
     // encoder; our anti-aliased Lanczos resample is verified clean (headless on 48→16
     // and 44.1→16), so we keep capture on our own path.
@@ -107,7 +107,7 @@ export class MicCapture {
       }
     }
 
-    // Keep the node in the render graph (output is silent — we never write to it).
+    // Keep the node in the render graph (output is silent - we never write to it).
     this.source.connect(this.node)
     this.node.connect(this.ctx.destination)
 

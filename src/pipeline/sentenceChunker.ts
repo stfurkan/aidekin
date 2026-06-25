@@ -3,7 +3,7 @@
 // latency via streaming overlap). A minimum length avoids flushing tiny fragments.
 
 // Break at sentence enders (. ! ? … ; : newline) AND at a comma that's followed by
-// whitespace — the comma break lets the FIRST clause reach TTS sooner (lower time-to-
+// whitespace - the comma break lets the FIRST clause reach TTS sooner (lower time-to-
 // first-audio) without splitting numbers like "1,000" (the lookahead requires a space).
 const BOUNDARY = /.*?(?:[.!?…;:\n]+|,(?=\s))["'”’)\]]*\s*/gs
 

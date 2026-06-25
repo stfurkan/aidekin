@@ -41,11 +41,11 @@ export interface OrchestratorCallbacks {
 
 export interface OrchestratorOptions {
   device: Device // for TTS (LLM + ASR are always WebGPU; VAD/turn always WASM)
-  /** Streaming makeup gain on the ASR signal — lifts a quiet mic to a healthy level.
+  /** Streaming makeup gain on the ASR signal - lifts a quiet mic to a healthy level.
    *  Defaults to false (the gain envelope can clip the first word). */
   micAutoGain?: boolean
   /** Shared-brain mode: reuse this already-loaded engine (and its LLM) instead of
-   *  creating a new one — so text and voice share ONE model with continuous context.
+   *  creating a new one - so text and voice share ONE model with continuous context.
    *  When set, the orchestrator loads only the speech models (VAD/ASR/TTS/Turn). */
   engine?: ConversationEngine
   callbacks?: OrchestratorCallbacks
@@ -57,7 +57,7 @@ const SYSTEM_PROMPT =
   'Always reply in English.'
 
 // After the VAD declares end-of-speech we ask Smart Turn whether the turn is
-// semantically complete. Smart Turn only ACCELERATES finalization — if it says
+// semantically complete. Smart Turn only ACCELERATES finalization - if it says
 // "not complete" (or errors, or is slow), this fallback fires and we finalize
 // anyway, unless the user resumed speaking. Never let one model wedge the loop.
 // Kept tight (the VAD already waited ~1 s of silence via redemptionMs) so a
@@ -81,7 +81,7 @@ export class Orchestrator {
   private readonly useAutoGain: boolean
 
   // These must stay as literal `new Worker(new URL('…', import.meta.url),
-  // { type: 'module' })` calls — that exact form is how Vite bundles each worker.
+  // { type: 'module' })` calls - that exact form is how Vite bundles each worker.
   private readonly vad = new Worker(new URL('../workers/vad.worker.ts', import.meta.url), { type: 'module' })
   private readonly asr = new Worker(new URL('../workers/asr.worker.ts', import.meta.url), { type: 'module' })
   private llm?: Worker // owned only in standalone mode; shared mode reuses the engine's LLM
@@ -129,7 +129,7 @@ export class Orchestrator {
     this.cb = opts.callbacks ?? {}
     this.device = opts.device
     // Auto-gain DEFAULT OFF: verified to drop the first words (the gain envelope ramps
-    // over the onset, distorting it) and it never helped accuracy anyway — quiet audio
+    // over the onset, distorting it) and it never helped accuracy anyway - quiet audio
     // transcribes fine; the real lever is mic noise suppression, not loudness.
     this.useAutoGain = opts.micAutoGain ?? false
     if (opts.engine) {
@@ -178,7 +178,7 @@ export class Orchestrator {
   private saveDebugAudio(): void {
     const pcm = this.lastUtteranceAudio
     if (!pcm || pcm.length === 0) {
-      console.warn('[aidekin] no utterance captured yet — speak a sentence first, then call aidekinSaveAudio()')
+      console.warn('[aidekin] no utterance captured yet - speak a sentence first, then call aidekinSaveAudio()')
       return
     }
     const n = pcm.length
@@ -247,10 +247,10 @@ export class Orchestrator {
     const pruned = await pruneIncompleteAssets().catch(() => 0)
     if (pruned > 0) console.info(`[aidekin] pruned ${pruned} incomplete model file(s) from a prior interrupted download`)
 
-    // Sequential — bounds peak JS heap + GPU memory to one model at a time.
+    // Sequential - bounds peak JS heap + GPU memory to one model at a time.
     await this.initWorker(this.vad, { kind: 'init', assetBase: modelSource('vad') }, 'VAD', false)
     await this.initWorker(this.turn, { kind: 'init', modelBase: '/models/turn' }, 'Turn', true)
-    // ASR: the FP16 Nemotron, encoder on WebGPU (real-time). Single engine — WebGPU
+    // ASR: the FP16 Nemotron, encoder on WebGPU (real-time). Single engine - WebGPU
     // is required (as it is for the LLM). Streams from the HF CDN, caches to OPFS.
     await this.initWorker(this.asr, { kind: 'init', modelBase: modelSource('asr'), device: 'webgpu' }, 'ASR', false)
     await this.initWorker(this.tts, { kind: 'init', modelBase: modelSource('tts'), device: this.device }, 'TTS', false)
@@ -260,7 +260,7 @@ export class Orchestrator {
     if (this.llm) {
       const llmInit: LlmIn = { kind: 'init', model: LLM.hfModelId, dtype: LLM.dtype, device: LLM.device, eosTokenId: LLM.eosTokenId }
       await this.initWorker(this.llm, llmInit, 'LLM', false)
-      // Worker is loaded + initialized — hand it to the engine, which now drives
+      // Worker is loaded + initialized - hand it to the engine, which now drives
       // generation. onLlm forwards token/done events to engine.handleLlmMessage().
       this.engine.adoptLlmWorker(this.llm)
     }
@@ -341,7 +341,7 @@ export class Orchestrator {
       }
     }
     // Reject any pending worker-init waiters so an in-flight load() rejects instead of hanging
-    // (e.g. the user abandoned voice mid-download — see useTextController.toggleVoice). Snapshot
+    // (e.g. the user abandoned voice mid-download - see useTextController.toggleVoice). Snapshot
     // first: a reject microtask must not mutate the Map mid-iteration.
     const pending = [...this.waiters.entries()]
     this.waiters.clear()
@@ -351,12 +351,12 @@ export class Orchestrator {
     if (this.ownsEngine) {
       this.engine.dispose()
     } else {
-      // Shared engine belongs to the widget — just detach voice, don't tear it down.
+      // Shared engine belongs to the widget - just detach voice, don't tear it down.
       this.engine.abort()
       this.engine.setChunkClauses(false)
       this.engine.setClauseSink(null)
     }
-    // Terminating the workers aborts any in-flight model download — so abandoning voice
+    // Terminating the workers aborts any in-flight model download - so abandoning voice
     // mid-load stops the ~1.6 GB transfer immediately instead of draining in the background.
     for (const w of [this.vad, this.asr, this.llm, this.tts, this.turn]) w?.terminate()
     // Then sweep any partially-written weights the terminated workers left (no .done marker),
@@ -373,8 +373,8 @@ export class Orchestrator {
   }
 
   // ── mic → VAD (+ live ASR stream) ─────────────────────────────────────────
-  // The mic drives the VAD gate, fills the rolling pre-onset buffer, and — while a
-  // turn is active — STREAMS frames to the ASR worker so transcription happens live.
+  // The mic drives the VAD gate, fills the rolling pre-onset buffer, and - while a
+  // turn is active - STREAMS frames to the ASR worker so transcription happens live.
   // Software echo handling: browser AEC is OFF (it hurts ASR), so we drop mic frames while our
   // TTS is audible OR a clause is still queued/synthesizing (liveTtsIds). Gating on liveTtsIds
   // (not just playback.playing) closes the gap BETWEEN clauses, where playback.playing briefly
@@ -387,7 +387,7 @@ export class Orchestrator {
     this.pushPreBuffer(keep)
     if (this.muted) return // muted: keep the pre-onset buffer fresh, but do not listen
     if (this.inUserTurn) {
-      // Auto-gain the ASR copy only (NOT the VAD frame — boosting room tone would
+      // Auto-gain the ASR copy only (NOT the VAD frame - boosting room tone would
       // false-trigger the gate). process() may return `samples` itself when no boost is
       // needed, so slice() to get a transferable buffer that won't detach `samples`.
       const gained = this.useAutoGain ? this.autoGain.process(samples) : samples
@@ -427,7 +427,7 @@ export class Orchestrator {
     if (this.lifecycle('VAD', m)) return
     if (m.kind === 'speech-start') {
       console.info('[aidekin] VAD speech-start')
-      // The user (re)started talking — cancel any pending end-of-turn finalize.
+      // The user (re)started talking - cancel any pending end-of-turn finalize.
       this.clearFinalizeTimer()
       if (this.state === 'speaking' || this.state === 'thinking') this.bargeIn()
       if (!this.inUserTurn) this.beginUserTurn()
@@ -475,7 +475,7 @@ export class Orchestrator {
     this.finalizeTimer = setTimeout(() => {
       this.finalizeTimer = null
       if (this.inUserTurn && !this.vadSpeaking) {
-        console.info('[aidekin] turn fallback fired — finalizing without a complete verdict')
+        console.info('[aidekin] turn fallback fired - finalizing without a complete verdict')
         this.finalizeUserTurn()
       }
     }, TURN_FALLBACK_MS)
@@ -504,7 +504,7 @@ export class Orchestrator {
     this.lastUtteranceAudio = utter
     this.turnDebug = []
     // The stream was fed live; just flush the sub-chunk tail for the final transcript.
-    console.info(`[aidekin] finalize turn — flushing ASR (id=${this.currentAsrId})`)
+    console.info(`[aidekin] finalize turn - flushing ASR (id=${this.currentAsrId})`)
     this.post(this.asr, { kind: 'flush', id: this.currentAsrId })
   }
 
@@ -518,7 +518,7 @@ export class Orchestrator {
       // Always apply a final (show the transcript) so the user's words are never lost, even
       // when turns arrive back-to-back. Latest-RESPONSE-wins is handled in the engine instead
       // (a new generation aborts the in-flight one in generate()), so rapid turns don't pile
-      // up on the LLM — without dropping any spoken text.
+      // up on the LLM - without dropping any spoken text.
       this.cb.onUserTranscript?.(m.text, true)
       const text = m.text.trim()
       console.info(`[aidekin] ASR final: "${text}"`)
@@ -526,7 +526,7 @@ export class Orchestrator {
         if (this.ownsEngine) {
           void this.engine.sendUserMessage(text) // engine callbacks drive state
         } else {
-          // Shared engine carries the widget's callbacks (not ours) — drive orb state here.
+          // Shared engine carries the widget's callbacks (not ours) - drive orb state here.
           this.setState('thinking')
           void this.engine
             .sendUserMessage(text)
@@ -535,7 +535,7 @@ export class Orchestrator {
         }
       } else if (
         // Empty transcript (a noise/false-trigger turn). Only settle the orb to idle
-        // ("Listening") when nothing is actually happening — otherwise a reply that's
+        // ("Listening") when nothing is actually happening - otherwise a reply that's
         // still generating or being spoken gets hidden behind "Listening". (The empty
         // placeholder bubble is dropped separately in the controller.)
         !this.engine.isGenerating &&
@@ -673,7 +673,7 @@ export class Orchestrator {
     if (w) {
       this.waiters.delete(label)
       if (w.optional) {
-        // Smart Turn is optional — degrade to VAD-only turn ending (turnReady stays false).
+        // Smart Turn is optional - degrade to VAD-only turn ending (turnReady stays false).
         w.resolve()
       } else {
         w.reject(new Error(`${label} failed to load: ${message}`))

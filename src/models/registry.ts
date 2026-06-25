@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Aidekin model + runtime registry — the SINGLE SOURCE OF TRUTH.
+// Aidekin model + runtime registry - the SINGLE SOURCE OF TRUTH.
 //
 // Every repo ID and version below was VERIFIED against npm + the Hugging Face Hub
 // on 2026-06-17 (see README → "Models"). To swap a model, edit one entry here; each
@@ -27,10 +27,10 @@ const vadVersion = typeof __VAD_VERSION__ === 'string' ? __VAD_VERSION__ : 'late
 // ONNX by onnx-community and run on WebGPU by @huggingface/transformers (verified
 // API; the live demo webml-community/bonsai-webgpu works). It keeps the Qwen3 chat
 // template + <think> behaviour, so the worker's prompt handling is unchanged. The
-// `q1` ONNX is actually 2-bit MatMulNBits (ternary packed) — a real ~290 MB download.
+// `q1` ONNX is actually 2-bit MatMulNBits (ternary packed) - a real ~290 MB download.
 //
 // CAVEAT (verified): ort-web has no 2-bit MatMulNBits WebGPU kernel on Apple GPUs, so
-// the weights dequantize to fp16 in VRAM — a 4B → ~8 GB, which OOMs (std::bad_alloc)
+// the weights dequantize to fp16 in VRAM - a 4B → ~8 GB, which OOMs (std::bad_alloc)
 // alongside the resident ASR+TTS. The 1.7B (~3.4 GB dequantized) is the largest Bonsai
 // that fits with the speech stack, and is the proven demo size. Measure tokens/sec in
 // the console.
@@ -42,13 +42,13 @@ export const LLM = {
   eosTokenId: 151645, //                           <|im_end|>
 } as const
 
-// ── ASR (Nemotron 3.5 streaming, FP16 → WebGPU — the ONE AND ONLY engine) ─────
+// ── ASR (Nemotron 3.5 streaming, FP16 → WebGPU - the ONE AND ONLY engine) ─────
 // One model, one path. The heavy FastConformer-RNNT encoder runs FP16 on WebGPU
 // (RTF≪1 → real-time streaming); decoder/joint run on WASM. We drive the three ONNX
 // sessions ourselves (no onnxruntime-genai, no sherpa-onnx): log-mel features →
 // cache-aware streaming encoder → greedy RNNT decode (see asr/soniqoAsr.ts).
 //
-// WebGPU is REQUIRED for ASR — as it already is for the LLM. The former int4/WASM CPU
+// WebGPU is REQUIRED for ASR - as it already is for the LLM. The former int4/WASM CPU
 // export was REMOVED: in the browser it ran ~20× slower than real-time (90s+/turn), so
 // it could never be the live path; it only added a dual-engine code path for a tiny
 // clean-audio WER edge that mic quality dwarfs anyway.
@@ -98,12 +98,12 @@ export const ASR = {
     numPrompts: 128,
     maxSymbolsPerStep: 10,
   },
-  // `language_mask` one-hot index — canonical prompt_dictionary (the repo's languages.json).
+  // `language_mask` one-hot index - canonical prompt_dictionary (the repo's languages.json).
   // English-only: index 0. (The model supports 100+ via the prompt dictionary.)
   langId: { en: 0 } as Record<string, number>,
 } as const
 
-// ── Turn detection (Smart Turn v3 — confirmed real) ──────────────────────────
+// ── Turn detection (Smart Turn v3 - confirmed real) ──────────────────────────
 export const TURN = {
   runtime: 'transformers.js' satisfies Runtime,
   hfModelId: 'onnx-community/smart-turn-v3-ONNX',
@@ -115,7 +115,7 @@ export const TURN = {
 
 // ── VAD (Silero, bundled in @ricky0123/vad-web) ──────────────────────────────
 // vad.worker.ts loads Silero v5 directly (SileroV5 + silero_vad_v5.onnx) with
-// 512-sample @16 kHz frames — matching the mic worklet's 512-sample frame size.
+// 512-sample @16 kHz frames - matching the mic worklet's 512-sample frame size.
 // (NOTE: @ricky0123/vad-web's own MicVAD defaults to 'legacy'/v4; we deliberately
 // pin v5 for the smaller frame = lower detection latency.)
 export const VAD = {
@@ -124,7 +124,7 @@ export const VAD = {
   frameSamples: 512,
 } as const
 
-// ── TTS (Supertonic-3 — confirmed real) ──────────────────────────────────────
+// ── TTS (Supertonic-3 - confirmed real) ──────────────────────────────────────
 // ~99M params, multilingual; we synthesize English (<en> wrapper). Official browser
 // example uses onnxruntime-web + fft.js.
 export const TTS = {
@@ -149,7 +149,7 @@ export const TTS = {
 // (~42 → ~52 nDCG@10 on MTEB/BEIR), which is exactly what matters when grounding a small
 // 1.7B LLM (a wrong top-1 chunk poisons the answer). Runs on the WASM (CPU) backend in
 // the browser so it never competes with the LLM for the GPU, and identically in Node
-// (onnxruntime-node) for the build CLI — the SAME model + dtype + pooling in both is what
+// (onnxruntime-node) for the build CLI - the SAME model + dtype + pooling in both is what
 // keeps query vectors compatible with the precomputed index (parity). q8 is safe on both
 // runtimes (q4f16 has an onnxruntime-node fusion bug); int8 is applied only to the stored
 // corpus vectors. bge-v1.5 needs NO query prefix; 'mean' pooling A/B-beat 'cls' here.
@@ -175,7 +175,7 @@ const HF_RESOLVE = (repo: string): string => `https://huggingface.co/${repo}/res
 export const ORT_WASM_CDN = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortVersion}/dist/`
 
 /**
- * Base URL for a model role's weights. NOTHING is self-hosted by default — dev and
+ * Base URL for a model role's weights. NOTHING is self-hosted by default - dev and
  * prod behave identically (everything streams from a CDN, then caches to OPFS for
  * offline use). Keeps the deploy lean (no ~1.2 GB shipped) and dev clean + testable:
  *   • asr / tts → Hugging Face CDN (verified CORS-clean → passes COEP require-corp)

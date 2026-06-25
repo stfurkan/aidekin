@@ -5,7 +5,7 @@
 // Fed 512-sample @16 kHz frames from the mic worklet (Silero v5's native frame size).
 
 import * as ort from 'onnxruntime-web/wasm'
-// Import only the DOM-free submodules — the package index pulls in MicVAD /
+// Import only the DOM-free submodules - the package index pulls in MicVAD /
 // asset-path code that touches `document`, which throws inside a Web Worker.
 import { FrameProcessor, type FrameProcessorOptions } from '@ricky0123/vad-web/dist/frame-processor'
 import { Message } from '@ricky0123/vad-web/dist/messages'
@@ -28,7 +28,7 @@ let fp: FrameProcessor | null = null
 // Serialize all work onto one promise chain (mirrors asr.worker.ts). Mic frames
 // arrive every ~32 ms; Silero v5 WASM inference can take longer than that while the
 // CPU is busy with ASR/TTS, so unserialized handlers overlap. The hazard isn't the
-// FrameProcessor's counters (those mutate synchronously after its single await) — it's
+// FrameProcessor's counters (those mutate synchronously after its single await) - it's
 // that Silero is a stateful RNN that reads → awaits session.run → writes its hidden
 // state, and ort sessions aren't safe to run concurrently. Overlap corrupts that state
 // and the probability stream, so `speech-end` (31 consecutive sub-threshold frames)

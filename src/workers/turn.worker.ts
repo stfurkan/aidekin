@@ -24,7 +24,7 @@ ort.env.wasm.numThreads = wasmThreads()
 
 // From preprocessor_config.json: chunk_length 8 s · sampling_rate 16 kHz ·
 // nb_max_frames 800 · feature_size 80. The ONNX graph's `input_features` is fixed
-// at [1, 80, 800] — Whisper's default extractor pads to 3000 (30 s), which would
+// at [1, 80, 800] - Whisper's default extractor pads to 3000 (30 s), which would
 // shape-fault the run, so we pin the feature length to 800 ourselves.
 const MAX_SAMPLES = 8 * 16000
 const NUM_MELS = 80

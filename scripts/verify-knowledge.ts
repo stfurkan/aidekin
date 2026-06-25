@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   }
   console.log(`Parity: ${pass}/${checked} sampled chunks self-retrieve as top-1 (score ≥ ${MIN_SCORE}).`)
   if (pass < checked) {
-    console.error('FAILED — embedder/format mismatch.')
+    console.error('FAILED - embedder/format mismatch.')
     process.exit(1)
   }
   console.log('OK.')

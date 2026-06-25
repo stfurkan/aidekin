@@ -2,7 +2,7 @@
 // AGC off capture quiet speech (peak ~0.13); this lifts it toward a healthy level so
 // the encoder and VAD see a consistent amplitude.
 //
-// HONEST SCOPE: gain raises LOUDNESS, not SNR — it scales signal and noise together,
+// HONEST SCOPE: gain raises LOUDNESS, not SNR - it scales signal and noise together,
 // so on its own it does NOT fix low-SNR garbling (that's what mic noiseSuppression is
 // for). It pairs WITH noise suppression: denoise raises SNR, then this lands the clean
 // signal at a good level. Kept gentle (noise-gated, smoothed, capped) so it never pumps

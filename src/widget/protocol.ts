@@ -5,7 +5,7 @@
 import type { WidgetMode } from '@/core/capabilities'
 
 export interface WidgetConfig {
-  /** text | voice | both — voice is an in-widget opt-in toggle. */
+  /** text | voice | both - voice is an in-widget opt-in toggle. */
   mode: WidgetMode
   /** Owner-set persona. Delivered to the visitor's browser → NOT a secret. */
   systemPrompt?: string
@@ -33,7 +33,7 @@ export interface WidgetConfig {
 }
 
 /** The effective system prompt: the owner's custom one if set, otherwise a friendly
- *  default that adopts the widget's title as the assistant's name — so it introduces
+ *  default that adopts the widget's title as the assistant's name - so it introduces
  *  itself as "Aidekin" (or the owner's chosen name), never the underlying model name. */
 export function resolveSystemPrompt(config: Pick<WidgetConfig, 'systemPrompt' | 'title'>): string {
   const custom = config.systemPrompt?.trim()

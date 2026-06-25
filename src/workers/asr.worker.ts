@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-// ASR worker: Nemotron 3.5 streaming (FP16 export) on onnxruntime-web — the ONE
+// ASR worker: Nemotron 3.5 streaming (FP16 export) on onnxruntime-web - the ONE
 // engine. The heavy FastConformer encoder runs on WebGPU (real-time); decoder/joint
 // run on WASM. Weights stream from the HF CDN (or VITE_MODEL_CDN) and cache to OPFS
 // via modelStore; external .onnx.data blobs are supplied to the session explicitly.
@@ -31,7 +31,7 @@ let streamPeak = 0
 let streamLen = 0
 let streamT0 = 0
 
-// Serialize all work onto one chain — ort sessions can't run concurrently, and a
+// Serialize all work onto one chain - ort sessions can't run concurrently, and a
 // late transcribe (after a barge-in) must not overlap the previous one.
 let chain: Promise<void> = Promise.resolve()
 ctx.onmessage = (ev: MessageEvent<AsrIn>) => {
@@ -68,7 +68,7 @@ async function createSession(
   return ort.InferenceSession.create(new Uint8Array(model), {
     executionProviders: eps,
     graphOptimizationLevel: 'all',
-    logSeverityLevel: 3, // error only — hide the benign constant-fold / EP-assignment warnings
+    logSeverityLevel: 3, // error only - hide the benign constant-fold / EP-assignment warnings
     externalData: [{ path: dataRel.split('/').pop() as string, data: new Uint8Array(data) }],
   })
 }
@@ -79,7 +79,7 @@ const wrap = (s: ort.InferenceSession): OrtSession => ({
 
 // FP16 Nemotron: encoder on WebGPU (real-time), decoder/joint on WASM. WebGPU is
 // required (as it is for the LLM); if the FP16 encoder self-test fails we surface a
-// clear error rather than silently degrading — there is no second engine.
+// clear error rather than silently degrading - there is no second engine.
 async function init(base: string, device: Device): Promise<void> {
   const f = ASR.files
   const vocabBuf = await loadAsset(base, f.vocab)
@@ -114,7 +114,7 @@ async function init(base: string, device: Device): Promise<void> {
     return
   }
 
-  // WebGPU candidate — VERIFY it (a) agrees with WASM and (b) is actually FASTER. Some
+  // WebGPU candidate - VERIFY it (a) agrees with WASM and (b) is actually FASTER. Some
   // GPUs (notably Apple) run ort-web's WebGPU FP16 kernels incorrectly or fall back to
   // CPU op-by-op, producing output that is slow AND/OR wrong (blank) yet still passes a
   // NaN/variance check. If WebGPU either disagrees or isn't faster than WASM, use WASM.
@@ -122,7 +122,7 @@ async function init(base: string, device: Device): Promise<void> {
   await encWasm.release()
   const encGpu = await createSession(base, f.encoder, f.encoderData, ['webgpu', 'wasm'])
   const gpuEngine = mkEngine(encGpu)
-  await gpuEngine.selfTest() // warmup (compiles WebGPU shaders — slow first call)
+  await gpuEngine.selfTest() // warmup (compiles WebGPU shaders - slow first call)
   const tG = performance.now()
   const gpu = await gpuEngine.selfTest()
   const gpuMs = performance.now() - tG
@@ -135,15 +135,15 @@ async function init(base: string, device: Device): Promise<void> {
     return
   }
 
-  const why = sim <= 0.9 ? `wrong output (cos=${sim.toFixed(3)})` : `not faster (${gpuMs.toFixed(0)}≥${wasmMs.toFixed(0)}ms — CPU fallback)`
+  const why = sim <= 0.9 ? `wrong output (cos=${sim.toFixed(3)})` : `not faster (${gpuMs.toFixed(0)}≥${wasmMs.toFixed(0)}ms - CPU fallback)`
   console.warn(`[aidekin] ⚠️ WebGPU encoder unreliable on this GPU: ${why}. Using the WASM encoder (correct${gpuMs < wasmMs ? '' : ', and not slower'}).`)
   await encGpu.release()
   asr = mkEngine(await createSession(base, f.encoder, f.encoderData, ['wasm']))
-  await finishInit('Nemotron ASR (fp16 · wasm — WebGPU unreliable here)')
+  await finishInit('Nemotron ASR (fp16 · wasm - WebGPU unreliable here)')
 }
 
 // Warm the full streaming path (encoder + decoder + joint) on the CHOSEN engine, then
-// reset, then announce ready — so the first real utterance isn't a cold start.
+// reset, then announce ready - so the first real utterance isn't a cold start.
 async function finishInit(info: string): Promise<void> {
   if (asr) {
     const t = performance.now()
@@ -178,7 +178,7 @@ function cosineSim(a: Float32Array, b: Float32Array): number {
 async function onChunk(id: number, samples: Float32Array): Promise<void> {
   if (!asr || !detok) return
 
-  // Running audio-health diagnostic (logged at flush): healthy speech peaks 0.1–1.0.
+  // Running audio-health diagnostic (logged at flush): healthy speech peaks 0.1-1.0.
   if (streamLen === 0) streamT0 = performance.now()
   for (let i = 0; i < samples.length; i++) {
     const a = samples[i] < 0 ? -samples[i] : samples[i]
@@ -204,7 +204,7 @@ async function onFlush(id: number): Promise<void> {
       `peak=${streamPeak.toFixed(3)} → "${text}" (${(performance.now() - streamT0).toFixed(0)}ms)`,
   )
   if (streamPeak > 0.98) {
-    console.warn(`[aidekin] ⚠️ mic clipping (peak=${streamPeak.toFixed(3)}) — lower system input gain; ASR accuracy is degraded by clipping`)
+    console.warn(`[aidekin] ⚠️ mic clipping (peak=${streamPeak.toFixed(3)}) - lower system input gain; ASR accuracy is degraded by clipping`)
   }
   post({ kind: 'final', id, text })
   resetStream()

@@ -1,6 +1,6 @@
-// Aidekin embed loader — the ~2 KB script a site owner drops in. On page load it does
+// Aidekin embed loader - the ~2 KB script a site owner drops in. On page load it does
 // ONE thing: draw a floating launcher (inside a Shadow DOM, so host page CSS can't
-// touch it). The widget iframe — and therefore all widget JS + the model download —
+// touch it). The widget iframe - and therefore all widget JS + the model download -
 // is created only on the FIRST open. Nothing heavy touches the host page's load.
 
 import type { WidgetConfig } from '@/widget/protocol'
@@ -179,7 +179,7 @@ function init(): void {
   shadow.appendChild(panel)
 
   // Branded loading overlay, sitting above the iframe until the widget reports 'ready'. Lives
-  // in the host page so it shows the instant the panel opens — no blank box during the first
+  // in the host page so it shows the instant the panel opens - no blank box during the first
   // iframe document + JS fetch. The dot uses the configured accent; the mark matches the app.
   const boot = document.createElement('div')
   boot.className = 'boot'

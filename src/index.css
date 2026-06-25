@@ -1,12 +1,12 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
-/* Type system — a deliberate trio (not the system-font default): Space Grotesk
+/* Type system - a deliberate trio (not the system-font default): Space Grotesk
    (display), Inter (body), JetBrains Mono (the "proof" voice: snippets, figures,
-   section indices). The font files are loaded via <link> in the HTML <head> — a CSS
+   section indices). The font files are loaded via <link> in the HTML <head> - a CSS
    @import gets hoisted below Tailwind's generated rules and warns "must precede". */
 
-/* Radix Colors — jade is the lone accent, red for danger. Neutrals are overridden
+/* Radix Colors - jade is the lone accent, red for danger. Neutrals are overridden
    below with a warm paper/ink scheme (the "Ledger" identity). */
 @import '@radix-ui/colors/slate.css';
 @import '@radix-ui/colors/slate-dark.css';
@@ -121,13 +121,13 @@ body {
 }
 
 @layer utilities {
-  /* Frosted header bar — flat, hairline, no color cloud. */
+  /* Frosted header bar - flat, hairline, no color cloud. */
   .glass {
     background: color-mix(in srgb, var(--background) 82%, transparent);
     backdrop-filter: blur(12px) saturate(120%);
     border: 1px solid var(--border);
   }
-  /* Mono "kicker" / section index — the Ledger identity label. */
+  /* Mono "kicker" / section index - the Ledger identity label. */
   .mono-kicker {
     font-family: var(--font-mono);
     font-size: 0.72rem;
@@ -146,7 +146,7 @@ body {
   }
 }
 
-/* ── Sonar ping (voice visualization) — the in-widget voice motif: a source +
+/* ── Sonar ping (voice visualization) - the in-widget voice motif: a source +
    emanating waves. Sized by the parent (set width/height on .sonar). ─────────── */
 .sonar {
   --hue: var(--jade-9);

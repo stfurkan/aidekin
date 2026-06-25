@@ -10,7 +10,7 @@
     <!-- Pre-paint theme: set the dark class BEFORE first paint so the iframe never flashes a
          white background while the JS bundle loads. Mirrors the logic in widget/main.tsx
          (visitor's stored choice wins, else the owner's data-theme, else OS). Kept tiny and
-         defensive — localStorage may be partitioned in a third-party iframe. -->
+         defensive - localStorage may be partitioned in a third-party iframe. -->
     <script>
       (function () {
         try {

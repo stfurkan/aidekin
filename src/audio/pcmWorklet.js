@@ -3,7 +3,7 @@
 //
 // micCapture.ts captures at the device's NATIVE rate (it does NOT force a 16 kHz
 // AudioContext) and we downsample HERE with an anti-aliased windowed-sinc (Lanczos)
-// kernel — never the browser's resampler, which can alias enough to garble/blank
+// kernel - never the browser's resampler, which can alias enough to garble/blank
 // transcripts (the Nemotron encoder is sensitive to aliasing).
 //
 // CANONICAL SOURCE: src/audio/resampler.ts. The worklet runs as a standalone asset

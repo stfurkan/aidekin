@@ -1,4 +1,4 @@
-// Local capability probe — decides which models can run and how to degrade.
+// Local capability probe - decides which models can run and how to degrade.
 // Everything here is detected locally; nothing is fetched over the network.
 
 export interface WebGpuInfo {
@@ -110,23 +110,23 @@ export function planDegradation(r: CapabilityReport): DegradationPlan {
   const warnings: string[] = []
   if (!r.webgpu.supported) {
     warnings.push(
-      'WebGPU unavailable — the on-device LLM cannot run here. ASR/VAD/TTS may still work on WASM/CPU.',
+      'WebGPU unavailable - the on-device LLM cannot run here. ASR/VAD/TTS may still work on WASM/CPU.',
     )
   }
   if (!r.crossOriginIsolated) {
     warnings.push(
-      'Page is NOT cross-origin isolated — SharedArrayBuffer/WASM threads are disabled. ASR will be slow or fail. Check the COOP/COEP headers.',
+      'Page is NOT cross-origin isolated - SharedArrayBuffer/WASM threads are disabled. ASR will be slow or fail. Check the COOP/COEP headers.',
     )
   }
   if (!r.wasmSimd) {
-    warnings.push('WASM SIMD unavailable — speech models (ASR/turn/TTS) will be significantly slower.')
+    warnings.push('WASM SIMD unavailable - speech models (ASR/turn/TTS) will be significantly slower.')
   }
   if (!r.opfs) {
-    warnings.push('OPFS unavailable — falling back to IndexedDB/Cache Storage for model weights.')
+    warnings.push('OPFS unavailable - falling back to IndexedDB/Cache Storage for model weights.')
   }
   if (r.webgpu.supported && r.webgpu.maxBufferSizeMB && r.webgpu.maxBufferSizeMB < 1024) {
     warnings.push(
-      `Low GPU maxBufferSize (${r.webgpu.maxBufferSizeMB}MB) — the LLM may run slowly or fail to allocate.`,
+      `Low GPU maxBufferSize (${r.webgpu.maxBufferSizeMB}MB) - the LLM may run slowly or fail to allocate.`,
     )
   }
   return {
@@ -203,7 +203,7 @@ export function resolveWidgetCapabilities(r: CapabilityReport, requested: Widget
           constrainedReason,
         }
   }
-  // 'both' — text always works; voice is offered only where supported.
+  // 'both' - text always works; voice is offered only where supported.
   return {
     textAvailable,
     voiceAvailable,

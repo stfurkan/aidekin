@@ -1,10 +1,10 @@
 // OPFS-backed cache for transformers.js model files.
 //
-// WHY: the default browser Cache Storage chokes on a single very large entry — the ~290 MB
+// WHY: the default browser Cache Storage chokes on a single very large entry - the ~290 MB
 // LLM weights fail with "Failed to execute 'put' on 'Cache': Unexpected internal error", so
 // they never persist and re-download on every visit (breaking the "download once, works
-// offline" promise). OPFS handles large files well — it is what we already use for the ASR/TTS
-// weights (see modelStore.ts) — and works inside workers on Safari via sync access handles. We
+// offline" promise). OPFS handles large files well - it is what we already use for the ASR/TTS
+// weights (see modelStore.ts) - and works inside workers on Safari via sync access handles. We
 // wire this in as transformers.js `env.customCache` (the CacheInterface: match/put) so the LLM
 // weights land in OPFS instead of Cache Storage.
 //
@@ -163,7 +163,7 @@ export function installOpfsModelCache(env: CustomCacheEnv): void {
 
 /**
  * True if at least one LLM weight file is fully cached in OPFS (a `.done` marker present),
- * so a repeat visit can show "Loading" instead of "Downloading". Read-only — does NOT create
+ * so a repeat visit can show "Loading" instead of "Downloading". Read-only - does NOT create
  * the directory, and works on the main thread (no sync access handle needed for this check).
  */
 export async function hasLlmCache(): Promise<boolean> {

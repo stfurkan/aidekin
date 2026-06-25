@@ -74,7 +74,7 @@ export type LlmIn =
        *  block is still stripped from the visible output. Used for RAG-grounded turns. */
       readonly think?: boolean
       /** Force the worker to discard its cross-turn KV cache and re-prefill the whole
-       *  transcript — set when the history prefix changed non-append (new session,
+       *  transcript - set when the history prefix changed non-append (new session,
        *  cleared chat, system-prompt change, or a sliding-window trim). */
       readonly resetCache?: boolean
     }

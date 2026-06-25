@@ -87,7 +87,7 @@ async function init(base: string, device: Device): Promise<void> {
   // Warm up the WebGPU pipeline at load time: the FIRST synthesize() otherwise pays a
   // one-time ~10 s shader-compile/allocation cost mid-conversation (a long silent gap
   // before the first reply). Run a throwaway short synth now so the first real reply
-  // is fast. Best-effort — never block readiness on a warmup hiccup.
+  // is fast. Best-effort - never block readiness on a warmup hiccup.
   try {
     const w0 = performance.now()
     await tts.synthesize('Hi.')
