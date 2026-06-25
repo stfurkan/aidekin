@@ -63,6 +63,17 @@ function init(): void {
   const left = config.position === 'bottom-left'
   const side = left ? 'left' : 'right'
   const wantsMic = config.mode === 'voice' || config.mode === 'both'
+  // Solid, theme-matched panel background so the card is never an empty/white box in the
+  // moment between opening and the iframe document painting (matches the widget --background).
+  const prefersDark = (() => {
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches
+    } catch {
+      return false
+    }
+  })()
+  const dark = config.theme === 'dark' || (config.theme !== 'light' && prefersDark)
+  const panelBg = dark ? '#0b0c0e' : '#fbfbf9'
 
   const widgetOrigin =
     config.widgetOrigin?.replace(/\/$/, '') ||
@@ -98,7 +109,7 @@ function init(): void {
         position: fixed; ${side}: 20px; bottom: 20px; z-index: ${Z};
         width: min(384px, calc(100vw - 40px));
         height: min(620px, calc(100vh - 40px));
-        border: 0; border-radius: 14px; overflow: hidden; background: transparent;
+        border: 0; border-radius: 14px; overflow: hidden; background: ${panelBg};
         box-shadow: 0 24px 60px -12px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.06);
         opacity: 0; transform: translateY(12px) scale(.98); transform-origin: bottom ${side};
         transition: opacity .2s ease, transform .2s ease; pointer-events: none;
