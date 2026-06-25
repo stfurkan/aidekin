@@ -205,6 +205,31 @@ async function fetchToBuffer(url: string, onProgress?: ProgressFn): Promise<Arra
   return out.buffer
 }
 
+/**
+ * Persist an ALREADY-in-memory buffer to OPFS, then mark it complete. Unlike streamToOpfs
+ * this never holds the sync access handle across network I/O (the bytes are already in hand),
+ * so it is the safe way to cache the in-memory fallback below - mirrors opfsModelCache.put().
+ * Best-effort; callers ignore failures (the model still works from the buffer).
+ */
+async function writeBufferToOpfs(dir: FileSystemDirectoryHandle, key: string, buf: ArrayBuffer): Promise<void> {
+  const handle = (await dir.getFileHandle(sanitize(key), { create: true })) as SyncCapableFileHandle
+  if (!handle.createSyncAccessHandle) return
+  await removeMarker(dir, key)
+  const access = await handle.createSyncAccessHandle()
+  try {
+    access.truncate(0)
+    const bytes = new Uint8Array(buf)
+    const CHUNK = 8 * 1024 * 1024 // write in 8 MB slices, not one giant call
+    for (let off = 0; off < bytes.length; off += CHUNK) {
+      access.write(bytes.subarray(off, Math.min(off + CHUNK, bytes.length)), { at: off })
+    }
+    access.flush()
+  } finally {
+    access.close()
+  }
+  await writeMarker(dir, key, buf.byteLength)
+}
+
 export async function hasModelAsset(key: string): Promise<boolean> {
   return (await opfsRead(key)) !== null
 }
@@ -273,8 +298,14 @@ export async function getModelAsset(
     onProgress?.({ loaded: cached.byteLength, total: cached.byteLength })
     return cached
   }
-  const onRetry = (n: number, _e: unknown, ms: number): void =>
-    console.warn(`[aidekin] model fetch failed for ${key} (transient); retry ${n} in ${ms}ms`)
+  const onRetry = (n: number, e: unknown, ms: number): void => {
+    const err = e as { name?: string; message?: string }
+    // Include the real reason (handle DOMException vs network reset vs size mismatch) so a
+    // recurring failure on the big external-data files is diagnosable from the console.
+    console.warn(
+      `[aidekin] model fetch failed for ${key} (${err?.name || 'Error'}: ${err?.message || String(e)}); retry ${n} in ${ms}ms`,
+    )
+  }
   const dir = await opfsDir()
   if (dir) {
     try {
@@ -289,8 +320,16 @@ export async function getModelAsset(
       if (err instanceof DOMException && err.name === 'QuotaExceededError') {
         throw new Error('Out of storage space while caching model weights (QuotaExceededError).')
       }
-      // Otherwise fall through to an in-memory fetch (one-shot; not cached).
+      // Otherwise fall through to the in-memory fetch below.
     }
   }
-  return withRetry(() => fetchToBuffer(url, onProgress), { onRetry })
+  // Fallback: stream into memory, then PERSIST the result to OPFS so a future load is served
+  // from cache. The streaming path above can fail on the largest files (it holds an OPFS
+  // handle open across the whole multi-hundred-MB transfer, which intermittently throws);
+  // without writing the buffer back, those big voice weights re-download every session. The
+  // bytes are already in memory here, so writeBufferToOpfs holds the handle only briefly.
+  // Best-effort: a cache-write failure must never fail the load.
+  const buf = await withRetry(() => fetchToBuffer(url, onProgress), { onRetry })
+  if (dir) await writeBufferToOpfs(dir, key, buf).catch(() => undefined)
+  return buf
 }
