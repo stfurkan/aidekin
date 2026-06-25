@@ -26,6 +26,9 @@ export interface TextController {
   cached: boolean
   error: string | null
   send: (text: string) => void
+  /** Begin loading the brain now (call when the user enters a conversation, so opening to
+   *  the mode picker does not download the model before a choice is made). */
+  preload: () => void
   /** Abort the in-flight generation (the "stop" button while thinking). */
   stop: () => void
   /** Re-attempt model load after an error. */
@@ -166,8 +169,9 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
         restored.push({ id: nextId(), role: m.role === 'assistant' ? 'assistant' : 'user', text: m.content })
       }
       if (restored.length) setTurns(restored)
-
-      if (opts.loadOnMount !== false) void ensureLoaded(engine)
+      // NOTE: we no longer auto-load the brain on mount. ChatPanel calls preload() once the
+      // user enters a conversation (picks a mode / lands in the text view), so just opening to
+      // the Type/Talk picker does not pull the ~290 MB model before a choice is made.
     }
 
     return () => {
@@ -244,6 +248,13 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     loadingRef.current = p
     return p
   }, [])
+
+  // Start loading the brain at the moment the user commits to a conversation (mode picked /
+  // text view shown), so the download overlaps with them typing instead of firing at the picker.
+  const preload = useCallback(() => {
+    const engine = engineRef.current
+    if (engine) void ensureLoaded(engine).catch(() => undefined)
+  }, [ensureLoaded])
 
   const send = useCallback(
     (raw: string) => {
@@ -437,6 +448,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     cached,
     error,
     send,
+    preload,
     stop,
     retry,
     clear,

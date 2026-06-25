@@ -111,9 +111,13 @@ export async function clearModelCaches(): Promise<ClearResult> {
   // 1) OPFS - sweep EVERY top-level entry (our 'aidekin-models' plus any legacy/orphaned
   //    dir, e.g. a previous build's web-llm 'tvmjs-opfs-store'). Our origin uses OPFS only
   //    for model weights, so clearing all of it is safe and far more thorough than
-  //    removing one known dir. NOTE: bytes orphaned by an interrupted write (unlinked from
-  //    any handle) are NOT enumerable here and can only be reclaimed by the browser's
-  //    own site-data delete - surfaced to the user in the Storage panel.
+  //    removing one known dir. There is no class of hidden 'orphaned bytes' to worry about:
+  //    every file we write is named in its directory (so it is enumerated here), and an
+  //    interrupted write just leaves a named, marker-less partial that this sweep removes
+  //    too. A file with a live sync-access handle cannot be unlinked, but callers tear the
+  //    workers down (releasing the handles) before calling this, so the sweep completes; if
+  //    one is somehow still held it is reported as 'still locked' and reclaimed on the next
+  //    load. Nothing is left behind that only a browser site-data delete could reach.
   try {
     const root = await navigator.storage.getDirectory()
     const d = root as DirWithEntries

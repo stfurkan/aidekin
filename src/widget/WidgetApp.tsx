@@ -96,6 +96,13 @@ function ChatPanel({
   const view = !picked ? 'picker' : c.voiceActive ? 'voice' : 'text'
   const greeting = config.greeting?.trim()
 
+  // Load the brain the moment the user is in the text conversation: text-only opens straight
+  // here (so it loads on open, same as before), while text+voice arrives only after picking
+  // Type. Voice loads via toggleVoice. Sitting on the picker triggers no download.
+  useEffect(() => {
+    if (loadOnMount !== false && view === 'text') c.preload()
+  }, [view, loadOnMount, c.preload])
+
   return (
     <>
       <div className="flex items-center justify-end gap-1 px-3 pt-2">
