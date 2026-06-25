@@ -101,6 +101,10 @@ export class Orchestrator {
   private vadSpeaking = false
   private turnReady = false
   private muted = false
+  // A speech-start arrived while the assistant was thinking/speaking. We do NOT cancel the
+  // reply yet (a cough/table-knock also fires speech-start); we wait for the ASR to confirm
+  // real words before barging in, and a VAD misfire clears this without touching the reply.
+  private pendingBargeIn = false
   // Rolling ~500 ms of the most recent mic audio, always on, used to seed each new
   // ASR stream so the first word is never clipped by VAD onset latency.
   private preBuffer: Float32Array[] = []
@@ -429,7 +433,11 @@ export class Orchestrator {
       console.info('[aidekin] VAD speech-start')
       // The user (re)started talking - cancel any pending end-of-turn finalize.
       this.clearFinalizeTimer()
-      if (this.state === 'speaking' || this.state === 'thinking') this.bargeIn()
+      // Defer barge-in: a transient noise (cough, table knock, door) also fires speech-start
+      // and must NOT kill an in-flight reply. Mark it pending and start capturing; we only
+      // actually cancel the reply once the ASR confirms real words (onAsr), and a VAD misfire
+      // clears the pending flag without ever touching the reply.
+      if (this.state === 'speaking' || this.state === 'thinking') this.pendingBargeIn = true
       if (!this.inUserTurn) this.beginUserTurn()
       this.vadSpeaking = true
     } else if (m.kind === 'speech-end') {
@@ -445,19 +453,12 @@ export class Orchestrator {
         this.finalizeUserTurn()
       }
     } else if (m.kind === 'misfire') {
-      // Silero retracted a too-short blip (a cough/click, under minSpeechMs). speech-start
-      // already opened a provisional turn, so cancel it: drop the partial ASR stream, clear
-      // the "..." transcript placeholder, and settle the orb back to idle. Without this the
-      // turn (and its placeholder) hangs on "Listening" even though no one is speaking.
+      // Silero retracted a too-short blip (a cough/click/table-knock under minSpeechMs). It was
+      // NOT real speech, so drop the provisional turn WITHOUT barging in - this is what stops a
+      // stray noise from killing an in-flight reply (cancelProvisionalTurn clears pendingBargeIn
+      // and never touches the assistant). The orb resyncs to whatever the reply is doing.
       console.info('[aidekin] VAD misfire (too-short blip) - cancelling provisional turn')
-      this.clearFinalizeTimer()
-      this.vadSpeaking = false
-      if (this.inUserTurn) {
-        this.inUserTurn = false
-        this.post(this.asr, { kind: 'reset' })
-        this.cb.onUserTranscript?.('', true) // empty final drops the placeholder bubble
-        this.settleAfterGeneration()
-      }
+      this.cancelProvisionalTurn()
     }
   }
 
@@ -513,6 +514,13 @@ export class Orchestrator {
     if (m.kind === 'partial') {
       // Drop partials from a superseded stream (a new turn already started).
       if (m.id !== undefined && m.id !== this.currentAsrId) return
+      // First real words while a reply is in flight: NOW it is a genuine interruption, so
+      // barge-in (stop the previous playback/TTS/generation). A noise never reaches here
+      // because it produces no transcript - that is what makes barge-in robust to knocks.
+      if (this.pendingBargeIn && m.text.trim()) {
+        this.bargeIn()
+        this.pendingBargeIn = false
+      }
       this.cb.onUserTranscript?.(m.text, false)
     } else if (m.kind === 'final') {
       // Always apply a final (show the transcript) so the user's words are never lost, even
@@ -523,6 +531,12 @@ export class Orchestrator {
       const text = m.text.trim()
       console.info(`[aidekin] ASR final: "${text}"`)
       if (text) {
+        // Real transcript: confirm the interruption (a fast one-word reply may not have
+        // produced a partial first) so the previous reply's audio/generation is stopped.
+        if (this.pendingBargeIn) {
+          this.bargeIn()
+          this.pendingBargeIn = false
+        }
         if (this.ownsEngine) {
           void this.engine.sendUserMessage(text) // engine callbacks drive state
         } else {
@@ -533,18 +547,13 @@ export class Orchestrator {
             .then(() => this.settleAfterGeneration())
             .catch(() => undefined)
         }
-      } else if (
-        // Empty transcript (a noise/false-trigger turn). Only settle the orb to idle
-        // ("Listening") when nothing is actually happening - otherwise a reply that's
-        // still generating or being spoken gets hidden behind "Listening". (The empty
-        // placeholder bubble is dropped separately in the controller.)
-        !this.engine.isGenerating &&
-        this.liveTtsIds.size === 0 &&
-        !this.playback.playing &&
-        this.state !== 'cold' &&
-        this.state !== 'ready'
-      ) {
-        this.setState('idle')
+      } else {
+        // Empty transcript = a noise/false-trigger turn. Do NOT barge in; clear any pending
+        // barge-in and resync the orb to what the assistant is actually doing, so a stray
+        // noise never hides an in-flight reply behind "Listening". (The empty placeholder
+        // bubble is dropped separately in the controller.)
+        this.pendingBargeIn = false
+        this.resyncOrbState()
       }
     }
   }
@@ -611,9 +620,43 @@ export class Orchestrator {
 
   private speak(text: string): void {
     if (!text.trim()) return
+    // The reply is about to talk, which echo-gates the mic (onMicFrame). A still-open
+    // speculative provisional turn (waiting to confirm a barge-in) could no longer conclude
+    // via the VAD, so resolve it as a non-interruption now to avoid a hung "..." placeholder.
+    // True interrupt-during-speech remains the mute button's job.
+    if (this.pendingBargeIn) this.cancelProvisionalTurn()
     const id = ++this.ttsId
     this.liveTtsIds.add(id)
     this.post(this.tts, { kind: 'speak', id, text })
+  }
+
+  /** Drop a provisional user turn that turned out not to be a real interruption (a VAD misfire,
+   *  an empty transcript, or the reply starting to speak before words were confirmed): clear the
+   *  pending barge-in, reset the ASR stream, drop the "..." placeholder, and resync the orb. The
+   *  assistant's in-flight reply is deliberately left untouched. */
+  private cancelProvisionalTurn(): void {
+    this.pendingBargeIn = false
+    this.clearFinalizeTimer()
+    this.vadSpeaking = false
+    if (this.inUserTurn) {
+      this.inUserTurn = false
+      this.post(this.asr, { kind: 'reset' })
+      this.cb.onUserTranscript?.('', true) // empty final drops the placeholder bubble
+    }
+    this.resyncOrbState()
+  }
+
+  /** Set the orb to what the assistant is actually doing right now: thinking if the LLM is
+   *  generating, speaking if audio is queued/playing, else idle. Used after a misfire or a noise
+   *  turn so a speculative provisional turn doesn't leave the orb stuck on "Listening". */
+  private resyncOrbState(): void {
+    if (this.engine.isGenerating) {
+      this.setState('thinking')
+    } else if (this.playback.playing || this.liveTtsIds.size > 0) {
+      this.setState('speaking')
+    } else if (this.state !== 'cold' && this.state !== 'ready') {
+      this.setState('idle')
+    }
   }
 
   private bargeIn(): void {
