@@ -20,7 +20,7 @@ interface Form {
 }
 
 const INITIAL: Form = {
-  mode: 'both',
+  mode: 'text',
   title: 'aidekin',
   greeting: 'Hi! Ask me anything. I run entirely in your browser.',
   systemPrompt: '',
@@ -110,9 +110,13 @@ export default function Configure() {
 
           <Field label="Mode">
             <select className={inputCls} value={f.mode} onChange={(e) => set('mode', e.target.value as Form['mode'])}>
-              <option value="text">Text only</option>
-              <option value="both">Text + voice</option>
+              <option value="text">Text only (recommended)</option>
+              <option value="both">Text + voice (beta)</option>
             </select>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Text is light and works on any WebGPU browser. Voice is a beta opt-in: it adds a
+              one-time ~1.6&nbsp;GB speech download on first mic tap and works best on desktop.
+            </p>
           </Field>
 
           <Field label="Knowledge file URL (optional, for RAG)">

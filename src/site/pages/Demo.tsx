@@ -73,8 +73,8 @@ export default function Demo() {
       </div>
 
       <p className="mx-auto mt-8 max-w-md text-center text-sm text-muted-foreground">
-        Choose text or voice when it opens. It’s the same assistant either way, running entirely in
-        your browser.
+        Choose text (recommended) or voice when it opens — the same assistant either way, running
+        entirely in your browser. Voice is a beta opt-in and adds a one-time ~1.6&nbsp;GB download.
       </p>
     </section>
   )

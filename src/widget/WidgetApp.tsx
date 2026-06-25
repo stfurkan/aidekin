@@ -150,29 +150,34 @@ function ModePicker({
       <p className="max-w-[240px] text-sm text-muted-foreground">
         {greeting || 'How would you like to chat?'}
       </p>
-      <div className="flex w-full max-w-[240px] flex-col gap-2.5">
+      <div className="flex w-full max-w-[260px] flex-col gap-2.5">
+        {/* Text is the recommended default (lighter, works everywhere) → it's the primary CTA.
+            Voice is a heavier opt-in (large speech download, beta) → secondary. */}
         {canText && (
           <button
             type="button"
             onClick={onType}
-            className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl border border-input px-4 py-3 font-semibold transition-colors hover:bg-secondary"
+            className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl bg-primary px-4 py-3 font-semibold text-primary-foreground transition-opacity hover:opacity-90"
           >
             <span className="inline-flex items-center gap-2 text-sm">
               <Keyboard className="size-4" /> Type
             </span>
-            <span className="text-[10px] font-normal text-muted-foreground">no microphone needed</span>
+            <span className="text-[10px] font-normal text-primary-foreground/90">recommended · no microphone needed</span>
           </button>
         )}
         {canVoice && (
           <button
             type="button"
             onClick={onTalk}
-            className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl bg-primary px-4 py-3 font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+            className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl border border-input px-4 py-3 font-semibold transition-colors hover:bg-secondary"
           >
             <span className="inline-flex items-center gap-2 text-sm">
               <Mic className="size-4" /> Talk
+              <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
+                beta
+              </span>
             </span>
-            <span className="text-[10px] font-normal opacity-80">uses your mic · one-time setup, then instant</span>
+            <span className="text-[10px] font-normal text-muted-foreground">uses your mic · ~1.6 GB on first use</span>
           </button>
         )}
       </div>
@@ -332,12 +337,20 @@ function VoiceView({
         <SonarPing state={loadingVoice ? 'thinking' : voiceState} levelRef={levelRef} className="size-24" />
         <StatusLabel text={status.text} busy={status.busy} />
         {loadingVoice && (
-          <div className="h-1.5 w-40 overflow-hidden rounded-full bg-secondary">
-            <div
-              className="h-full rounded-full bg-primary transition-[width] duration-200"
-              style={{ width: `${Math.max(4, voiceLoadPct * 100)}%` }}
-            />
-          </div>
+          <>
+            <div className="h-1.5 w-40 overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-200"
+                style={{ width: `${Math.max(4, voiceLoadPct * 100)}%` }}
+              />
+            </div>
+            {/* Honest expectation-setting + a visible off-ramp (the "Use text instead" button below
+                actually cancels the download and cleans up — see useTextController.toggleVoice). */}
+            <p className="max-w-60 text-center text-[11px] leading-snug text-muted-foreground">
+              One-time ~1.6&nbsp;GB download — this can take a few minutes. You can switch to text
+              anytime.
+            </p>
+          </>
         )}
       </div>
 
@@ -375,7 +388,7 @@ function VoiceView({
               onClick={onType}
               className="inline-flex items-center gap-1.5 rounded-xl border border-input px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
             >
-              <Keyboard className="size-3.5" /> Type instead
+              <Keyboard className="size-3.5" /> {loadingVoice ? 'Use text instead' : 'Type instead'}
             </button>
           )}
         </div>

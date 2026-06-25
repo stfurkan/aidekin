@@ -104,8 +104,8 @@ function HowItWorks() {
 
 function Features() {
   const items = [
-    { t: 'Text chat', d: 'A fast, lightweight chat that works on any modern WebGPU browser.' },
-    { t: 'Voice, opt-in', d: 'Flip on the mic and the same agent talks back. Speech models load only when used.' },
+    { t: 'Text chat', d: 'The recommended default: a fast, lightweight chat that works on any modern WebGPU browser.' },
+    { t: 'Voice — beta', d: 'Flip on the mic and the same agent talks back. The speech models (~1.6 GB) download only on first use, best on desktop.' },
     { t: 'Local RAG', d: 'Feed it your own content. Retrieval runs in the browser; your data never leaves it.' },
     { t: 'Zero per-message cost', d: 'The model runs on the visitor’s device. No tokens, no metering, no surprise bills.' },
     { t: 'Private by design', d: 'No backend, no API keys, nothing to leak. Works behind corporate firewalls.' },

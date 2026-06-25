@@ -197,12 +197,14 @@ export default function Docs() {
             </Callout>
           </Doc>
 
-          <Doc id="voice" title="Voice">
+          <Doc id="voice" title="Voice (beta)">
             <P>
-              Set <Code>data-mode="both"</Code> for text with a voice toggle, or <Code>data-mode="voice"</Code>{' '}
-              for a voice-first experience. Voice still uses the same language model as text (one shared
-              brain), plus speech recognition and synthesis. Those speech models (about 1.6&nbsp;GB) load
-              only the first time a visitor taps the mic, never before.
+              Voice is a <strong>beta</strong> opt-in; <strong>text is the recommended default</strong>{' '}
+              for most sites (lighter, broader device support). Set <Code>data-mode="both"</Code> for text
+              with a voice toggle, or <Code>data-mode="voice"</Code> for a voice-first experience. Voice
+              still uses the same language model as text (one shared brain), plus speech recognition and
+              synthesis. Those speech models (about 1.6&nbsp;GB) load only the first time a visitor taps the
+              mic, never before — and if a visitor backs out mid-download, the partial files are cleaned up.
             </P>
             <P>
               Text works on any WebGPU browser with no special setup. Voice&rsquo;s fastest path uses
