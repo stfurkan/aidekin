@@ -496,7 +496,17 @@ export class Orchestrator {
             .then(() => this.settleAfterGeneration())
             .catch(() => undefined)
         }
-      } else if (this.state !== 'cold' && this.state !== 'ready') {
+      } else if (
+        // Empty transcript (a noise/false-trigger turn). Only settle the orb to idle
+        // ("Listening") when nothing is actually happening — otherwise a reply that's
+        // still generating or being spoken gets hidden behind "Listening". (The empty
+        // placeholder bubble is dropped separately in the controller.)
+        !this.engine.isGenerating &&
+        this.liveTtsIds.size === 0 &&
+        !this.playback.playing &&
+        this.state !== 'cold' &&
+        this.state !== 'ready'
+      ) {
         this.setState('idle')
       }
     }
