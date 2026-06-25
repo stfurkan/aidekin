@@ -74,6 +74,7 @@ function init(): void {
   })()
   const dark = config.theme === 'dark' || (config.theme !== 'light' && prefersDark)
   const panelBg = dark ? '#0b0c0e' : '#fbfbf9'
+  const logoColor = dark ? '#9aa0a8' : '#5b6068'
 
   const widgetOrigin =
     config.widgetOrigin?.replace(/\/$/, '') ||
@@ -116,6 +117,22 @@ function init(): void {
       }
       .panel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
       .panel iframe { width: 100%; height: 100%; border: 0; display: block; background: transparent; }
+      /* Loading state, drawn in the HOST page (paints instantly) so the panel is never a blank
+         box while the iframe document + JS load. Faded out when the widget posts 'ready'. */
+      .boot {
+        position: absolute; inset: 0; z-index: 2; background: ${panelBg};
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+        transition: opacity .25s ease;
+      }
+      .boot.gone { opacity: 0; pointer-events: none; }
+      .boot svg { width: 34px; height: 34px; color: ${logoColor}; animation: ak-pulse 1.6s ease-in-out infinite; }
+      .boot i {
+        width: 22px; height: 22px; border-radius: 50%;
+        border: 2.5px solid rgba(130,130,140,.22); border-top-color: ${accent};
+        animation: ak-spin .8s linear infinite;
+      }
+      @keyframes ak-spin { to { transform: rotate(360deg); } }
+      @keyframes ak-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
       .hidden { display: none !important; }
       @media (max-width: 480px) {
         .panel { ${side}: 12px; left: 12px; right: 12px; bottom: 12px; top: 12px;
@@ -124,6 +141,7 @@ function init(): void {
       }
       @media (prefers-reduced-motion: reduce) {
         .launcher, .panel { transition: none; }
+        .boot svg, .boot i { animation: none; }
       }
     </style>
   `
@@ -139,6 +157,18 @@ function init(): void {
   const panel = document.createElement('div')
   panel.className = 'panel hidden'
   shadow.appendChild(panel)
+
+  // Branded loading overlay, sitting above the iframe until the widget reports 'ready'. Lives
+  // in the host page so it shows the instant the panel opens — no blank box during the first
+  // iframe document + JS fetch. The dot uses the configured accent; the mark matches the app.
+  const boot = document.createElement('div')
+  boot.className = 'boot'
+  boot.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M8 4 H6 a2 2 0 0 0 -2 2 V18 a2 2 0 0 0 2 2 H8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 4 H18 a2 2 0 0 1 2 2 V18 a2 2 0 0 1 -2 2 H16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="' +
+    accent +
+    '"/></svg><i></i>'
+  panel.appendChild(boot)
+  const hideBoot = (): void => boot.classList.add('gone')
 
   let iframe: HTMLIFrameElement | null = null
   let open = false
@@ -160,6 +190,9 @@ function init(): void {
     )
     if (wantsMic) iframe.setAttribute('allow', `microphone; cross-origin-isolated`)
     panel.appendChild(iframe)
+    // Safety net: if 'ready' never arrives (widget error), still reveal the iframe so its own
+    // fallback/error UI shows instead of an eternal spinner.
+    setTimeout(hideBoot, 15000)
     return iframe
   }
 
@@ -187,8 +220,10 @@ function init(): void {
     if (iframe && e.source !== iframe.contentWindow) return
     const data = e.data as { kind?: string } | null
     if (!data || typeof data.kind !== 'string' || !data.kind.startsWith('aidekin:')) return
-    if (data.kind === 'aidekin:ready') emit('ready')
-    else if (data.kind === 'aidekin:close-request') doClose()
+    if (data.kind === 'aidekin:ready') {
+      hideBoot() // widget has mounted → reveal it
+      emit('ready')
+    } else if (data.kind === 'aidekin:close-request') doClose()
     else if (data.kind === 'aidekin:message') emit('message', data)
   })
 
