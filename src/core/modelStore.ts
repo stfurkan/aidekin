@@ -12,6 +12,8 @@
 // and re-downloaded. Without this, a partially-written .onnx.data from an
 // interrupted run is silently handed to ORT and fails with "Out of bounds".
 
+import { withRetry } from './retry'
+
 export interface FetchProgress {
   readonly loaded: number
   readonly total: number
@@ -259,10 +261,16 @@ export async function getModelAsset(
     onProgress?.({ loaded: cached.byteLength, total: cached.byteLength })
     return cached
   }
+  const onRetry = (n: number, _e: unknown, ms: number): void =>
+    console.warn(`[aidekin] model fetch failed for ${key} (transient); retry ${n} in ${ms}ms`)
   const dir = await opfsDir()
   if (dir) {
     try {
-      const streamed = await streamToOpfs(dir, key, url, onProgress)
+      // Retry transient CDN resets / rate limits; a quota error is permanent, so don't retry it.
+      const streamed = await withRetry(() => streamToOpfs(dir, key, url, onProgress), {
+        shouldRetry: (e) => !(e instanceof DOMException && e.name === 'QuotaExceededError'),
+        onRetry,
+      })
       if (streamed) return streamed
     } catch (err) {
       // Out-of-space → surface clearly instead of silently re-downloading forever.
@@ -272,5 +280,5 @@ export async function getModelAsset(
       // Otherwise fall through to an in-memory fetch (one-shot; not cached).
     }
   }
-  return fetchToBuffer(url, onProgress)
+  return withRetry(() => fetchToBuffer(url, onProgress), { onRetry })
 }
