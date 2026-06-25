@@ -72,7 +72,23 @@ function init(): void {
       return false
     }
   })()
-  const dark = config.theme === 'dark' || (config.theme !== 'light' && prefersDark)
+  // Respect the visitor's saved in-widget theme choice for the launcher + loading overlay.
+  // `aidekin:theme` is the host-side copy relayed from the widget (works on any embedding site);
+  // `aidekin:widget-theme` is the widget's own key (readable here only when same-origin, e.g.
+  // aidekin.com). Falls back to the owner's configured theme, then the OS preference.
+  const savedTheme = (() => {
+    try {
+      return localStorage.getItem('aidekin:theme') || localStorage.getItem('aidekin:widget-theme')
+    } catch {
+      return null
+    }
+  })()
+  const dark =
+    savedTheme === 'dark'
+      ? true
+      : savedTheme === 'light'
+        ? false
+        : config.theme === 'dark' || (config.theme !== 'light' && prefersDark)
   const panelBg = dark ? '#0b0c0e' : '#fbfbf9'
   const logoColor = dark ? '#9aa0a8' : '#5b6068'
 
@@ -225,6 +241,17 @@ function init(): void {
       emit('ready')
     } else if (data.kind === 'aidekin:close-request') doClose()
     else if (data.kind === 'aidekin:message') emit('message', data)
+    else if (data.kind === 'aidekin:theme-changed') {
+      // Persist the visitor's choice host-side so the launcher + overlay match on the next open.
+      const th = (data as { theme?: string }).theme
+      if (th === 'dark' || th === 'light') {
+        try {
+          localStorage.setItem('aidekin:theme', th)
+        } catch {
+          /* storage unavailable */
+        }
+      }
+    }
   })
 
   const mount = () => document.body.appendChild(host)

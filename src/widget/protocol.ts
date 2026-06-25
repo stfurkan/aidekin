@@ -74,6 +74,9 @@ export type WidgetMessage =
   | { readonly kind: 'aidekin:close-request' }
   | { readonly kind: 'aidekin:message'; readonly role: 'user' | 'assistant'; readonly text: string }
   | { readonly kind: 'aidekin:error'; readonly where: string; readonly message: string }
+  // Visitor toggled the in-widget theme → the host loader saves it so the launcher/loading
+  // overlay match on the next open (the loader can't read the iframe's own storage cross-origin).
+  | { readonly kind: 'aidekin:theme-changed'; readonly theme: 'light' | 'dark' }
 
 export function isAidekinMessage(data: unknown): data is { kind: string } {
   return (

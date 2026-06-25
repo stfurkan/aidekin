@@ -599,10 +599,20 @@ function ThemeToggle() {
     const next = !dark
     setDark(next)
     document.documentElement.classList.toggle('dark', next)
+    const theme = next ? 'dark' : 'light'
     try {
-      localStorage.setItem('aidekin:widget-theme', next ? 'dark' : 'light')
+      localStorage.setItem('aidekin:widget-theme', theme)
     } catch {
       /* storage unavailable */
+    }
+    // Tell the host loader so its launcher + loading overlay match on the next open. The loader
+    // validates the source is this iframe; theme is non-sensitive, so '*' is fine. Skipped inline.
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ kind: 'aidekin:theme-changed', theme }, '*')
+      }
+    } catch {
+      /* parent unavailable */
     }
   }
   return (
