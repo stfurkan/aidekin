@@ -139,7 +139,10 @@ export class ConversationEngine {
     this.retriever = opts.retriever ?? null
     this.ragTopK = opts.ragTopK ?? 3
     this.ragCharBudget = opts.ragCharBudget ?? 1500
-    this.ragMinScore = opts.ragMinScore ?? 0.35
+    // Higher gate so small-talk ("hi", "thanks") and off-topic messages do NOT pull doc
+    // chunks and get recited back. Relevant questions still clear it (bge-small scores
+    // genuinely on-topic content ~0.5+). Tunable per deployment.
+    this.ragMinScore = opts.ragMinScore ?? 0.45
     this.chunkClauses = opts.chunkClauses ?? false
     this.alwaysThink = opts.reasoning ?? false
     this.persistKey = opts.persistKey
@@ -281,7 +284,8 @@ export class ConversationEngine {
       'Answer the question using only the information below, in your own words, as if you already ' +
       'knew it. Reply directly in 1-2 sentences. Do NOT mention this information block or use phrases ' +
       'like "the reference", "the text says", "based on the context", or "according to". Do not add ' +
-      "unrelated details. If the answer is not below, say you don't have that information.\n\n" +
+      'unrelated details. Never write a URL, link, or email address unless it appears word for word ' +
+      "in the information below. If the answer is not below, say you don't have that information.\n\n" +
       `<info>\n${used}\n</info>\n\nQuestion: ${userText}`
     const last = this.messages[this.messages.length - 1]
     if (last && last.role === 'user') last.model = augmented
