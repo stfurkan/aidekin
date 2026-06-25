@@ -7,17 +7,11 @@
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers'
 import { EMBED } from '../models/registry'
 import { withRetry } from '../core/retry'
-import { selfHostedOrtWasmPaths } from '../core/ortWasm'
 
 env.allowRemoteModels = true
-// Browser only (the Node CLI uses onnxruntime-node): self-host the ORT wasm same-origin instead
-// of transformers.js's dev-tag jsDelivr default (see ortWasm.ts).
-{
-  const onnxWasm = env.backends.onnx?.wasm
-  if (typeof window !== 'undefined' && onnxWasm) {
-    onnxWasm.wasmPaths = selfHostedOrtWasmPaths()
-  }
-}
+// ORT wasm: use transformers.js's default CDN (jsDelivr, pinned to the exact bundled
+// onnxruntime-web build). The JS glue and wasm must match, so we can't point this at our root
+// onnxruntime-web; the default is the supported path and is already proven under COEP in prod.
 
 export type EmbedProgress = (p: {
   status?: string

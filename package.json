@@ -10,9 +10,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "predev": "node scripts/copy-ort.mjs",
     "dev": "vite",
-    "prebuild": "node scripts/copy-ort.mjs",
     "build": "tsc --noEmit && vite build && vite build --config vite.loader.config.ts",
     "build:app": "vite build",
     "build:loader": "vite build --config vite.loader.config.ts",

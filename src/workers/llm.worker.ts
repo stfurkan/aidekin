@@ -17,19 +17,16 @@ import {
 } from '@huggingface/transformers'
 import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
 import { installOpfsModelCache } from '../core/opfsModelCache'
-import { selfHostedOrtWasmPaths } from '../core/ortWasm'
 import { withRetry } from '../core/retry'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: LlmOut): void => ctx.postMessage(m)
 
 env.allowRemoteModels = true // stream model files from the HF Hub
-// Self-host the ORT wasm same-origin (/ort/) instead of transformers.js's dev-tag jsDelivr
-// default, which could be GC'd and silently break the brain (see ortWasm.ts).
-{
-  const onnxWasm = env.backends.onnx?.wasm
-  if (onnxWasm) onnxWasm.wasmPaths = selfHostedOrtWasmPaths()
-}
+// ORT wasm: leave transformers.js's default CDN (jsDelivr, pinned to the exact immutable
+// onnxruntime-web version it bundles). That's the supported out-of-the-box path; the JS glue
+// and wasm MUST be the same build, so we can NOT substitute our root onnxruntime-web here. The
+// same jsDelivr origin already serves the speech workers' wasm under COEP in production.
 // Cache the ~290 MB model in OPFS, not Cache Storage (which errors on an entry this large, so
 // the weights would otherwise re-download every visit). Best-effort: see opfsModelCache.ts.
 installOpfsModelCache(env)
@@ -97,6 +94,22 @@ let model: PreTrainedModel | null = null
 let tokenizer: PreTrainedTokenizer | null = null
 let eosTokenId = 151645
 let stopper: InterruptableStoppingCriteria | null = null
+
+// ── single-flight generation queue (latest-wins) ──────────────────────────────
+// model.generate() must NEVER run twice at once: a second call reassigns the shared
+// `stopper`, orphaning the first run so it keeps chewing the GPU forever — N rapid
+// turns then stack N zombie generations that split the GPU N ways (the "stuck for
+// minutes, stops responding" spiral). So we serialize: a new request interrupts the
+// running one and is stashed as `queued`; the in-flight loop picks up only the LATEST
+// queued request once the current run fully unwinds. One generation on the GPU at a time.
+interface GenJob {
+  id: number
+  messages: readonly ChatMessage[]
+  allowThink: boolean
+  resetCache: boolean
+}
+let running = false
+let queued: GenJob | null = null
 
 // ── cross-turn KV cache ───────────────────────────────────────────────────────
 // A persistent DynamicCache so each new turn only prefills the NEW tokens instead
@@ -167,7 +180,40 @@ async function init(id: string, dtype: string, device: string, eos: number): Pro
   post({ kind: 'ready', info: `transformers.js ${id} (${dtype}·${device})` })
 }
 
+/** Coordinator: enqueue this turn as the latest, interrupt anything running, and drain
+ *  the queue ONE generation at a time (see the single-flight note above). */
 async function generate(
+  id: number,
+  messages: readonly ChatMessage[],
+  allowThink: boolean,
+  resetCache: boolean,
+): Promise<void> {
+  queued = { id, messages, allowThink, resetCache } // latest-wins
+  // Stop whatever is mid-flight so the loop can advance to this newest request. A prefill
+  // can't be interrupted (the stopper is only checked between decode steps), so the current
+  // run may take a moment to unwind — but it will, and no two runs overlap on the GPU.
+  if (currentId !== null && currentId >= 0) {
+    invalidateCache = true
+    stopper?.interrupt()
+  }
+  if (running) return
+  running = true
+  try {
+    while (queued) {
+      const job = queued
+      queued = null
+      try {
+        await runGeneration(job.id, job.messages, job.allowThink, job.resetCache)
+      } catch (err) {
+        post({ kind: 'error', message: `LLM: ${(err as Error).message}` })
+      }
+    }
+  } finally {
+    running = false
+  }
+}
+
+async function runGeneration(
   id: number,
   messages: readonly ChatMessage[],
   allowThink: boolean,
