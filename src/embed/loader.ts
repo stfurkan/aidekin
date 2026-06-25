@@ -139,7 +139,14 @@ function init(): void {
     iframe = document.createElement('iframe')
     iframe.src = iframeSrc // creating it here = first open → widget JS + model load starts
     iframe.setAttribute('title', config.title || 'aidekin assistant')
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads')
+    // allow-popups-to-escape-sandbox: links the widget opens with target="_blank" (e.g. the
+    // "Powered by aidekin" footer) become NORMAL top-level tabs instead of inheriting the
+    // sandbox. Without it, a popup stays sandboxed and Chrome blocks it from loading any page
+    // served with Cross-Origin-Opener-Policy (our whole site is) → ERR_BLOCKED_BY_RESPONSE.
+    iframe.setAttribute(
+      'sandbox',
+      'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads',
+    )
     if (wantsMic) iframe.setAttribute('allow', `microphone; cross-origin-isolated`)
     panel.appendChild(iframe)
     return iframe
