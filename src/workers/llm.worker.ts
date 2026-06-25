@@ -80,12 +80,44 @@ class ThinkFilter {
   }
 }
 
-/** True iff `a` is a strict prefix of `b` (used to confirm the KV cache's token
- *  sequence still leads the new prompt before we reuse it). */
-function isPrefix(a: readonly number[], b: readonly number[]): boolean {
-  if (a.length === 0 || a.length >= b.length) return false
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+/** True iff `next` is exactly `cached` plus one new trailing user turn — i.e. a clean
+ *  append, so we can extend the KV cache with just that turn instead of re-prefilling.
+ *  (We can't compare re-tokenized prompts: Bonsai's template renders an assistant turn
+ *  WITH an empty <think> block when it's last but STRIPS it once a newer turn follows,
+ *  so a re-tokenized history is never a token-prefix of the cached sequence. We track the
+ *  committed MESSAGES instead and append the new turn's delta tokens — see runGeneration.) */
+function isCleanAppend(cached: readonly ChatMessage[] | null, next: readonly ChatMessage[]): boolean {
+  if (!cached || next.length !== cached.length + 1) return false
+  if (next[next.length - 1].role !== 'user') return false
+  for (let i = 0; i < cached.length; i++) {
+    if (next[i].role !== cached[i].role || next[i].content !== cached[i].content) return false
+  }
   return true
+}
+
+/** Chat-template wrappers, derived from the tokenizer at init so the cache-append never
+ *  hardcodes a template. `genPrompt` is what add_generation_prompt appends; `userPrefix`/
+ *  `userSuffix` wrap a user turn's content. null when the model isn't standard ChatML, in
+ *  which case cache-append is disabled (we fall back to full-prefill — correct, just slower). */
+let chatWrap: { genPrompt: string; userPrefix: string; userSuffix: string } | null = null
+
+function deriveChatWrap(tk: PreTrainedTokenizer): typeof chatWrap {
+  try {
+    const render = (msgs: Array<{ role: string; content: string }>, agp: boolean): string =>
+      tk.apply_chat_template(msgs, { add_generation_prompt: agp, tokenize: false, enable_thinking: false } as never) as unknown as string
+    const SENT = 'SENT'
+    const userOnly = render([{ role: 'user', content: SENT }], false)
+    const userGen = render([{ role: 'user', content: SENT }], true)
+    const genPrompt = userGen.slice(userOnly.length) // e.g. "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    const i = userOnly.indexOf(SENT)
+    if (i < 0 || !genPrompt.includes('assistant')) return null
+    const userPrefix = userOnly.slice(0, i) // "<|im_start|>user\n"
+    const userSuffix = userOnly.slice(i + SENT.length) // "<|im_end|>\n"
+    if (!userPrefix.includes('<|im_start|>') || !userSuffix.includes('<|im_end|>')) return null
+    return { genPrompt, userPrefix, userSuffix }
+  } catch {
+    return null
+  }
 }
 
 // ── worker state ─────────────────────────────────────────────────────────────
@@ -112,22 +144,25 @@ let running = false
 let queued: GenJob | null = null
 
 // ── cross-turn KV cache ───────────────────────────────────────────────────────
-// A persistent DynamicCache so each new turn only prefills the NEW tokens instead
-// of the whole transcript (the cause of "replies get slower every message").
-//   • kvCache    — the live cache (key/value tensors), kept alive across turns.
-//   • cachedIds  — the exact token-id sequence the cache represents.
-// DynamicCache can't be cropped, so we reuse ONLY when cachedIds is a verified
-// prefix of the new prompt (fast mode); anything else (think/RAG turns, history
-// trim, system-prompt change, barge-in abort, a non-round-tripping reply) rebuilds
-// from scratch. Always correct, fast on the common multi-turn path.
+// A persistent DynamicCache so each new turn only prefills the NEW turn instead of the
+// whole transcript (the cause of "replies get slower every message").
+//   • kvCache         — the live cache (key/value tensors), kept alive across turns.
+//   • cachedMessages  — the committed conversation (incl. assistant replies) the cache
+//                       physically represents. The cache is reused ONLY when the next
+//                       request is exactly this + one new user turn (isCleanAppend); then
+//                       we feed just that turn's delta tokens. Anything else (think turn,
+//                       history trim, system-prompt change, barge-in abort) rebuilds.
+// We track MESSAGES, not token ids, because Bonsai's template renders past assistant turns
+// differently from the live one (empty <think> block), so a re-tokenized history is never a
+// token-prefix of what's cached. Appending the delta to the physical cache sidesteps that.
 let kvCache: DynamicCache | null = null
-let cachedIds: number[] = []
+let cachedMessages: ChatMessage[] | null = null
 let invalidateCache = false // set on abort: the partial cache is unusable
 
 function disposeCache(): void {
   if (kvCache) void kvCache.dispose()
   kvCache = null
-  cachedIds = []
+  cachedMessages = null
 }
 
 ctx.onmessage = (ev: MessageEvent<LlmIn>) => {
@@ -168,6 +203,10 @@ async function init(id: string, dtype: string, device: string, eos: number): Pro
     () => AutoTokenizer.from_pretrained(id, { progress_callback: onProgress as never }),
     { onRetry },
   )
+  // Derive the ChatML wrappers now so cross-turn cache-append can extend the KV cache with
+  // just the new turn. null (non-ChatML template) → cache-append disabled, full-prefill each turn.
+  chatWrap = deriveChatWrap(tokenizer)
+  if (!chatWrap) console.warn('[aidekin] LLM: non-ChatML template — cross-turn KV cache disabled')
   model = await withRetry(
     () =>
       AutoModelForCausalLM.from_pretrained(id, {
@@ -223,30 +262,35 @@ async function runGeneration(
   currentId = id
   invalidateCache = false
 
-  // Toggle reasoning via the chat template's `enable_thinking` flag (a structural switch
-  // the template understands), NOT by appending "/no_think" to the user text — a small
-  // model can quote that literal string back in its reply (the visible-"/no_think" bug).
-  // This keeps user content clean AND prefix-stable across turns for the KV cache below.
-  const tplOpts = { add_generation_prompt: true, return_dict: true, enable_thinking: allowThink }
-  const inputs = tokenizer.apply_chat_template(
-    messages as unknown as Array<{ role: string; content: string }>,
-    tplOpts as never,
-  ) as { input_ids: Tensor } & Record<string, unknown>
-  const fullIds = (inputs.input_ids.tolist() as Array<Array<number | bigint>>)[0].map((x) => Number(x))
-
-  // Reuse the cache only if its tokens are a genuine prefix of this prompt (fast
-  // mode, not signalled dirty). Then prefill ONLY the new tail; otherwise rebuild.
+  // Reuse the cache only on a clean append (committed conversation + one new user turn),
+  // and only in non-thinking mode (a stripped <think> block wouldn't be reflected in the
+  // cached tokens) with the ChatML wrappers available. Then feed ONLY the new turn's delta;
+  // otherwise rebuild the whole prompt.
   const canReuse =
-    !resetCache && !allowThink && kvCache !== null && isPrefix(cachedIds, fullIds)
+    !resetCache && !allowThink && chatWrap !== null && kvCache !== null && isCleanAppend(cachedMessages, messages)
 
   let modelInputs: Record<string, unknown>
   if (canReuse) {
-    const deltaIds = fullIds.slice(cachedIds.length)
-    const input_ids = new Tensor('int64', BigInt64Array.from(deltaIds.map(BigInt)), [1, deltaIds.length])
+    // Append the new user turn + generation prompt directly to the live cache. We build the
+    // delta from the new turn alone (not by re-tokenizing the history), so the empty-<think>
+    // mismatch never matters — the physical cache stays a self-consistent ChatML transcript.
+    const userText = messages[messages.length - 1].content
+    const w = chatWrap as NonNullable<typeof chatWrap>
+    const deltaStr = `\n${w.userPrefix}${userText}${w.userSuffix}${w.genPrompt}`
+    const deltaIds = (tokenizer.encode(deltaStr, { add_special_tokens: false } as never) as number[]).map(Number)
+    const input_ids = new Tensor('int64', BigInt64Array.from(deltaIds.map((x) => BigInt(x))), [1, deltaIds.length])
     modelInputs = { input_ids, past_key_values: kvCache } // no attention_mask → ones(past+delta)
   } else {
     disposeCache()
     kvCache = new DynamicCache()
+    // Toggle reasoning via the template's `enable_thinking` flag (a structural switch the
+    // template understands), NOT by appending "/no_think" to the user text — a small model
+    // can quote that literal string back in its reply (the visible-"/no_think" bug).
+    const tplOpts = { add_generation_prompt: true, return_dict: true, enable_thinking: allowThink }
+    const inputs = tokenizer.apply_chat_template(
+      messages as unknown as Array<{ role: string; content: string }>,
+      tplOpts as never,
+    ) as { input_ids: Tensor } & Record<string, unknown>
     modelInputs = { ...inputs, past_key_values: kvCache }
   }
 
@@ -274,10 +318,10 @@ async function runGeneration(
     }) as never,
   })
 
-  // generate() returns the full token sequence it processed (delta when reusing, or
-  // the whole prompt when fresh) PLUS the generated tokens, and — because we pass
-  // past_key_values — leaves the cache alive for next turn.
-  const out = (await model.generate({
+  // We pass past_key_values, so generate() leaves the cache alive (extended by this turn's
+  // tokens) for the next turn. The returned sequence isn't needed — we track the committed
+  // MESSAGES, not token ids (see the cache note above).
+  await model.generate({
     ...modelInputs,
     max_new_tokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
     do_sample: true,
@@ -291,7 +335,7 @@ async function runGeneration(
     eos_token_id: eosTokenId,
     streamer,
     stopping_criteria: stopper,
-  } as never)) as unknown as Tensor
+  } as never)
 
   const tail = think.flush()
   if (tail) {
@@ -302,22 +346,16 @@ async function runGeneration(
   // ── cache bookkeeping ──
   if (invalidateCache) {
     invalidateCache = false
-    disposeCache() // barge-in interrupted mid-generation → cache prefix is unreliable
+    disposeCache() // barge-in interrupted mid-generation → cache is unreliable
   } else if (allowThink) {
-    // think/RAG turns generate reasoning + reference text that the stored plain
-    // history won't reproduce next turn — drop the cache so the next turn rebuilds.
+    // think turns emit reasoning the stored (stripped) reply won't reproduce — drop the cache.
     disposeCache()
+  } else if (full.trim()) {
+    // The KV cache now physically holds [prompt(this turn) + reply]. Record the committed
+    // conversation it represents so the NEXT clean append can extend it.
+    cachedMessages = [...messages, { role: 'assistant', content: full }]
   } else {
-    try {
-      // out = the tokens we fed (delta when reusing, full prompt when fresh) + the
-      // generated reply. Either way cachedIds becomes fullIds ++ generated, exactly
-      // what the cache now holds.
-      const rows = out.tolist() as Array<Array<number | bigint>>
-      const ids = rows[0].map((x) => Number(x))
-      cachedIds = canReuse ? cachedIds.concat(ids) : ids
-    } catch {
-      disposeCache() // couldn't read the sequence → don't risk a stale reuse
-    }
+    disposeCache() // empty reply → nothing committed; don't risk a stale reuse
   }
 
   const tps = tps_(nTokens, tFirst, t0)
