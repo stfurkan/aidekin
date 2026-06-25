@@ -77,6 +77,22 @@ const DEFAULT_MAX_HISTORY_TOKENS = 6000
 // Rough token estimate (≈4 chars/token) — good enough for a sliding-window trim.
 const approxTokens = (s: string): number => Math.ceil(s.length / 4)
 
+/** One conversation turn. `content` is the plain text (what the user actually said /
+ *  the assistant replied) — used for display, persistence and hydration. `model` is the
+ *  OPTIONAL augmented form sent to the LLM: a grounded (RAG) user turn carries its
+ *  context-injected prompt here. Keeping the augmented form on the turn — instead of
+ *  rebuilding it per request and discarding it — is what makes the model-prompt PREFIX
+ *  stable across turns, so the worker's KV cache reuses it (prefill only the new turn)
+ *  rather than re-prefilling the whole transcript every grounded turn. */
+interface Turn {
+  role: ChatMessage['role']
+  content: string
+  model?: string
+}
+/** The exact form sent to the model (augmented where present), used for both the
+ *  generate request and the KV-cache prefix. */
+const toModel = (m: Turn): ChatMessage => ({ role: m.role, content: m.model ?? m.content })
+
 export class ConversationEngine {
   private readonly cb: EngineCallbacks
   private readonly device: Device
@@ -91,8 +107,14 @@ export class ConversationEngine {
   private readonly maxHistoryTokens: number
 
   private systemPrompt: string
-  private messages: ChatMessage[]
+  private messages: Turn[]
   private readonly chunker = new SentenceChunker()
+
+  /** The conversation as the model sees it (augmented grounded turns), for the request
+   *  and the cache prefix. A fresh array each call — callers consume it immediately. */
+  private modelView(): ChatMessage[] {
+    return this.messages.map(toModel)
+  }
 
   private llm: Worker | null = null
   private ownsWorker = false
@@ -222,14 +244,11 @@ export class ConversationEngine {
     if (!clean) return Promise.resolve('')
     this.pushUser(clean)
     // No retriever → build the request synchronously so voice timing is unchanged.
-    // Plain turns think only if reasoning is enabled; RAG turns always think (withRag).
-    if (!this.retriever) return this.generate([...this.messages], this.alwaysThink)
+    if (!this.retriever) return this.generate(this.modelView(), this.alwaysThink)
     return this.withRag(clean)
   }
 
   private async withRag(userText: string): Promise<string> {
-    let request: ChatMessage[] = [...this.messages]
-    let grounded = false
     try {
       const t0 = performance.now()
       const hits = await this.retriever!.retrieve(userText, this.ragTopK)
@@ -237,20 +256,21 @@ export class ConversationEngine {
       // ("hi") still pulls the top-k and the model recites unrelated content.
       const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
       this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
-      if (relevant.length) {
-        request = this.injectContext(userText, relevant)
-        grounded = true
-      }
+      if (relevant.length) this.applyContext(userText, relevant)
     } catch (err) {
       this.cb.onError?.('RAG', (err as Error).message)
     }
-    // Grounded turns think internally (better reasoning over the context); the <think>
-    // block is stripped. Ungrounded turns think only if reasoning is enabled.
-    return this.generate(request, grounded || this.alwaysThink)
+    // RAG turns run NON-thinking: a <think> block is stripped from the stored reply, so it
+    // wouldn't round-trip and the worker would have to drop the KV cache every grounded turn.
+    // Non-thinking keeps the cache reusable (the whole point of the augmented model-view).
+    // Reasoning, if the owner explicitly enabled it, still applies (and rebuilds the cache).
+    return this.generate(this.modelView(), this.alwaysThink)
   }
 
-  /** Inject retrieved context into the LAST user turn; history keeps the plain text. */
-  private injectContext(userText: string, hits: RetrievedChunk[]): ChatMessage[] {
+  /** Fold retrieved context into the CURRENT user turn's `model` field. Its plain `content`
+   *  is untouched (display/persist), but the LLM — and the KV-cache prefix — see the
+   *  augmented prompt, which is frozen on the turn so the prefix stays stable next turn. */
+  private applyContext(userText: string, hits: RetrievedChunk[]): void {
     let used = ''
     for (const h of hits) {
       const next = used ? `${used}\n\n---\n\n${h.text}` : h.text
@@ -263,9 +283,8 @@ export class ConversationEngine {
       'like "the reference", "the text says", "based on the context", or "according to". Do not add ' +
       "unrelated details. If the answer is not below, say you don't have that information.\n\n" +
       `<info>\n${used}\n</info>\n\nQuestion: ${userText}`
-    const msgs = this.messages.slice(0, -1) // drop the plain last-user we just pushed
-    msgs.push({ role: 'user', content: augmented })
-    return msgs
+    const last = this.messages[this.messages.length - 1]
+    if (last && last.role === 'user') last.model = augmented
   }
 
   private generate(request: ChatMessage[], think: boolean): Promise<string> {
@@ -368,7 +387,8 @@ export class ConversationEngine {
   }
 
   get history(): readonly ChatMessage[] {
-    return this.messages
+    // Expose the PLAIN conversation (no injected RAG context) — for display/hydration.
+    return this.messages.map((m) => ({ role: m.role, content: m.content }))
   }
 
   /** New session: clear back to just the system prompt (keeps it in storage). */
@@ -461,7 +481,10 @@ export class ConversationEngine {
    *  the middle (not the head) is what good local-LLM chats do. */
   private trim(): void {
     const budget = this.maxHistoryTokens
-    let total = this.messages.reduce((n, m) => n + approxTokens(m.content), 0)
+    // Count the MODEL form (augmented grounded turns are larger) — that's what actually
+    // fills the context window the worker prefills.
+    const tok = (m: Turn): number => approxTokens(m.model ?? m.content)
+    let total = this.messages.reduce((n, m) => n + tok(m), 0)
     if (total <= budget) return
     const head = Math.min(3, this.messages.length) // system + first exchange
     const keepTail = 4 // always keep the last couple of exchanges verbatim
@@ -471,7 +494,7 @@ export class ConversationEngine {
       const a = this.messages[head]
       const b = this.messages[head + 1]
       if (!a) break
-      total -= approxTokens(a.content) + (b ? approxTokens(b.content) : 0)
+      total -= tok(a) + (b ? tok(b) : 0)
       this.messages.splice(head, b ? 2 : 1)
       dropped += b ? 2 : 1
     }
@@ -481,16 +504,18 @@ export class ConversationEngine {
     }
   }
 
-  private hydrate(): ChatMessage[] {
-    const fresh: ChatMessage[] = [{ role: 'system', content: this.systemPrompt }]
+  private hydrate(): Turn[] {
+    const fresh: Turn[] = [{ role: 'system', content: this.systemPrompt }]
     if (!this.persistKey) return fresh
     try {
       const raw = localStorage.getItem(this.persistKey)
       if (!raw) return fresh
       const parsed = JSON.parse(raw) as ChatMessage[]
       if (!Array.isArray(parsed) || !parsed.length) return fresh
-      // Always re-assert the current system prompt as the head (config may have changed).
-      const rest = parsed.filter((m) => m.role !== 'system')
+      // Restored turns are plain (no `model`); the cache simply rebuilds once on the first
+      // grounded turn after a reload, then reuses from there. Always re-assert the current
+      // system prompt as the head (config may have changed).
+      const rest = parsed.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content }))
       return [{ role: 'system', content: this.systemPrompt }, ...rest]
     } catch {
       return fresh
@@ -500,7 +525,10 @@ export class ConversationEngine {
   private persist(): void {
     if (!this.persistKey) return
     try {
-      localStorage.setItem(this.persistKey, JSON.stringify(this.messages))
+      // Persist the PLAIN conversation only — never the injected RAG context (it's large,
+      // re-derived each turn, and would resurface as visitor-visible text on reload).
+      const plain: ChatMessage[] = this.messages.map((m) => ({ role: m.role, content: m.content }))
+      localStorage.setItem(this.persistKey, JSON.stringify(plain))
     } catch {
       /* quota / unavailable — history is best-effort, never fatal */
     }
