@@ -19,6 +19,12 @@ const DIR = 'aidekin-llm-cache'
 const MARKER = '.done'
 const sanitize = (key: string): string => key.replace(/[^a-zA-Z0-9._-]/g, '_')
 
+// transformers.js calls match() on the same file more than once per load (an upfront
+// metadata pre-scan, then the real session build), so the cache-hit line would log 2x for
+// any file in both paths. Log once per file per worker session; a reload re-spawns the
+// worker and resets this, so a fresh load still logs.
+const loggedHits = new Set<string>()
+
 type SyncAccessHandle = {
   read(buf: BufferSource, opts?: { at?: number }): number
   write(buf: BufferSource, opts?: { at?: number }): number
@@ -67,7 +73,8 @@ async function match(request: string): Promise<Response | undefined> {
     // it can't show load progress. With it: clean log + a real progress bar on cached loads.
     const headers = { 'Content-Length': String(expected) }
     const hit = (bytes: number): void => {
-      if (bytes > 10_000_000) {
+      if (bytes > 10_000_000 && !loggedHits.has(name)) {
+        loggedHits.add(name)
         console.info(`[aidekin] LLM weight served from OPFS cache: ${Math.round(bytes / 1048576)} MB (no download)`)
       }
     }
