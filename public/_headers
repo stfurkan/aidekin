@@ -8,11 +8,19 @@
 # is what lets voice run on /demo (mounted inline) and through the on-site widget iframe.
 # Text needs only WebGPU and is unaffected. Every cross-origin resource we load (Google
 # Fonts, Hugging Face, jsDelivr) sends Cross-Origin-Resource-Policy, so all pass require-corp.
+# CSP notes: 'wasm-unsafe-eval' is required by onnxruntime-web / transformers.js (WebAssembly);
+# 'unsafe-inline' (script) covers the static pre-paint theme scripts + the font media-swap
+# handler (static hosting has no per-request nonce); 'unsafe-inline' (style) covers the
+# Shadow-DOM loader styles, the widget's inline <style>, and React inline styles. blob: covers
+# the ORT/VAD worker + wasm; connect-src https: covers HF model + jsDelivr wasm fetches (whose
+# CDN hosts redirect). frame-ancestors 'self' here protects the SITE from clickjacking; the
+# /widget/* rule below omits it so the widget stays embeddable cross-origin.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https: blob: data:; worker-src 'self' blob:; frame-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'; frame-ancestors 'self'
 
 # The embeddable widget document. It is loaded cross-origin inside customer pages, so it must
 # stay embeddable even when the customer page is itself cross-origin isolated (require-corp):
@@ -22,6 +30,7 @@
 # emit duplicate headers.
 /widget/*
   Cross-Origin-Resource-Policy: cross-origin
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' https: blob: data:; worker-src 'self' blob:; frame-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'
 
 # The loader is a classic <script> customers reference from their own pages. It must load
 # even from a cross-origin-isolated customer page (Cross-Origin-Resource-Policy). Its URL is
