@@ -206,7 +206,7 @@ function TextView({
   canVoice: boolean
   onTalk: () => void
 }) {
-  const { turns, status, loadPct, loadDetail, cached, error, send, stop, retry, trimmed } = controller
+  const { turns, status, loadPct, cached, error, send, stop, retry, trimmed } = controller
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const loading = status === 'loading'
@@ -253,7 +253,7 @@ function TextView({
         {thinking && turns[turns.length - 1]?.role !== 'assistant' && <TypingDots />}
       </div>
 
-      {loading && <LoadBar pct={loadPct} detail={loadDetail} cached={cached} />}
+      {loading && <LoadBar pct={loadPct} cached={cached} />}
       {status === 'error' && error && <ErrorBar error={error} onRetry={retry} />}
 
       <form
@@ -513,7 +513,7 @@ function formatEta(s: number): string {
   return `${Math.round(s / 60)} min`
 }
 
-function LoadBar({ pct, detail, cached }: { pct: number; detail: string; cached: boolean }) {
+function LoadBar({ pct, cached }: { pct: number; cached: boolean }) {
   const [eta, setEta] = useState<string | null>(null)
   // Anchor at the first real progress sample and extrapolate a smoothed remaining time
   // from the average rate so far (stable, "somewhat correct" - network speed varies).
@@ -559,7 +559,6 @@ function LoadBar({ pct, detail, cached }: { pct: number; detail: string; cached:
           style={{ width: `${Math.max(4, pct * 100)}%` }}
         />
       </div>
-      {detail && <p className="mt-1 truncate text-[10px] text-muted-foreground">{detail}</p>}
     </div>
   )
 }
