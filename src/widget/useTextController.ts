@@ -229,7 +229,9 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
 
   const ensureLoaded = useCallback((engine: ConversationEngine): Promise<void> => {
     if (loadingRef.current) return loadingRef.current
-    setStatus('loading')
+    // Don't clobber an optimistic 'thinking' (send() sets it when the model is cached/ready and
+    // only needs a quick init) with 'loading' - that would flip the dots back to a load state.
+    setStatus((s) => (s === 'thinking' ? s : 'loading'))
     const p = engine
       .loadLlm()
       .then(() => {
@@ -265,13 +267,18 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       setTurns((prev) => [...prev, { id: uid, role: 'user', text }])
       streamingId.current = null
       cbRef.current.onMessage?.('user', text)
+      // Optimistic feedback: show the thinking dots the instant the message is sent, so there is
+      // no dead air before onGenerationStart fires. Only when the model is already on disk
+      // (cached) or loaded (ready) - i.e. just "preparing" - not a fresh ~290 MB download, where
+      // the progress bar is the right feedback instead.
+      if (cached || status === 'ready') setStatus('thinking')
       void ensureLoaded(engine)
         .then(() => engine.sendUserMessage(text))
         .catch(() => {
           /* onError already surfaced it */
         })
     },
-    [ensureLoaded, status],
+    [ensureLoaded, status, cached],
   )
 
   const stop = useCallback(() => {
