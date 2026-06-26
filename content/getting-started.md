@@ -14,6 +14,6 @@ On page load it only draws a small launcher button. The model downloads the firs
 
 ## 3. (Optional) Ground it in your own content
 
-Go to https://aidekin.com/builder, add your documents, build a knowledge file, host it, and point the widget at it with data-knowledge-url so aidekin answers from your content. See the knowledge guide for the full steps.
+Go to https://aidekin.com/knowledge, add your documents, build a knowledge file, host it, and point the widget at it with data-knowledge-url so aidekin answers from your content. See the knowledge guide for the full steps.
 
 That is the whole setup. No backend, no API keys, and no per-message cost.

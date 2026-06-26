@@ -10,7 +10,7 @@ const GITHUB_URL = 'https://github.com/stfurkan/aidekin'
 const NAV = [
   { to: '/demo', label: 'Demo' },
   { to: '/configure', label: 'Configure' },
-  { to: '/builder', label: 'Knowledge' },
+  { to: '/knowledge', label: 'Knowledge' },
   { to: '/docs', label: 'Docs' },
 ]
 

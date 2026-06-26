@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { Layout } from './Layout'
 import { Landing } from './pages/Landing'
@@ -23,7 +23,9 @@ export function SiteApp() {
           <Route path="/" element={<Landing />} />
           <Route path="/demo" element={<Demo />} />
           <Route path="/configure" element={<Configure />} />
-          <Route path="/builder" element={<Builder />} />
+          <Route path="/knowledge" element={<Builder />} />
+          {/* Keep the old /builder path as a redirect so existing links/bookmarks still work. */}
+          <Route path="/builder" element={<Navigate to="/knowledge" replace />} />
           <Route path="/docs/*" element={<Docs />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/terms" element={<Terms />} />

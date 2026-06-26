@@ -10,7 +10,7 @@ At https://aidekin.com/configure. Set the name, greeting, colors, position, and 
 
 ## Where do I build a knowledge file?
 
-At https://aidekin.com/builder. Add files (PDF, Word, text, Markdown, HTML, CSV, JSON) or URLs, build, and download knowledge.bin. Then host it and set data-knowledge-url.
+At https://aidekin.com/knowledge. Add files (PDF, Word, text, Markdown, HTML, CSV, JSON) or URLs, build, and download knowledge.bin. Then host it and set data-knowledge-url.
 
 ## Where are the docs?
 

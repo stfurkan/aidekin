@@ -4,7 +4,7 @@
 
 aidekin is an open-source, client-side AI assistant you drop onto any website. Your visitors get a private voice and text agent that runs entirely on their own device via WebGPU. There is no backend, no API keys, and no per-message cost. Nothing they type or say leaves their machine.
 
-[aidekin.com](https://aidekin.com) · [Configure](https://aidekin.com/configure) · [Knowledge builder](https://aidekin.com/builder) · [Docs](https://aidekin.com/docs) · [Demo](https://aidekin.com/demo) · [GitHub](https://github.com/stfurkan/aidekin) · MIT licensed
+[aidekin.com](https://aidekin.com) · [Configure](https://aidekin.com/configure) · [Knowledge builder](https://aidekin.com/knowledge) · [Docs](https://aidekin.com/docs) · [Demo](https://aidekin.com/demo) · [GitHub](https://github.com/stfurkan/aidekin) · MIT licensed
 
 ---
 
@@ -60,7 +60,7 @@ Full reference + the JavaScript API (`window.Aidekin.open/close/toggle/setTheme/
 
 Build a small `knowledge.bin` and point the widget at it with `data-knowledge-url`. Retrieval runs in the browser; at query time only the visitor's question is embedded.
 
-- **In the browser:** [aidekin.com/builder](https://aidekin.com/builder): drag in PDF, Word, text, Markdown, HTML, CSV, or JSON, paste text, or add URLs, then download.
+- **In the browser:** [aidekin.com/knowledge](https://aidekin.com/knowledge): drag in PDF, Word, text, Markdown, HTML, CSV, or JSON, paste text, or add URLs, then download.
 - **From the CLI:** `npm run build-knowledge -- --in ./content --out ./public/knowledge.bin` (same chunker/embedder/format, so the output is identical).
 
 Host the file anywhere with cross-origin reads (a GitHub repo via a CDN, Cloudflare R2, etc.). It is downloaded by every visitor, so treat it as **public**. Never put secrets in it.

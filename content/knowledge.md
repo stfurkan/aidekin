@@ -4,7 +4,7 @@ To make aidekin answer from your own content, build a knowledge file and point t
 
 ## Where to build a knowledge file
 
-The easiest way is the in-browser builder at https://aidekin.com/builder. Open it, add your content (drag in files, paste text, or add page URLs), then click Build and download to get a small knowledge.bin file. You can upload PDF, Word, plain text, Markdown, HTML, CSV, and JSON files.
+The easiest way is the in-browser builder at https://aidekin.com/knowledge. Open it, add your content (drag in files, paste text, or add page URLs), then click Build and download to get a small knowledge.bin file. You can upload PDF, Word, plain text, Markdown, HTML, CSV, and JSON files.
 
 ## Advanced: build from the command line (optional)
 

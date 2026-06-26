@@ -176,7 +176,7 @@ export default function Docs() {
             </P>
             <P>
               Build it in your browser on the{' '}
-              <Link to="/builder" className="text-primary hover:underline">
+              <Link to="/knowledge" className="text-primary hover:underline">
                 knowledge builder
               </Link>{' '}
               (drop in PDF, Word, Markdown, HTML, or text files; paste text; or add URLs), or from the
