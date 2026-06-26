@@ -216,7 +216,43 @@ async function init(id: string, dtype: string, device: string, eos: number): Pro
       }),
     { onRetry },
   )
+  await warmup()
   post({ kind: 'ready', info: `transformers.js ${id} (${dtype}·${device})` })
+}
+
+/** Compile the WebGPU prefill/decode shaders at load time so the user's FIRST message isn't a
+ *  ~10s cold start (the ASR/TTS workers warm up for the same reason). Throwaway: a SEPARATE
+ *  cache, one token, and NO module state written - kvCache/cachedMessages stay null, so the
+ *  first real turn still does a clean prefill and nothing from the warmup leaks into the
+ *  conversation. Mirrors the real sampling params so the whole generation path is compiled.
+ *  Best-effort: a warmup hiccup never blocks readiness. */
+async function warmup(): Promise<void> {
+  if (!model || !tokenizer) return
+  const throwaway = new DynamicCache()
+  try {
+    const t0 = performance.now()
+    const inputs = tokenizer.apply_chat_template(
+      [{ role: 'user', content: 'Hi' }],
+      { add_generation_prompt: true, return_dict: true, enable_thinking: false } as never,
+    ) as Record<string, unknown>
+    await model.generate({
+      ...inputs,
+      past_key_values: throwaway,
+      max_new_tokens: 1,
+      do_sample: true,
+      temperature: 0.5,
+      top_k: 20,
+      top_p: 0.85,
+      repetition_penalty: 1.15,
+      no_repeat_ngram_size: 3,
+      eos_token_id: eosTokenId,
+    } as never)
+    console.info(`[aidekin] LLM warmup ${(performance.now() - t0).toFixed(0)}ms`)
+  } catch (e) {
+    console.warn('[aidekin] LLM warmup skipped:', (e as Error).message)
+  } finally {
+    void throwaway.dispose()
+  }
 }
 
 /** Coordinator: enqueue this turn as the latest, interrupt anything running, and drain
