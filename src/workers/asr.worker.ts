@@ -44,6 +44,7 @@ const EN_LANG_ID = ASR.langId.en
 async function handle(msg: AsrIn): Promise<void> {
   try {
     if (msg.kind === 'init') await init(msg.modelBase, msg.device)
+    else if (msg.kind === 'prefetch') await prefetch(msg.modelBase)
     else if (msg.kind === 'chunk') await onChunk(msg.id, msg.samples)
     else if (msg.kind === 'flush') await onFlush(msg.id)
     else if (msg.kind === 'reset') resetStream()
@@ -76,6 +77,24 @@ async function createSession(
 const wrap = (s: ort.InferenceSession): OrtSession => ({
   run: (feeds) => s.run(feeds as Record<string, ort.Tensor>) as Promise<Record<string, OrtTensor>>,
 })
+
+// Warm the OPFS cache for EVERY ASR weight in parallel (network-bound; each file streams
+// straight to disk, so this does not raise peak memory). init() then reads them from cache,
+// keeping the GPU/WASM session creation serial while the download is parallelized across files -
+// and, run alongside the TTS worker's prefetch, across models too.
+async function prefetch(base: string): Promise<void> {
+  const f = ASR.files
+  await Promise.all([
+    loadAsset(base, f.vocab),
+    loadAsset(base, f.decoder),
+    loadAsset(base, f.decoderData),
+    loadAsset(base, f.joiner),
+    loadAsset(base, f.joinerData),
+    loadAsset(base, f.encoder),
+    loadAsset(base, f.encoderData),
+  ])
+  post({ kind: 'prefetched' })
+}
 
 // FP16 Nemotron: encoder on WebGPU (real-time), decoder/joint on WASM. WebGPU is
 // required (as it is for the LLM); if the FP16 encoder self-test fails we surface a

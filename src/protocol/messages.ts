@@ -45,11 +45,14 @@ export type VadOut =
 // are dropped. All messages are serialized on the worker's promise chain.
 export type AsrIn =
   | { readonly kind: 'init'; readonly modelBase: string; readonly device: Device }
+  // Download all weights to the OPFS cache without creating sessions (parallel-download phase).
+  | { readonly kind: 'prefetch'; readonly modelBase: string }
   | { readonly kind: 'chunk'; readonly id: number; readonly samples: Float32Array }
   | { readonly kind: 'flush'; readonly id: number }
   | { readonly kind: 'reset' }
 export type AsrOut =
   | Lifecycle
+  | { readonly kind: 'prefetched' } // all weights are cached; ready to init from disk
   | { readonly kind: 'partial'; readonly id?: number; readonly text: string } // running transcript fragment
   | { readonly kind: 'final'; readonly id?: number; readonly text: string }
 
@@ -87,10 +90,13 @@ export type LlmOut =
 // ── TTS worker (Supertonic) ──────────────────────────────────────────────────
 export type TtsIn =
   | { readonly kind: 'init'; readonly modelBase: string; readonly device: Device }
+  // Download all weights to the OPFS cache without creating sessions (parallel-download phase).
+  | { readonly kind: 'prefetch'; readonly modelBase: string }
   | { readonly kind: 'speak'; readonly id: number; readonly text: string }
   | { readonly kind: 'abort'; readonly id: number }
 export type TtsOut =
   | Lifecycle
+  | { readonly kind: 'prefetched' } // all weights are cached; ready to init from disk
   | { readonly kind: 'audio'; readonly id: number; readonly pcm: Float32Array; readonly sampleRate: number }
   | { readonly kind: 'done'; readonly id: number }
 

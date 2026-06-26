@@ -251,11 +251,23 @@ export class Orchestrator {
     const pruned = await pruneIncompleteAssets().catch(() => 0)
     if (pruned > 0) console.info(`[aidekin] pruned ${pruned} incomplete model file(s) from a prior interrupted download`)
 
-    // Sequential - bounds peak JS heap + GPU memory to one model at a time.
+    // Phase 1 - DOWNLOAD the heavy speech weights (ASR ~690 MB + TTS ~360 MB) in PARALLEL.
+    // Each worker streams its own files to the OPFS cache without creating any sessions, so the
+    // two big downloads overlap (and within each, the files download concurrently) instead of
+    // running ASR-then-TTS in series. Streaming to disk keeps peak memory low, so parallel
+    // downloading is safe; the memory-heavy part (session creation) stays serial in phase 2.
+    await Promise.all([
+      this.prefetchWorker(this.asr, { kind: 'prefetch', modelBase: modelSource('asr') }, 'ASR'),
+      this.prefetchWorker(this.tts, { kind: 'prefetch', modelBase: modelSource('tts') }, 'TTS'),
+    ])
+
+    // Phase 2 - INITIALIZE one model at a time (reads from the cache warmed above, so this is
+    // CPU/GPU-bound, not network-bound). Serial bounds peak GPU/WASM memory to one model
+    // (Safari's ceiling). VAD/Turn are tiny and the LLM uses its own cache, so they just init.
     await this.initWorker(this.vad, { kind: 'init', assetBase: modelSource('vad') }, 'VAD', false)
     await this.initWorker(this.turn, { kind: 'init', modelBase: '/models/turn' }, 'Turn', true)
     // ASR: the FP16 Nemotron, encoder on WebGPU (real-time). Single engine - WebGPU
-    // is required (as it is for the LLM). Streams from the HF CDN, caches to OPFS.
+    // is required (as it is for the LLM). Reads from the OPFS cache warmed in phase 1.
     await this.initWorker(this.asr, { kind: 'init', modelBase: modelSource('asr'), device: 'webgpu' }, 'ASR', false)
     await this.initWorker(this.tts, { kind: 'init', modelBase: modelSource('tts'), device: this.device }, 'TTS', false)
     // Brain: Bonsai on transformers.js / WebGPU (streams from the HF Hub, caches to
@@ -372,6 +384,17 @@ export class Orchestrator {
   private initWorker(w: Worker, msg: VadIn | AsrIn | TtsIn | TurnIn | LlmIn, label: string, optional: boolean): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.waiters.set(label, { resolve, reject, optional })
+      this.post(w, msg)
+    })
+  }
+
+  /** Download a worker's model files to the OPFS cache WITHOUT creating sessions, so several
+   *  workers can download in parallel before the serial init phase. Resolves on 'prefetched'.
+   *  Reuses the per-label waiter (prefetch and init never overlap for one worker), so a failure
+   *  during prefetch rejects through the same path as an init failure. */
+  private prefetchWorker(w: Worker, msg: AsrIn | TtsIn, label: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.waiters.set(label, { resolve, reject, optional: false })
       this.post(w, msg)
     })
   }
@@ -681,6 +704,14 @@ export class Orchestrator {
         c.fraction = l.total > 0 ? Math.min(1, l.loaded / l.total) : c.fraction
         this.emitLoad()
       }
+      return true
+    }
+    if (m.kind === 'prefetched') {
+      // Phase-1 download for this worker finished (no session created yet) - resolve its
+      // prefetch waiter so load() can proceed to the serial init phase.
+      const w = this.waiters.get(label)
+      this.waiters.delete(label)
+      w?.resolve()
       return true
     }
     if (m.kind === 'ready') {

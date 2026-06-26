@@ -43,6 +43,7 @@ ctx.onmessage = (ev: MessageEvent<TtsIn>) => {
 async function handle(msg: TtsIn): Promise<void> {
   try {
     if (msg.kind === 'init') await init(msg.modelBase, msg.device)
+    else if (msg.kind === 'prefetch') await prefetch(msg.modelBase)
     else if (msg.kind === 'speak') await speak(msg.id, msg.text)
     else if (msg.kind === 'abort') aborted.add(msg.id)
   } catch (err) {
@@ -54,6 +55,22 @@ async function loadAsset(base: string, rel: string): Promise<ArrayBuffer> {
   return getModelAsset(`tts/${rel}`, `${base}/${rel}`, (p) =>
     post({ kind: 'load', label: 'TTS', detail: `${rel} · ${fmtBytes(p.loaded)} / ${fmtBytes(p.total)}`, loaded: p.loaded, total: p.total }),
   )
+}
+
+// Warm the OPFS cache for every TTS weight in parallel (see the ASR worker's prefetch). init()
+// then reads from cache, so session creation stays serial while the downloads run concurrently.
+async function prefetch(base: string): Promise<void> {
+  const f = TTS.files
+  await Promise.all([
+    loadAsset(base, f.config),
+    loadAsset(base, f.unicodeIndexer),
+    loadAsset(base, f.voiceStyle),
+    loadAsset(base, f.durationPredictor),
+    loadAsset(base, f.textEncoder),
+    loadAsset(base, f.vectorEstimator),
+    loadAsset(base, f.vocoder),
+  ])
+  post({ kind: 'prefetched' })
 }
 
 async function init(base: string, device: Device): Promise<void> {
