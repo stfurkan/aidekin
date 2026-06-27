@@ -305,6 +305,30 @@ async function runGeneration(
   const canReuse =
     !resetCache && !allowThink && chatWrap !== null && kvCache !== null && isCleanAppend(cachedMessages, messages)
 
+  // Diagnostic: when we HAVE a cache but fall back to a full prefill (the slow ~13s path),
+  // log WHY. Cross-turn reuse is what keeps ttft low (prefill only the new turn's delta, not
+  // the whole transcript), so a silent fallback to full-prefill is the latency bug to hunt.
+  if (kvCache !== null && !canReuse) {
+    let why: string
+    if (resetCache) why = 'resetCache flag'
+    else if (allowThink) why = 'thinking mode'
+    else if (chatWrap === null) why = 'no ChatML wrap'
+    else {
+      why = 'prefix changed'
+      const c = cachedMessages
+      if (c && messages.length !== c.length + 1) why += ` (length cached=${c.length} next=${messages.length})`
+      else if (c) {
+        for (let i = 0; i < c.length; i++) {
+          if (c[i].role !== messages[i].role || c[i].content !== messages[i].content) {
+            why += ` @${i} ${c[i].role}: cached="${c[i].content.slice(0, 30)}" next="${messages[i].content.slice(0, 30)}"`
+            break
+          }
+        }
+      }
+    }
+    console.warn(`[aidekin] LLM full-prefill, cache not reused: ${why}`)
+  }
+
   let modelInputs: Record<string, unknown>
   if (canReuse) {
     // Append the new user turn + generation prompt directly to the live cache. We build the
@@ -359,11 +383,7 @@ async function runGeneration(
   // MESSAGES, not token ids (see the cache note above).
   await model.generate({
     ...modelInputs,
-    // Kept tight: transformers.js on WebGPU pays a large FIXED per-generate setup cost that
-    // scales with max_new_tokens (~25ms each), independent of the actual reply length, so 512
-    // added ~13s of dead time to every ttft. Replies here are 1-2 sentences (tens of tokens);
-    // 256 (512 with a <think> block) is ample and slashes the first-token latency.
-    max_new_tokens: allowThink ? 512 : 256,
+    max_new_tokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
     do_sample: true,
     temperature: 0.5,
     top_k: 20,
