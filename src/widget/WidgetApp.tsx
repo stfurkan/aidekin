@@ -663,6 +663,47 @@ function ThemeToggle() {
   )
 }
 
+// Inline two-step confirm for a destructive menu action: the action's button is swapped for
+// this row (label + Cancel + a colored confirm), so nothing fires on the first click.
+function ConfirmRow({
+  label,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+  destructive,
+}: {
+  label: string
+  confirmLabel: string
+  onConfirm: () => void
+  onCancel: () => void
+  destructive?: boolean
+}) {
+  const confirmCls = destructive
+    ? 'bg-destructive/15 text-destructive hover:bg-destructive/25'
+    : 'bg-primary/15 text-primary hover:bg-primary/25'
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-lg bg-secondary/50 px-2 py-1.5">
+      <span className="min-w-0 truncate text-sm">{label}</span>
+      <span className="flex shrink-0 gap-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          className={`rounded-md px-2 py-1 text-xs font-medium transition-colors ${confirmCls}`}
+        >
+          {confirmLabel}
+        </button>
+      </span>
+    </div>
+  )
+}
+
 function SettingsMenu({
   onClearChat,
   hasChat,
@@ -678,6 +719,9 @@ function SettingsMenu({
   const [storage, setStorage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  // Which destructive action is awaiting a confirm tap (null = none). Both Clear chat and
+  // Remove model ask first instead of firing on the initial click.
+  const [confirming, setConfirming] = useState<'clear' | 'remove' | null>(null)
 
   const refreshStorage = () => {
     void import('@/core/storage')
@@ -696,6 +740,11 @@ function SettingsMenu({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  // Drop any pending confirmation when the menu closes, so reopening starts clean.
+  useEffect(() => {
+    if (!open) setConfirming(null)
   }, [open])
 
   const removeModel = () => {
@@ -732,20 +781,38 @@ function SettingsMenu({
             <p className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground">
               <HardDrive className="size-3.5" /> {storage ?? 'Checking storage…'}
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                onClearChat()
-                setOpen(false)
-              }}
-              disabled={!hasChat}
-              className={itemCls}
-            >
-              <Trash2 className="size-4" /> Clear chat
-            </button>
-            <button type="button" onClick={removeModel} disabled={busy || !canRemove} className={itemCls}>
-              <HardDrive className="size-4" /> {busy ? 'Removing…' : 'Remove downloaded model'}
-            </button>
+            {confirming === 'clear' ? (
+              <ConfirmRow
+                label="Clear this chat?"
+                confirmLabel="Clear"
+                destructive
+                onCancel={() => setConfirming(null)}
+                onConfirm={() => {
+                  onClearChat()
+                  setOpen(false)
+                }}
+              />
+            ) : (
+              <button type="button" onClick={() => setConfirming('clear')} disabled={!hasChat} className={itemCls}>
+                <Trash2 className="size-4" /> Clear chat
+              </button>
+            )}
+            {confirming === 'remove' ? (
+              <ConfirmRow
+                label="Remove the model?"
+                confirmLabel="Remove"
+                destructive
+                onCancel={() => setConfirming(null)}
+                onConfirm={() => {
+                  setConfirming(null)
+                  removeModel()
+                }}
+              />
+            ) : (
+              <button type="button" onClick={() => setConfirming('remove')} disabled={busy || !canRemove} className={itemCls}>
+                <HardDrive className="size-4" /> {busy ? 'Removing…' : 'Remove downloaded model'}
+              </button>
+            )}
             {note && <p className="px-2 pt-1 text-[11px] text-muted-foreground">{note}</p>}
             <a
               href="https://aidekin.com"
