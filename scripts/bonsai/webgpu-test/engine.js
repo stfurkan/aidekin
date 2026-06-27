@@ -31,8 +31,9 @@ export async function createEngine(modelDir) {
 
   const adapter = await navigator.gpu.requestAdapter();
   const hasSG = adapter.features.has('subgroups');
-  const sgMin = adapter.subgroupMinSize ?? 0, sgMax = adapter.subgroupMaxSize ?? 0;
-  const useSG = hasSG && sgMin === sgMax && sgMax >= 32;   // uniform subgroup >=32 -> head_dim/SG<=4
+  const info = adapter.info ?? {};                          // subgroup sizes live on GPUAdapterInfo
+  const sgMax = info.subgroupMaxSize ?? 32, sgMin = info.subgroupMinSize ?? sgMax;
+  const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64);  // uniform >=32 -> head_dim/SG<=4
   const device = await adapter.requestDevice({ requiredFeatures: hasSG ? ['subgroups'] : [] });
   const pipelines = {};
   const mkPipe = async (name, constants) => {
@@ -221,5 +222,5 @@ export async function createEngine(modelDir) {
     return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd };
   }
 
-  return { device, adapter, forward, generate };
+  return { device, adapter, forward, generate, useSG, sgSize: sgMax };
 }

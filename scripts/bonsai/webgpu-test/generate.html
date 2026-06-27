@@ -33,6 +33,7 @@
       const ids = fp.ids;
       log(`loading model (~290 MB)...`);
       const engine = await createEngine('./model');
+      log(`subgroup path: ${engine.useSG ? 'ON (SG=' + engine.sgSize + ')' : 'OFF (v1 fallback)'}`);
 
       // 1) correctness of the refactored forward (cache-based attention)
       log('checking correctness vs reference...');
