@@ -4,7 +4,7 @@
 // them fast); this exists to measure real decode tok/s.
 
 const VIEW = { FLOAT: Float32Array, UINT8: Uint8Array, FLOAT16: Uint16Array };
-const WGSLS = ['matmul_binary', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy'];
+const WGSLS = ['matmul_binary', 'matmul_binary_vec4', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy'];
 const MAXSEQ = 256;
 
 function makeParams(fields) {
@@ -116,7 +116,7 @@ export async function createEngine(modelDir) {
     pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
     pass.dispatchWorkgroups(Math.ceil(threads / 64));
   }
-  const mm = (pass, wname, x, M, out) => { const w = W[wname]; run(pass, 'matmul_binary', [['u', M], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [x, w.sign, w.scales], out, M * w.N); };
+  const mm = (pass, wname, x, M, out) => { const w = W[wname]; run(pass, 'matmul_binary_vec4', [['u', M], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [x, w.sign, w.scales], out, M * w.N); };
   const rms = (pass, x, g, R, Dn, out) => run(pass, 'rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R);
 
   // one decoder layer; reads/writes the KV cache. posBase = absolute position of row 0.
