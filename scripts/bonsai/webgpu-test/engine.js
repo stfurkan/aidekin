@@ -125,7 +125,7 @@ export async function createEngine(modelDir) {
   async function forward(ids) {
     const S = ids.length, Hd = A.hidden, H = A.heads, KV = A.kv_heads, D = A.head_dim, F = A.intermediate;
     const { cos, sin } = ropeFull(S);
-    let h = upload(embedDequant(ids));                     // [S, Hd]
+    let h = upload(embedDequant(ids), S_ | CD | CS);       // [S, Hd] (CS so the checkpoint can read it back)
     const embedOut = h;                                    // checkpoint (CPU-built, uploaded)
 
     const enc = device.createCommandEncoder();
