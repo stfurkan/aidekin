@@ -160,10 +160,12 @@ export class ConversationEngine {
     this.retriever = opts.retriever ?? null
     this.ragTopK = opts.ragTopK ?? 3
     this.ragCharBudget = opts.ragCharBudget ?? 1500
-    // Higher gate so small-talk ("hi", "thanks") and off-topic messages do NOT pull doc
-    // chunks and get recited back. Relevant questions still clear it (bge-small scores
-    // genuinely on-topic content ~0.5+). Tunable per deployment.
-    this.ragMinScore = opts.ragMinScore ?? 0.5
+    // Gate so greetings / off-topic messages do NOT pull doc chunks and get recited back.
+    // Calibrated from real queries on our corpus (a greeting scored ~0.51, a real question
+    // ~0.65), so 0.55 sits in the gap. Absolute cosine cutoffs are not portable across models
+    // or corpora, so treat this as a tunable DEFAULT, not a universal truth; the retrieval log
+    // prints each query's score so a deployment can recalibrate.
+    this.ragMinScore = opts.ragMinScore ?? 0.55
     this.chunkClauses = opts.chunkClauses ?? false
     this.alwaysThink = opts.reasoning ?? false
     this.persistKey = opts.persistKey
