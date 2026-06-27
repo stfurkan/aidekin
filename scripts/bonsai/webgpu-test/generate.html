@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bonsai generate (WebGPU)</title>
+  <style>
+    body { font: 14px/1.5 ui-monospace, monospace; max-width: 900px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 18px; }
+    button { font: inherit; padding: 8px 14px; cursor: pointer; }
+    pre { background: #f4f4f5; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+    .pass { color: #166534; font-weight: 700; }
+    .fail { color: #b91c1c; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Bonsai generate (WebGPU)</h1>
+  <p>Re-checks correctness after the KV-cache refactor, then generates greedily and reports
+     decode tok/s (still the dumb kernels; this is the baseline to optimize from).</p>
+  <button id="run">Run correctness + generate</button>
+  <pre id="out">idle.</pre>
+
+  <script type="module">
+    import { createEngine } from './engine.js';
+    const out = document.getElementById('out');
+    const log = (s) => { out.textContent += s + '\n'; };
+    const buf = async (u) => await (await fetch(u)).arrayBuffer();
+    const cos = (a, e) => { let d = 0, na = 0, nb = 0; for (let i = 0; i < e.length; i++) { d += a[i] * e[i]; na += a[i] * a[i]; nb += e[i] * e[i]; } return d / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9); };
+
+    async function run() {
+      out.textContent = '';
+      if (!navigator.gpu) { log('WebGPU not available.'); return; }
+      const fp = await (await fetch('./forward-fixtures/params.json')).json();
+      const ids = fp.ids;
+      log(`loading model (~290 MB)...`);
+      const engine = await createEngine('./model');
+
+      // 1) correctness of the refactored forward (cache-based attention)
+      log('checking correctness vs reference...');
+      const r = await engine.forward(ids);
+      let ok = true;
+      for (const name of ['embed', 'layer0', 'finalnorm', 'logits']) {
+        const c = cos(r[name], new Float32Array(await buf(`./forward-fixtures/${name}.bin`)));
+        const pass = c > 0.999; ok = ok && pass;
+        log(`  ${pass ? '[PASS]' : '[FAIL]'} ${name.padEnd(11)} cosine=${c.toFixed(7)}`);
+      }
+      if (!ok) { out.insertAdjacentHTML('beforeend', `\n<span class="fail">REFACTOR BROKE CORRECTNESS</span>`); return; }
+
+      // 2) generate + measure
+      log('\ngenerating 32 tokens...');
+      const g = await engine.generate(ids, 32);
+      log(`first token = ${g.firstArgmax} (expect 26194 = " Tokyo") ${g.firstArgmax === 26194 ? 'OK' : 'MISMATCH'}`);
+      log(`prefill (TTFT, ${ids.length} tokens) = ${g.prefillMs.toFixed(0)} ms`);
+      log(`decode = ${g.decodeMs.toFixed(0)} ms for 31 tokens  ->  ${g.tokPerSec.toFixed(2)} tok/s`);
+      log(`baseline to beat: ~16 tok/s (transformers.js) / ~7s TTFT`);
+      log(`generated ids: [${g.tokens.join(', ')}]`);
+      out.insertAdjacentHTML('beforeend', `\n<span class="${g.firstArgmax === 26194 ? 'pass' : 'fail'}">decode ${g.tokPerSec.toFixed(2)} tok/s</span>`);
+    }
+
+    document.getElementById('run').onclick = () => run().catch(e => log('ERROR: ' + e.message + '\n' + e.stack));
+  </script>
+</body>
+</html>

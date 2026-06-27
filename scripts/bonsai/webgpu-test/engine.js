@@ -1,9 +1,11 @@
-// Bonsai-1.7B WebGPU runtime (P1, correctness-first). Loads weights via the manifest,
-// runs the full Qwen3 forward with the validated kernels, returns logits + checkpoints.
-// Not optimized: kernels are the dumb-but-correct versions; P2 makes it fast.
+// Bonsai-1.7B WebGPU runtime (P2, correctness-first + generation). Loads weights via the
+// manifest, runs the Qwen3 forward with the validated kernels, keeps a persistent KV cache,
+// and generates autoregressively. Kernels are still the dumb-but-correct versions (P2 makes
+// them fast); this exists to measure real decode tok/s.
 
 const VIEW = { FLOAT: Float32Array, UINT8: Uint8Array, FLOAT16: Uint16Array };
-const WGSLS = ['matmul_binary', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention', 'add', 'expand_kv'];
+const WGSLS = ['matmul_binary', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy'];
+const MAXSEQ = 256;
 
 function makeParams(fields) {
   const ab = new ArrayBuffer(Math.ceil(fields.length / 4) * 16);
@@ -38,77 +40,62 @@ export async function createEngine(modelDir) {
   const upload = (typed, usage = S_ | CD) => { const b = device.createBuffer({ size: typed.byteLength, usage }); device.queue.writeBuffer(b, 0, typed); return b; };
   const actBuf = (n) => device.createBuffer({ size: n * 4, usage: S_ | CS | CD });
 
-  // sign table: weight_quant byte -> 8 packed sign bits (bit j = sign of weight j; 1=+1, 0=-1)
-  const tgt2 = readRef(manifest.luts.tgt2);                 // [256,2]
-  const tgt4 = readRef(manifest.luts.tgt4);                 // [256,4]
+  // sign table: weight_quant byte -> 8 packed sign bits (bit j: 1=+1, 0=-1)
+  const tgt2 = readRef(manifest.luts.tgt2), tgt4 = readRef(manifest.luts.tgt4);
   const signTable = new Uint8Array(256);
   for (let b = 0; b < 256; b++) {
     let bits = 0;
-    for (let j = 0; j < 8; j++) {
-      const byte = tgt2[2 * b + (j >> 2)];
-      const code = (byte >> (2 * (j & 3))) & 3;
-      bits |= ((code >> 1) & 1) << j;                       // code 3 -> +1 (bit 1), code 1 -> -1 (bit 0)
-    }
+    for (let j = 0; j < 8; j++) bits |= (((tgt2[2 * b + (j >> 2)] >> (2 * (j & 3))) & 3) >> 1 & 1) << j;
     signTable[b] = bits;
   }
 
-  // ---- load weights ----
-  const W = {};   // logical name -> {sign|codes, scales, N, K, nb, kind, zp?}
+  const W = {};
   for (const [name, t] of Object.entries(T)) {
     if (t.kind === 'binary') {
-      const wq = readRef(t.weight);
-      const sign = new Uint8Array(wq.length);
+      const wq = readRef(t.weight), sign = new Uint8Array(wq.length);
       for (let i = 0; i < wq.length; i++) sign[i] = signTable[wq[i]];
-      W[name] = { kind: 'binary', N: t.N, K: t.K, nb: t.K / 128, sign: upload(sign), scales: upload(readRef(t.scales)) };
-    } else if (t.kind === 'q2') {              // lm_head: store 2-bit codes (tgt2-expanded)
-      const wq = readRef(t.weight);
-      const codes = new Uint8Array(wq.length * 2);
+      W[name] = { N: t.N, K: t.K, nb: t.K / 128, sign: upload(sign), scales: upload(readRef(t.scales)) };
+    } else if (t.kind === 'q2') {
+      const wq = readRef(t.weight), codes = new Uint8Array(wq.length * 2);
       for (let i = 0; i < wq.length; i++) { codes[2 * i] = tgt2[2 * wq[i]]; codes[2 * i + 1] = tgt2[2 * wq[i] + 1]; }
-      W[name] = { kind: 'q2', N: t.N, K: t.K, nb: t.K / 128, zp: 2, codes: upload(codes), scales: upload(readRef(t.scales)) };
-    } else if (t.kind === 'f32' && t.weight) {   // norm gammas; cos/sin caches are loaded separately below
-      W[name] = { kind: 'f32', buf: upload(readRef(t.weight)) };
+      W[name] = { N: t.N, K: t.K, nb: t.K / 128, zp: 2, codes: upload(codes), scales: upload(readRef(t.scales)) };
+    } else if (t.kind === 'f32' && t.weight) {
+      W[name] = { buf: upload(readRef(t.weight)) };
     }
   }
 
-  // embedding (4-bit) dequant for given ids, on CPU (only S rows)
-  const emb = T.embed_tokens;
-  const embWq = readRef(emb.weight);             // [vocab, 256] uint8
-  const embScales = readRef(emb.scales);         // [vocab, 16] f32
-  const embZp = readRef(emb.zp);                 // [vocab, 8] uint8 (4-bit, 2 per byte)
-  const cosCache = readRef(T.cos_cache);         // [32768, 64] f32
-  const sinCache = readRef(T.sin_cache);
+  const embWq = readRef(T.embed_tokens.weight), embScales = readRef(T.embed_tokens.scales), embZp = readRef(T.embed_tokens.zp);
+  const cosCache = readRef(T.cos_cache), sinCache = readRef(T.sin_cache);
 
   function embedDequant(ids) {
     const H = A.hidden, out = new Float32Array(ids.length * H);
     for (let r = 0; r < ids.length; r++) {
       const id = ids[r];
-      for (let i = 0; i < 256; i++) {                     // 256 src bytes -> 1024 expanded bytes
-        const b = embWq[id * 256 + i];
-        for (let q = 0; q < 4; q++) {
-          const byte = tgt4[4 * b + q];                    // 2 four-bit codes per byte
-          const baseK = (i * 4 + q) * 2;
-          for (let c = 0; c < 2; c++) {
-            const k = baseK + c;
-            const code = (byte >> (4 * c)) & 15;
-            const blk = (k / 128) | 0;
-            const zpByte = embZp[id * 8 + ((blk / 2) | 0)];
-            const zp = (zpByte >> (4 * (blk & 1))) & 15;
-            out[r * H + k] = (code - zp) * embScales[id * 16 + blk];
-          }
+      for (let i = 0; i < 256; i++) for (let qd = 0; qd < 4; qd++) {
+        const byte = tgt4[4 * embWq[id * 256 + i] + qd], baseK = (i * 4 + qd) * 2;
+        for (let c = 0; c < 2; c++) {
+          const k = baseK + c, code = (byte >> (4 * c)) & 15, blk = (k / 128) | 0;
+          const zp = (embZp[id * 8 + ((blk / 2) | 0)] >> (4 * (blk & 1))) & 15;
+          out[r * H + k] = (code - zp) * embScales[id * 16 + blk];
         }
       }
     }
     return out;
   }
 
-  function ropeFull(S) {
+  function ropeBufs(posBase, S) {
     const D = A.head_dim, cos = new Float32Array(S * D), sin = new Float32Array(S * D);
     for (let s = 0; s < S; s++) for (let d = 0; d < D; d++) {
-      cos[s * D + d] = cosCache[s * 64 + (d % 64)];
-      sin[s * D + d] = sinCache[s * 64 + (d % 64)];
+      cos[s * D + d] = cosCache[(posBase + s) * 64 + (d % 64)];
+      sin[s * D + d] = sinCache[(posBase + s) * 64 + (d % 64)];
     }
     return { cos: upload(cos), sin: upload(sin) };
   }
+
+  // per-layer persistent KV cache: [MAXSEQ, KV, D]
+  const KV = A.kv_heads, Dh = A.head_dim, Hd = A.hidden, H = A.heads, F = A.intermediate;
+  const Kc = [], Vc = [];
+  for (let li = 0; li < A.layers; li++) { Kc.push(actBuf(MAXSEQ * KV * Dh)); Vc.push(actBuf(MAXSEQ * KV * Dh)); }
 
   async function readback(buf, n) {
     const rb = device.createBuffer({ size: n * 4, usage: GPUBufferUsage.MAP_READ | CD });
@@ -121,85 +108,109 @@ export async function createEngine(modelDir) {
     return out;
   }
 
-  // ---- forward ----
-  async function forward(ids) {
-    const S = ids.length, Hd = A.hidden, H = A.heads, KV = A.kv_heads, D = A.head_dim, F = A.intermediate;
-    const { cos, sin } = ropeFull(S);
-    let h = upload(embedDequant(ids), S_ | CD | CS);       // [S, Hd] (CS so the checkpoint can read it back)
-    const embedOut = h;                                    // checkpoint (CPU-built, uploaded)
+  function run(pass, name, fields, ins, out, threads) {
+    const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+    ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
+    entries.push({ binding: ins.length + 1, resource: { buffer: out } });
+    pass.setPipeline(pipelines[name]);
+    pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
+    pass.dispatchWorkgroups(Math.ceil(threads / 64));
+  }
+  const mm = (pass, wname, x, M, out) => { const w = W[wname]; run(pass, 'matmul_binary', [['u', M], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [x, w.sign, w.scales], out, M * w.N); };
+  const rms = (pass, x, g, R, Dn, out) => run(pass, 'rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R);
 
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    const run = (name, fields, ins, out, threads) => {
-      const pBuf = upload(new Uint8Array(makeParams(fields)), U | CD);
-      const entries = [{ binding: 0, resource: { buffer: pBuf } }];
-      ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
-      entries.push({ binding: ins.length + 1, resource: { buffer: out } });
-      pass.setPipeline(pipelines[name]);
-      pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-      pass.dispatchWorkgroups(Math.ceil(threads / 64));
-    };
-    const mm = (wname, x, M, out) => {                     // binary matmul x[M,K]@W.T -> out[M,N]
-      const w = W[wname];
-      run('matmul_binary', [['u', M], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [x, w.sign, w.scales], out, M * w.N);
-    };
-    const rms = (x, gammaName, R, Dn, out) =>
-      run('rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[gammaName].buf], out, R);
-    const addv = (a, b, n, out) => run('add', [['u', n], ['u', 0], ['u', 0], ['u', 0]], [a, b], out, n);
-
-    let layer0 = null;
-    for (let li = 0; li < A.layers; li++) {
-      const n1 = actBuf(S * Hd);
-      rms(h, `layers.${li}.input_layernorm`, S, Hd, n1);
-      const q = actBuf(S * H * D), k = actBuf(S * KV * D), v = actBuf(S * KV * D);
-      mm(`layers.${li}.attn.q_proj`, n1, S, q);
-      mm(`layers.${li}.attn.k_proj`, n1, S, k);
-      mm(`layers.${li}.attn.v_proj`, n1, S, v);
-      const qn = actBuf(S * H * D), kn = actBuf(S * KV * D);
-      rms(q, `layers.${li}.attn.q_norm`, S * H, D, qn);
-      rms(k, `layers.${li}.attn.k_norm`, S * KV, D, kn);
-      const qr = actBuf(S * H * D), kr = actBuf(S * KV * D);
-      run('rope', [['u', S], ['u', H], ['u', D], ['u', 0]], [qn, cos, sin], qr, S * H * D);
-      run('rope', [['u', S], ['u', KV], ['u', D], ['u', 0]], [kn, cos, sin], kr, S * KV * D);
-      const kx = actBuf(S * H * D), vx = actBuf(S * H * D);
-      run('expand_kv', [['u', S], ['u', H], ['u', KV], ['u', D]], [kr], kx, S * H * D);
-      run('expand_kv', [['u', S], ['u', H], ['u', KV], ['u', D]], [v], vx, S * H * D);
-      const att = actBuf(S * H * D);
-      run('attention', [['u', S], ['u', H], ['u', D], ['u', 0]], [qr, kx, vx], att, S * H);
-      const ao = actBuf(S * Hd);
-      mm(`layers.${li}.attn.o_proj`, att, S, ao);
-      const h2 = actBuf(S * Hd);
-      addv(h, ao, S * Hd, h2);
-      const n2 = actBuf(S * Hd);
-      rms(h2, `layers.${li}.post_attention_layernorm`, S, Hd, n2);
-      const g = actBuf(S * F), u = actBuf(S * F);
-      mm(`layers.${li}.mlp.gate_proj`, n2, S, g);
-      mm(`layers.${li}.mlp.up_proj`, n2, S, u);
-      const sw = actBuf(S * F);
-      run('swiglu', [['u', S * F], ['u', 0], ['u', 0], ['u', 0]], [g, u], sw, S * F);
-      const mo = actBuf(S * Hd);
-      mm(`layers.${li}.mlp.down_proj`, sw, S, mo);
-      const hn = actBuf(S * Hd);
-      addv(h2, mo, S * Hd, hn);
-      h = hn;
-      if (li === 0) layer0 = h;
-    }
-    const fn = actBuf(S * Hd);
-    rms(h, 'layers.28.final_norm_layernorm', S, Hd, fn);
-    const lm = W.lm_head, logits = device.createBuffer({ size: S * lm.N * 4, usage: S_ | CS });
-    run('matmul_q2', [['u', S], ['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', 128], ['u', lm.zp]], [fn, lm.codes, lm.scales], logits, S * lm.N);
-    pass.end();
-    device.queue.submit([enc.finish()]);
-    await device.queue.onSubmittedWorkDone();
-
-    return {
-      embed: await readback(embedOut, S * Hd),
-      layer0: await readback(layer0, S * Hd),
-      finalnorm: await readback(fn, S * Hd),
-      logits: await readback(logits, S * lm.N),
-      vocab: lm.N, S,
-    };
+  // one decoder layer; reads/writes the KV cache. posBase = absolute position of row 0.
+  function layer(pass, li, h, S, posBase, cos, sin) {
+    const Ltot = posBase + S;
+    const n1 = actBuf(S * Hd); rms(pass, h, `layers.${li}.input_layernorm`, S, Hd, n1);
+    const q = actBuf(S * H * Dh), k = actBuf(S * KV * Dh), v = actBuf(S * KV * Dh);
+    mm(pass, `layers.${li}.attn.q_proj`, n1, S, q);
+    mm(pass, `layers.${li}.attn.k_proj`, n1, S, k);
+    mm(pass, `layers.${li}.attn.v_proj`, n1, S, v);
+    const qn = actBuf(S * H * Dh), kn = actBuf(S * KV * Dh);
+    rms(pass, q, `layers.${li}.attn.q_norm`, S * H, Dh, qn);
+    rms(pass, k, `layers.${li}.attn.k_norm`, S * KV, Dh, kn);
+    const qr = actBuf(S * H * Dh), kr = actBuf(S * KV * Dh);
+    run(pass, 'rope', [['u', S], ['u', H], ['u', Dh], ['u', 0]], [qn, cos, sin], qr, S * H * Dh);
+    run(pass, 'rope', [['u', S], ['u', KV], ['u', Dh], ['u', 0]], [kn, cos, sin], kr, S * KV * Dh);
+    // append k,v to cache at posBase
+    run(pass, 'copy', [['u', S * KV * Dh], ['u', posBase * KV * Dh], ['u', 0], ['u', 0]], [kr], Kc[li], S * KV * Dh);
+    run(pass, 'copy', [['u', S * KV * Dh], ['u', posBase * KV * Dh], ['u', 0], ['u', 0]], [v], Vc[li], S * KV * Dh);
+    const att = actBuf(S * H * Dh);
+    run(pass, 'attention_cache', [['u', S], ['u', H], ['u', KV], ['u', Dh], ['u', posBase], ['u', Ltot]], [qr, Kc[li], Vc[li]], att, S * H);
+    const ao = actBuf(S * Hd); mm(pass, `layers.${li}.attn.o_proj`, att, S, ao);
+    const h2 = actBuf(S * Hd); run(pass, 'add', [['u', S * Hd], ['u', 0], ['u', 0], ['u', 0]], [h, ao], h2, S * Hd);
+    const n2 = actBuf(S * Hd); rms(pass, h2, `layers.${li}.post_attention_layernorm`, S, Hd, n2);
+    const g = actBuf(S * F), u = actBuf(S * F);
+    mm(pass, `layers.${li}.mlp.gate_proj`, n2, S, g);
+    mm(pass, `layers.${li}.mlp.up_proj`, n2, S, u);
+    const sw = actBuf(S * F); run(pass, 'swiglu', [['u', S * F], ['u', 0], ['u', 0], ['u', 0]], [g, u], sw, S * F);
+    const mo = actBuf(S * Hd); mm(pass, `layers.${li}.mlp.down_proj`, sw, S, mo);
+    const hn = actBuf(S * Hd); run(pass, 'add', [['u', S * Hd], ['u', 0], ['u', 0], ['u', 0]], [h2, mo], hn, S * Hd);
+    return hn;
   }
 
-  return { device, adapter, forward };
+  function lmHead(pass, fn, M, out) { const lm = W.lm_head; run(pass, 'matmul_q2', [['u', M], ['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', 128], ['u', lm.zp]], [fn, lm.codes, lm.scales], out, M * lm.N); }
+
+  // run the layer stack over S tokens starting at posBase; returns the final-norm buffer.
+  function stack(enc, h, S, posBase) {
+    const { cos, sin } = ropeBufs(posBase, S);
+    const pass = enc.beginComputePass();
+    let cur = h, layer0 = null;
+    for (let li = 0; li < A.layers; li++) { cur = layer(pass, li, cur, S, posBase, cos, sin); if (li === 0) layer0 = cur; }
+    const fn = actBuf(S * Hd); rms(pass, cur, 'layers.28.final_norm_layernorm', S, Hd, fn);
+    pass.end();
+    return { fn, layer0 };
+  }
+
+  // prefill with checkpoints (for the correctness test)
+  async function forward(ids) {
+    const S = ids.length, embedOut = upload(embedDequant(ids), S_ | CD | CS);
+    const enc = device.createCommandEncoder();
+    const { fn, layer0 } = stack(enc, embedOut, S, 0);
+    const logits = device.createBuffer({ size: S * W.lm_head.N * 4, usage: S_ | CS });
+    const pass = enc.beginComputePass(); lmHead(pass, fn, S, logits); pass.end();
+    device.queue.submit([enc.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    return { embed: await readback(embedOut, S * Hd), layer0: await readback(layer0, S * Hd),
+             finalnorm: await readback(fn, S * Hd), logits: await readback(logits, S * W.lm_head.N), vocab: W.lm_head.N, S };
+  }
+
+  async function lastLogits(fn, M) {
+    // logits for the last row only (M=1 over the last position of fn)
+    const last = actBuf(Hd);
+    const enc0 = device.createCommandEncoder(); enc0.copyBufferToBuffer(fn, (M - 1) * Hd * 4, last, 0, Hd * 4); device.queue.submit([enc0.finish()]);
+    const logits = device.createBuffer({ size: W.lm_head.N * 4, usage: S_ | CS });
+    const enc = device.createCommandEncoder(); const pass = enc.beginComputePass(); lmHead(pass, last, 1, logits); pass.end(); device.queue.submit([enc.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    return readback(logits, W.lm_head.N);
+  }
+  const argmax = (a) => { let bi = 0, bv = -1e30; for (let i = 0; i < a.length; i++) if (a[i] > bv) { bv = a[i]; bi = i; } return bi; };
+
+  // prefill the prompt then generate nTokens greedily; returns timing + tokens.
+  async function generate(ids, nTokens) {
+    const t0 = performance.now();
+    const encP = device.createCommandEncoder();
+    const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, 0);
+    device.queue.submit([encP.finish()]);
+    let logits = await lastLogits(fn, ids.length);
+    let tok = argmax(logits);
+    const prefillMs = performance.now() - t0;
+
+    const gen = [tok];
+    const t1 = performance.now();
+    for (let i = 1; i < nTokens; i++) {
+      const pos = ids.length + i - 1;
+      const enc = device.createCommandEncoder();
+      const r = stack(enc, upload(embedDequant([tok]), S_ | CD), 1, pos);
+      device.queue.submit([enc.finish()]);
+      logits = await lastLogits(r.fn, 1);
+      tok = argmax(logits);
+      gen.push(tok);
+    }
+    const decodeMs = performance.now() - t1;
+    return { prefillMs, decodeMs, tokPerSec: (nTokens - 1) / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0] };
+  }
+
+  return { device, adapter, forward, generate };
 }
