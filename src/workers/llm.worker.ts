@@ -226,47 +226,10 @@ async function init(id: string, dtype: string, device: string, eos: number): Pro
  *  first real turn still does a clean prefill and nothing from the warmup leaks into the
  *  conversation. Mirrors the real sampling params so the whole generation path is compiled.
  *  Best-effort: a warmup hiccup never blocks readiness. */
-// TEMP diagnostic (flip off after one read): during warmup, trace which WebGPU kernel actually
-// handles MatMulNBits for our 2-bit model. Confirms whether we run the generic dequant shader (the
-// expected slow Apple path) vs subgroup-matrix / dp4a, or a silent WASM fallback. Feeds the decision
-// on whether to fork ort-web's subgroup-matrix kernel to accept 2-bit.
-const LLM_DIAG = true
-
 async function warmup(): Promise<void> {
   if (!model || !tokenizer) return
-
-  if (LLM_DIAG) {
-    try {
-      const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<{ info?: unknown } | null> } }).gpu
-      const ad = gpu ? await gpu.requestAdapter() : null
-      console.info('[aidekin][diag] WebGPU adapter:', ad?.info ? JSON.stringify(ad.info) : '(no adapter - WASM fallback?)')
-    } catch (e) {
-      console.warn('[aidekin][diag] adapter probe failed:', (e as Error).message)
-    }
-  }
-
   const throwaway = new DynamicCache()
-  const onnxEnv = (env.backends as { onnx?: { webgpu?: { profiling?: unknown } } }).onnx
-  const cap: string[] = []
-  const realLog = console.log.bind(console)
-  const realInfo = console.info.bind(console)
-  // Capture ort's per-kernel profiling lines; echo only the matmul-relevant ones, summarize the rest.
-  const sink = (...a: unknown[]): void => {
-    let line: string
-    try {
-      line = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')
-    } catch {
-      line = a.map(String).join(' ')
-    }
-    cap.push(line)
-    if (/MatMulNBits|subgroup|dp4a|dequant|fall.?back|WebGPU init/i.test(line)) realLog('[aidekin][diag-raw]', line.slice(0, 300))
-  }
   try {
-    if (LLM_DIAG && onnxEnv?.webgpu) onnxEnv.webgpu.profiling = { mode: 'default' }
-    if (LLM_DIAG) {
-      console.log = sink as never
-      console.info = sink as never
-    }
     const t0 = performance.now()
     const inputs = tokenizer.apply_chat_template(
       [{ role: 'user', content: 'Hi' }],
@@ -284,30 +247,11 @@ async function warmup(): Promise<void> {
       no_repeat_ngram_size: 3,
       eos_token_id: eosTokenId,
     } as never)
-    console.log = realLog
-    console.info = realInfo
-    realInfo(`[aidekin] LLM warmup ${(performance.now() - t0).toFixed(0)}ms`)
+    console.info(`[aidekin] LLM warmup ${(performance.now() - t0).toFixed(0)}ms`)
   } catch (e) {
-    console.log = realLog
-    console.info = realInfo
     console.warn('[aidekin] LLM warmup skipped:', (e as Error).message)
   } finally {
-    if (LLM_DIAG && onnxEnv?.webgpu) onnxEnv.webgpu.profiling = { mode: 'off' }
     void throwaway.dispose()
-  }
-
-  if (LLM_DIAG) {
-    const n = (re: RegExp): number => cap.filter((l) => re.test(l)).length
-    realLog(
-      `[aidekin][diag] warmup trace: lines=${cap.length}` +
-        ` MatMulNBits=${n(/MatMulNBits/i)} subgroupMatrix=${n(/subgroup.?matrix/i)}` +
-        ` dp4a=${n(/dp4a/i)} dequant=${n(/dequant/i)}` +
-        ` cpuFallbackWarn=${n(/not assigned|fall.?back|rerun/i)} wasmFallback=${n(/WebGPU init|fall.?back to WASM/i)}`,
-    )
-    realLog(
-      '[aidekin][diag] matmul shader/program names seen:',
-      Array.from(new Set(cap.filter((l) => /MatMulNBits|subgroup|dp4a|dequant/i.test(l)).map((l) => l.slice(0, 200)))).slice(0, 12),
-    )
   }
 }
 
