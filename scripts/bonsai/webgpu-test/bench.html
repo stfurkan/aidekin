@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bonsai decode kernel profiler</title>
+  <style>
+    body { font: 13px/1.5 ui-monospace, monospace; max-width: 980px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 18px; } button { font: inherit; padding: 8px 14px; cursor: pointer; }
+    pre { background: #f4f4f5; padding: 12px; border-radius: 8px; white-space: pre; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Bonsai decode kernel profiler</h1>
+  <p>Times each decode kernel at its real M=1 shape (N back-to-back dispatches, serialized by
+     write hazards), x how many times it runs per token. Shows where decode time actually goes.</p>
+  <button id="run">Profile decode kernels</button>
+  <pre id="out">idle.</pre>
+
+  <script type="module">
+    const out = document.getElementById('out');
+    const log = (s) => { out.textContent += s + '\n'; };
+    const N = 64; // dispatches per measurement
+
+    // shape constants (decode, S=1)
+    const K = 2048, K2 = 6144, Hd = 2048, H = 16, KV = 8, D = 128, F = 6144, V = 151669, MAXSEQ = 256, EPS = 1e-6;
+    const f32 = (n) => n * 4, u32 = (n) => n * 4;
+
+    // each: [label, wgsl, fields, bufBytes(bindings 1..), workgroups, perToken]
+    const SPECS = [
+      ['matmul_split qkv', 'matmul_split', [['u',1],['u',K],['u',16],['u',2048],['u',1024],['u',1024]],
+        [f32(K), u32(4096*(K/32)), f32(4096*16), f32(2048), f32(1024), f32(1024)], Math.ceil(4096/64), 28],
+      ['matmul_split gateup', 'matmul_split', [['u',1],['u',K],['u',16],['u',6144],['u',6144],['u',0]],
+        [f32(K), u32(12288*(K/32)), f32(12288*16), f32(6144), f32(6144), 16], Math.ceil(12288/64), 28],
+      ['matmul_resid o_proj', 'matmul_resid', [['u',1],['u',2048],['u',K],['u',16],['u',128],['u',0]],
+        [f32(K), u32(2048*(K/32)), f32(2048*16), f32(2048), f32(2048)], Math.ceil(2048/64), 28],
+      ['matmul_resid down', 'matmul_resid', [['u',1],['u',2048],['u',K2],['u',48],['u',128],['u',0]],
+        [f32(K2), u32(2048*(K2/32)), f32(2048*48), f32(2048), f32(2048)], Math.ceil(2048/64), 28],
+      ['rmsnorm input/post (R=1)', 'rmsnorm', [['u',1],['u',2048],['f',EPS],['u',0]], [f32(2048), f32(2048), f32(2048)], 1, 56],
+      ['rmsnorm q_norm (R=16)', 'rmsnorm', [['u',16],['u',128],['f',EPS],['u',0]], [f32(16*128), f32(128), f32(16*128)], 1, 28],
+      ['rmsnorm k_norm (R=8)', 'rmsnorm', [['u',8],['u',128],['f',EPS],['u',0]], [f32(8*128), f32(128), f32(8*128)], 1, 28],
+      ['rope q', 'rope', [['u',1],['u',16],['u',128],['u',0]], [f32(16*128), f32(128), f32(128), f32(16*128)], Math.ceil(2048/64), 28],
+      ['rope k', 'rope', [['u',1],['u',8],['u',128],['u',0]], [f32(8*128), f32(128), f32(128), f32(8*128)], Math.ceil(1024/64), 28],
+      ['copy (kv cache)', 'copy', [['u',1024],['u',30*1024],['u',0],['u',0]], [f32(1024), f32(MAXSEQ*KV*D)], Math.ceil(1024/64), 56],
+      ['attention_cache (S=1)', 'attention_cache', [['u',1],['u',16],['u',8],['u',128],['u',30],['u',31]],
+        [f32(16*128), f32(MAXSEQ*KV*D), f32(MAXSEQ*KV*D), f32(16*128)], 1, 28],
+      ['swiglu', 'swiglu', [['u',6144],['u',0],['u',0],['u',0]], [f32(6144), f32(6144), f32(6144)], Math.ceil(6144/64), 28],
+      ['matmul_q2 lm_head', 'matmul_q2', [['u',1],['u',V],['u',K],['u',16],['u',128],['u',2]],
+        [f32(K), u32(V*(K/4)), f32(V*16), f32(V)], Math.ceil(V/64), 1],
+    ];
+
+    function makeParams(fields) {
+      const ab = new ArrayBuffer(Math.ceil(fields.length / 4) * 16), dv = new DataView(ab);
+      fields.forEach(([t, v], i) => t === 'f' ? dv.setFloat32(i * 4, v, true) : dv.setUint32(i * 4, v >>> 0, true));
+      return ab;
+    }
+
+    async function run() {
+      out.textContent = '';
+      if (!navigator.gpu) { log('WebGPU not available.'); return; }
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      log('adapter: ' + JSON.stringify(adapter.info ?? {}));
+      const feats = [...adapter.features]; log('features: ' + feats.join(', '));
+      log('subgroups available: ' + (adapter.features.has('subgroups') ? 'YES' : 'no') + '\n');
+
+      const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, U = GPUBufferUsage.UNIFORM;
+      const code = {}; for (const w of new Set(SPECS.map(s => s[1]))) code[w] = await (await fetch(`./${w}.wgsl`)).text();
+      const pipe = {}; for (const w in code) pipe[w] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: code[w] }), entryPoint: 'main' } });
+
+      const rows = [];
+      for (const [label, w, fields, bufs, wg, perTok] of SPECS) {
+        const pBuf = device.createBuffer({ size: 64, usage: U | CD }); device.queue.writeBuffer(pBuf, 0, makeParams(fields));
+        const entries = [{ binding: 0, resource: { buffer: pBuf } }];
+        bufs.forEach((bytes, i) => entries.push({ binding: i + 1, resource: { buffer: device.createBuffer({ size: bytes, usage: S_ | CD }) } }));
+        const bg = device.createBindGroup({ layout: pipe[w].getBindGroupLayout(0), entries });
+        // warm
+        let enc = device.createCommandEncoder(); let pass = enc.beginComputePass(); pass.setPipeline(pipe[w]); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(wg); pass.end(); device.queue.submit([enc.finish()]); await device.queue.onSubmittedWorkDone();
+        // measure N serialized dispatches
+        enc = device.createCommandEncoder(); pass = enc.beginComputePass(); pass.setPipeline(pipe[w]); pass.setBindGroup(0, bg);
+        for (let i = 0; i < N; i++) pass.dispatchWorkgroups(wg);
+        pass.end(); device.queue.submit([enc.finish()]);
+        const t0 = performance.now(); await device.queue.onSubmittedWorkDone(); const per = (performance.now() - t0) / N;
+        rows.push({ label, per, perTok, total: per * perTok });
+      }
+      rows.sort((a, b) => b.total - a.total);
+      const sum = rows.reduce((s, r) => s + r.total, 0);
+      log('kernel'.padEnd(28) + 'per-call'.padStart(10) + 'x/token'.padStart(9) + 'ms/token'.padStart(11) + '   %');
+      log('-'.repeat(70));
+      for (const r of rows) log(r.label.padEnd(28) + (r.per.toFixed(3) + 'ms').padStart(10) + String(r.perTok).padStart(9) + (r.total.toFixed(2) + 'ms').padStart(11) + ('   ' + (100 * r.total / sum).toFixed(1) + '%'));
+      log('-'.repeat(70));
+      log('TOTAL est decode/token'.padEnd(28) + ''.padStart(19) + (sum.toFixed(2) + 'ms').padStart(11) + '  -> ' + (1000 / sum).toFixed(1) + ' tok/s');
+    }
+    document.getElementById('run').onclick = () => run().catch(e => log('ERROR: ' + e.message + '\n' + e.stack));
+  </script>
+</body>
+</html>
