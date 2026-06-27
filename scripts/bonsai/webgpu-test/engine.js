@@ -65,7 +65,7 @@ export async function createEngine(modelDir) {
       const codes = new Uint8Array(wq.length * 2);
       for (let i = 0; i < wq.length; i++) { codes[2 * i] = tgt2[2 * wq[i]]; codes[2 * i + 1] = tgt2[2 * wq[i] + 1]; }
       W[name] = { kind: 'q2', N: t.N, K: t.K, nb: t.K / 128, zp: 2, codes: upload(codes), scales: upload(readRef(t.scales)) };
-    } else if (t.kind === 'f32') {
+    } else if (t.kind === 'f32' && t.weight) {   // norm gammas; cos/sin caches are loaded separately below
       W[name] = { kind: 'f32', buf: upload(readRef(t.weight)) };
     }
   }
