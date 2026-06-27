@@ -23,27 +23,29 @@
     const log = (s) => { out.textContent += s + '\n'; };
 
     // u = u32 field, f = f32 field. Order must match each kernel's Params struct (padded to 16 bytes).
+    const g1 = (n) => [Math.ceil(n / 64), 1, 1];
+    const MM = { params: p => [['u', p.M], ['u', p.N], ['u', p.K], ['u', p.nb], ['u', p.block], ['u', 0]],
+                 inputs: [['x', 'f32'], ['signbits', 'u32'], ['scales', 'f32']], outElems: p => p.M * p.N };
     const TESTS = [
-      { name: 'binary_matmul', wgsl: 'matmul_binary.wgsl',
-        params: p => [['u', p.M], ['u', p.N], ['u', p.K], ['u', p.nb], ['u', p.block], ['u', 0]],
-        inputs: [['x', 'f32'], ['signbits', 'u32'], ['scales', 'f32']],
-        outElems: p => p.M * p.N, threads: p => p.M * p.N },
+      { name: 'binary_matmul', wgsl: 'matmul_binary.wgsl', ...MM, dispatch: p => g1(p.M * p.N) },
+      { name: 'binary_matmul_tiled', dir: 'binary_matmul', wgsl: 'matmul_binary_tiled.wgsl', ...MM,
+        dispatch: p => [Math.ceil(p.N / 16), Math.ceil(p.M / 16), 1] },
       { name: 'rmsnorm', wgsl: 'rmsnorm.wgsl',
         params: p => [['u', p.R], ['u', p.D], ['f', p.eps], ['u', 0]],
         inputs: [['x', 'f32'], ['gamma', 'f32']],
-        outElems: p => p.R * p.D, threads: p => p.R },
+        outElems: p => p.R * p.D, dispatch: p => g1(p.R) },
       { name: 'rope', wgsl: 'rope.wgsl',
         params: p => [['u', p.S], ['u', p.H], ['u', p.D], ['u', 0]],
         inputs: [['x', 'f32'], ['cos', 'f32'], ['sin', 'f32']],
-        outElems: p => p.S * p.H * p.D, threads: p => p.S * p.H * p.D },
+        outElems: p => p.S * p.H * p.D, dispatch: p => g1(p.S * p.H * p.D) },
       { name: 'swiglu', wgsl: 'swiglu.wgsl',
         params: p => [['u', p.n], ['u', 0], ['u', 0], ['u', 0]],
         inputs: [['gate', 'f32'], ['up', 'f32']],
-        outElems: p => p.n, threads: p => p.n },
+        outElems: p => p.n, dispatch: p => g1(p.n) },
       { name: 'attention', wgsl: 'attention.wgsl',
         params: p => [['u', p.S], ['u', p.H], ['u', p.D], ['u', 0]],
         inputs: [['q', 'f32'], ['k', 'f32'], ['v', 'f32']],
-        outElems: p => p.S * p.H * p.D, threads: p => p.S * p.H },
+        outElems: p => p.S * p.H * p.D, dispatch: p => g1(p.S * p.H) },
     ];
 
     const buf = async (url) => (await (await fetch(url)).arrayBuffer());
@@ -56,14 +58,15 @@
     }
 
     async function runTest(device, t) {
-      const p = await (await fetch(`./fixtures/${t.name}/params.json`)).json();
+      const dir = t.dir || t.name;
+      const p = await (await fetch(`./fixtures/${dir}/params.json`)).json();
       const S = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC;
       const mk = (data, usage) => { const b = device.createBuffer({ size: data.byteLength, usage }); device.queue.writeBuffer(b, 0, data); return b; };
 
       const entries = [{ binding: 0, resource: { buffer: mk(makeUniform(t.params(p)), GPUBufferUsage.UNIFORM | CD) } }];
       let b = 1;
       for (const [name] of t.inputs) {
-        entries.push({ binding: b++, resource: { buffer: mk(await buf(`./fixtures/${t.name}/${name}.bin`), S | CD) } });
+        entries.push({ binding: b++, resource: { buffer: mk(await buf(`./fixtures/${dir}/${name}.bin`), S | CD) } });
       }
       const outBytes = t.outElems(p) * 4;
       const yBuf = device.createBuffer({ size: outBytes, usage: S | CS });
@@ -76,7 +79,7 @@
       const pass = enc.beginComputePass();
       pass.setPipeline(pipe);
       pass.setBindGroup(0, device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries }));
-      pass.dispatchWorkgroups(Math.ceil(t.threads(p) / 64));
+      pass.dispatchWorkgroups(...t.dispatch(p));
       pass.end();
       enc.copyBufferToBuffer(yBuf, 0, readBuf, 0, outBytes);
       const t0 = performance.now();
@@ -87,7 +90,7 @@
       await readBuf.mapAsync(GPUMapMode.READ);
       const y = new Float32Array(readBuf.getMappedRange().slice(0));
       readBuf.unmap();
-      const exp = new Float32Array(await buf(`./fixtures/${t.name}/expected.bin`));
+      const exp = new Float32Array(await buf(`./fixtures/${dir}/expected.bin`));
 
       let dot = 0, na = 0, nb = 0, maxAbs = 0;
       for (let i = 0; i < y.length; i++) { dot += y[i] * exp[i]; na += y[i] * y[i]; nb += exp[i] * exp[i]; maxAbs = Math.max(maxAbs, Math.abs(y[i] - exp[i])); }
