@@ -359,7 +359,11 @@ async function runGeneration(
   // MESSAGES, not token ids (see the cache note above).
   await model.generate({
     ...modelInputs,
-    max_new_tokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
+    // Kept tight: transformers.js on WebGPU pays a large FIXED per-generate setup cost that
+    // scales with max_new_tokens (~25ms each), independent of the actual reply length, so 512
+    // added ~13s of dead time to every ttft. Replies here are 1-2 sentences (tens of tokens);
+    // 256 (512 with a <think> block) is ample and slashes the first-token latency.
+    max_new_tokens: allowThink ? 512 : 256,
     do_sample: true,
     temperature: 0.5,
     top_k: 20,
