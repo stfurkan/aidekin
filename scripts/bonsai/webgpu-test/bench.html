@@ -35,14 +35,14 @@
         [f32(K), u32(2048*(K/32)), f32(2048*16), f32(2048), f32(2048)], Math.ceil(2048/64), 28],
       ['matmul_resid down', 'matmul_resid', [['u',1],['u',2048],['u',K2],['u',48],['u',128],['u',0]],
         [f32(K2), u32(2048*(K2/32)), f32(2048*48), f32(2048), f32(2048)], Math.ceil(2048/64), 28],
-      ['rmsnorm input/post (R=1)', 'rmsnorm', [['u',1],['u',2048],['f',EPS],['u',0]], [f32(2048), f32(2048), f32(2048)], 1, 56],
-      ['rmsnorm q_norm (R=16)', 'rmsnorm', [['u',16],['u',128],['f',EPS],['u',0]], [f32(16*128), f32(128), f32(16*128)], 1, 28],
-      ['rmsnorm k_norm (R=8)', 'rmsnorm', [['u',8],['u',128],['f',EPS],['u',0]], [f32(8*128), f32(128), f32(8*128)], 1, 28],
+      ['rmsnorm input/post (R=1)', 'rmsnorm_sg', [['u',1],['u',2048],['f',EPS],['u',0]], [f32(2048), f32(2048), f32(2048)], 1, 56],
+      ['rmsnorm q_norm (R=16)', 'rmsnorm_sg', [['u',16],['u',128],['f',EPS],['u',0]], [f32(16*128), f32(128), f32(16*128)], 16, 28],
+      ['rmsnorm k_norm (R=8)', 'rmsnorm_sg', [['u',8],['u',128],['f',EPS],['u',0]], [f32(8*128), f32(128), f32(8*128)], 8, 28],
       ['rope q', 'rope', [['u',1],['u',16],['u',128],['u',0]], [f32(16*128), f32(128), f32(128), f32(16*128)], Math.ceil(2048/64), 28],
       ['rope k', 'rope', [['u',1],['u',8],['u',128],['u',0]], [f32(8*128), f32(128), f32(128), f32(8*128)], Math.ceil(1024/64), 28],
       ['copy (kv cache)', 'copy', [['u',1024],['u',30*1024],['u',0],['u',0]], [f32(1024), f32(MAXSEQ*KV*D)], Math.ceil(1024/64), 56],
-      ['attention_cache (S=1)', 'attention_cache', [['u',1],['u',16],['u',8],['u',128],['u',30],['u',31]],
-        [f32(16*128), f32(MAXSEQ*KV*D), f32(MAXSEQ*KV*D), f32(16*128)], 1, 28],
+      ['attention_sg (S=1)', 'attention_sg', [['u',1],['u',16],['u',8],['u',128],['u',30],['u',31]],
+        [f32(16*128), f32(MAXSEQ*KV*D), f32(MAXSEQ*KV*D), f32(16*128)], 16, 28],
       ['swiglu', 'swiglu', [['u',6144],['u',0],['u',0],['u',0]], [f32(6144), f32(6144), f32(6144)], Math.ceil(6144/64), 28],
       ['matmul_q2 lm_head', 'matmul_q2', [['u',1],['u',V],['u',K],['u',16],['u',128],['u',2]],
         [f32(K), u32(V*(K/4)), f32(V*16), f32(V)], Math.ceil(V/64), 1],
@@ -58,14 +58,14 @@
       out.textContent = '';
       if (!navigator.gpu) { log('WebGPU not available.'); return; }
       const adapter = await navigator.gpu.requestAdapter();
-      const device = await adapter.requestDevice();
-      log('adapter: ' + JSON.stringify(adapter.info ?? {}));
-      const feats = [...adapter.features]; log('features: ' + feats.join(', '));
-      log('subgroups available: ' + (adapter.features.has('subgroups') ? 'YES' : 'no') + '\n');
+      const hasSG = adapter.features.has('subgroups');
+      const sgMax = (adapter.info ?? {}).subgroupMaxSize ?? 32;
+      const device = await adapter.requestDevice({ requiredFeatures: hasSG ? ['subgroups'] : [] });
+      log('subgroups available: ' + (hasSG ? 'YES (SG=' + sgMax + ')' : 'no') + '\n');
 
       const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, U = GPUBufferUsage.UNIFORM;
       const code = {}; for (const w of new Set(SPECS.map(s => s[1]))) code[w] = await (await fetch(`./${w}.wgsl`)).text();
-      const pipe = {}; for (const w in code) pipe[w] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: code[w] }), entryPoint: 'main' } });
+      const pipe = {}; for (const w in code) pipe[w] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: code[w] }), entryPoint: 'main', constants: w.endsWith('_sg') ? { SG: sgMax } : undefined } });
 
       const rows = [];
       for (const [label, w, fields, bufs, wg, perTok] of SPECS) {
