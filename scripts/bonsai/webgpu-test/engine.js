@@ -30,12 +30,17 @@ export async function createEngine(modelDir) {
   };
 
   const adapter = await navigator.gpu.requestAdapter();
-  const device = await adapter.requestDevice();
+  const hasSG = adapter.features.has('subgroups');
+  const sgMin = adapter.subgroupMinSize ?? 0, sgMax = adapter.subgroupMaxSize ?? 0;
+  const useSG = hasSG && sgMin === sgMax && sgMax >= 32;   // uniform subgroup >=32 -> head_dim/SG<=4
+  const device = await adapter.requestDevice({ requiredFeatures: hasSG ? ['subgroups'] : [] });
   const pipelines = {};
-  for (const name of WGSLS) {
+  const mkPipe = async (name, constants) => {
     const code = await (await fetch(`./${name}.wgsl`)).text();
-    pipelines[name] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
-  }
+    pipelines[name] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main', constants } });
+  };
+  for (const name of WGSLS) await mkPipe(name);
+  if (useSG) { await mkPipe('rmsnorm_sg', { SG: sgMax }); await mkPipe('attention_sg', { SG: sgMax }); }
 
   const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, U = GPUBufferUsage.UNIFORM;
   const upload = (typed, usage = S_ | CD) => { const b = device.createBuffer({ size: typed.byteLength, usage }); device.queue.writeBuffer(b, 0, typed); return b; };
@@ -111,7 +116,18 @@ export async function createEngine(modelDir) {
     pass.dispatchWorkgroups(Math.ceil(threads / 64));
   }
   const run = (pass, name, fields, ins, out, threads) => runIO(pass, name, fields, ins, [out], threads);
-  const rms = (pass, x, g, R, Dn, out) => run(pass, 'rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R);
+  // dispatch exactly nWG workgroups (for subgroup kernels: one workgroup per row / per (query,head))
+  function runN(pass, name, fields, ins, out, nWG) {
+    const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+    ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
+    entries.push({ binding: ins.length + 1, resource: { buffer: out } });
+    pass.setPipeline(pipelines[name]);
+    pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
+    pass.dispatchWorkgroups(nWG);
+  }
+  const rms = (pass, x, g, R, Dn, out) => useSG
+    ? runN(pass, 'rmsnorm_sg', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R)
+    : run(pass, 'rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R);
   // fused q/k/v or gate/up matmul (split-K GEMV lost to reduction overhead at K=2048, reverted)
   function fusedMM(pass, w, inBuf, S, outs) {
     const Ntot = w.N0 + w.N1 + w.N2;
@@ -136,7 +152,9 @@ export async function createEngine(modelDir) {
     run(pass, 'copy', [['u', S * KV * Dh], ['u', posBase * KV * Dh], ['u', 0], ['u', 0]], [kr], Kc[li], S * KV * Dh);
     run(pass, 'copy', [['u', S * KV * Dh], ['u', posBase * KV * Dh], ['u', 0], ['u', 0]], [v], Vc[li], S * KV * Dh);
     const att = actBuf(S * H * Dh);
-    run(pass, 'attention_cache', [['u', S], ['u', H], ['u', KV], ['u', Dh], ['u', posBase], ['u', Ltot]], [qr, Kc[li], Vc[li]], att, S * H);
+    const attF = [['u', S], ['u', H], ['u', KV], ['u', Dh], ['u', posBase], ['u', Ltot]];
+    if (useSG) runN(pass, 'attention_sg', attF, [qr, Kc[li], Vc[li]], att, S * H);
+    else run(pass, 'attention_cache', attF, [qr, Kc[li], Vc[li]], att, S * H);
     const o = W[`layers.${li}.attn.o_proj`], h2 = actBuf(S * Hd);
     residMM(pass, o, att, h, S, h2);
     const n2 = actBuf(S * Hd); rms(pass, h2, `layers.${li}.post_attention_layernorm`, S, Hd, n2);
