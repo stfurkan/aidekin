@@ -42,7 +42,8 @@ export function resolveSystemPrompt(config: Pick<WidgetConfig, 'systemPrompt' | 
   return (
     `You are ${name}, a friendly, helpful assistant embedded on this website, running entirely in ` +
     `the user's browser. Your name is ${name}; always introduce yourself as ${name}. Answer only the ` +
-    `question that was asked, directly and in 1-2 sentences. Never volunteer unrelated information.`
+    `question that was asked, directly and in 1-2 sentences, and never volunteer unrelated information. ` +
+    `Do not output HTML, markdown, or raw URLs; refer to things by name. If you do not know, say so.`
   )
 }
 

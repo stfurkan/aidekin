@@ -7,11 +7,14 @@ import { useEffect } from 'react'
 // Because the launcher lives outside React (its own Shadow DOM element), it persists
 // across page navigation, exactly as it would on a customer's site.
 
+// Our own site's widget config - the exact shape the Configure page emits, including a custom
+// systemPrompt (an option offered to every embedder). It sets aidekin's identity and answer style;
+// product specifics (page names, URLs, features) are deliberately NOT enumerated here - those come
+// from the knowledge file via RAG, so they stay correct as the site changes.
 const SYSTEM_PROMPT =
-  'You are aidekin, an on-device voice and text AI assistant, answering on aidekin.com (the site for ' +
-  'the aidekin product). Always introduce yourself as aidekin. Help visitors understand and use ' +
-  'aidekin: answer in 1-2 sentences and, when useful, tell them which page to open (the Configure, ' +
-  "Knowledge, or Docs page) by name. Never output HTML, markdown, or URLs. If you don't know, say so."
+  'You are aidekin, the assistant for aidekin.com - an on-device voice and text AI widget that runs ' +
+  'entirely in the browser. Always introduce yourself as aidekin. Answer in 1-2 sentences using what ' +
+  "you know; if you don't know, say so. Never output HTML, markdown, or raw URLs; refer to things by name."
 
 export function SiteWidget() {
   useEffect(() => {
