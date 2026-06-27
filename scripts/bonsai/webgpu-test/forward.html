@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bonsai full forward (WebGPU)</title>
+  <style>
+    body { font: 14px/1.5 ui-monospace, monospace; max-width: 900px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 18px; }
+    button { font: inherit; padding: 8px 14px; cursor: pointer; }
+    pre { background: #f4f4f5; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+    .pass { color: #166534; font-weight: 700; }
+    .fail { color: #b91c1c; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Bonsai full forward (WebGPU)</h1>
+  <p>Serve this folder and open in Chrome. Loads ~290 MB once; the dumb kernels make the
+     forward slow (that's fine, P2 optimizes). Checks each stage against the numpy reference.</p>
+  <button id="run">Run full forward</button>
+  <pre id="out">idle.</pre>
+
+  <script type="module">
+    import { createEngine } from './engine.js';
+    const out = document.getElementById('out');
+    const log = (s) => { out.textContent += s + '\n'; };
+    const buf = async (u) => await (await fetch(u)).arrayBuffer();
+
+    function compare(label, got, expected) {
+      let dot = 0, na = 0, nb = 0, maxAbs = 0;
+      for (let i = 0; i < expected.length; i++) { dot += got[i] * expected[i]; na += got[i] * got[i]; nb += expected[i] * expected[i]; maxAbs = Math.max(maxAbs, Math.abs(got[i] - expected[i])); }
+      const cos = dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9);
+      const ok = cos > 0.999;
+      log(`${ok ? '[PASS]' : '[FAIL]'} ${label.padEnd(11)} cosine=${cos.toFixed(7)} maxabs=${maxAbs.toExponential(2)}`);
+      return ok;
+    }
+
+    async function run() {
+      out.textContent = '';
+      if (!navigator.gpu) { log('WebGPU not available.'); return; }
+      const fp = await (await fetch('./forward-fixtures/params.json')).json();
+      const ids = fp.ids;
+      log(`prompt ids (S=${fp.S}): [${ids.join(', ')}]\nloading model (~290 MB)...`);
+
+      const t0 = performance.now();
+      const engine = await createEngine('./model');
+      log(`loaded in ${((performance.now() - t0) / 1000).toFixed(1)}s. running forward...`);
+
+      const t1 = performance.now();
+      const r = await engine.forward(ids);
+      log(`forward done in ${((performance.now() - t1) / 1000).toFixed(1)}s\n`);
+
+      let ok = true;
+      ok = compare('embed', r.embed, new Float32Array(await buf('./forward-fixtures/embed.bin'))) && ok;
+      ok = compare('layer0', r.layer0, new Float32Array(await buf('./forward-fixtures/layer0.bin'))) && ok;
+      ok = compare('finalnorm', r.finalnorm, new Float32Array(await buf('./forward-fixtures/finalnorm.bin'))) && ok;
+      ok = compare('logits', r.logits, new Float32Array(await buf('./forward-fixtures/logits.bin'))) && ok;
+
+      // next-token argmax of the last position
+      const V = r.vocab, base = (r.S - 1) * V;
+      let best = 0, bv = -1e30;
+      for (let i = 0; i < V; i++) { if (r.logits[base + i] > bv) { bv = r.logits[base + i]; best = i; } }
+      const tokenOk = best === 26194;          // golden: " Tokyo"
+      log(`\nnext-token argmax = ${best} (golden 26194 = " Tokyo")  ${tokenOk ? 'MATCH' : 'MISMATCH'}`);
+
+      const all = ok && tokenOk;
+      out.insertAdjacentHTML('beforeend', `\n<span class="${all ? 'pass' : 'fail'}">${all ? 'FULL FORWARD CORRECT' : 'NEEDS FIXING'}</span>`);
+    }
+
+    document.getElementById('run').onclick = () => run().catch(e => log('ERROR: ' + e.message + '\n' + e.stack));
+  </script>
+</body>
+</html>

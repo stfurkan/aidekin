@@ -19,6 +19,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", required=True)
     ap.add_argument("--golden", default=None)
+    ap.add_argument("--dump", default=None, help="write per-stage checkpoint fixtures here")
     args = ap.parse_args()
     work = args.work
     golden = args.golden or f"{work}/golden"
@@ -96,6 +97,7 @@ def main() -> None:
 
     # embedding lookup (4-bit), no scaling for Qwen3
     h = dequant("embed_tokens", rows=ids).astype(np.float32)            # [S, hidden]
+    ckpt = {"embed": h.copy()}
 
     causal = np.triu(np.full((S, S), -1e30, np.float32), 1)             # [S,S] upper-tri masked
     for li in range(L):
@@ -122,9 +124,23 @@ def main() -> None:
         gate = x @ dequant(f"layers.{li}.mlp.gate_proj").T
         up = x @ dequant(f"layers.{li}.mlp.up_proj").T
         h = res + (silu(gate) * up) @ dequant(f"layers.{li}.mlp.down_proj").T
+        if li == 0:
+            ckpt["layer0"] = h.copy()
 
     h = rmsnorm(h, norm_w("layers.28.final_norm_layernorm"))
+    ckpt["finalnorm"] = h.copy()
     logits = h @ dequant("lm_head").T                                   # [S, vocab]
+    ckpt["logits"] = logits
+
+    if args.dump:
+        import os
+        os.makedirs(args.dump, exist_ok=True)
+        np.asarray(ids, np.int32).tofile(f"{args.dump}/ids.i32.bin")
+        for name, arr in ckpt.items():
+            arr.astype(np.float32).tofile(f"{args.dump}/{name}.bin")
+        json.dump({"S": int(S), "hidden": A["hidden"], "vocab": A["vocab"], "ids": [int(i) for i in ids]},
+                  open(f"{args.dump}/params.json", "w"), indent=1)
+        print("dumped checkpoints to", args.dump)
 
     # compare to golden
     ref = np.load(f"{golden}/logits_all.npy").astype(np.float32)

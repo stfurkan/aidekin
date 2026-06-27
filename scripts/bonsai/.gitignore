@@ -8,3 +8,5 @@
 *.bin
 golden/
 webgpu-test/fixtures/
+webgpu-test/forward-fixtures/
+webgpu-test/model/
