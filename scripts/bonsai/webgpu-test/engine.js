@@ -108,14 +108,17 @@ export async function createEngine(modelDir) {
     await rb.mapAsync(GPUMapMode.READ); const out = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); return out;
   }
 
-  let SKEL = false;   // diagnostic: dispatch every kernel with 1 workgroup (same dispatches/barriers, ~no compute)
+  // diagnostic: FULL = null -> every kernel at real size; FULL = Set(names) -> only those at real size,
+  // all others dispatched as 1 workgroup. Lets us measure each kernel type's true in-context cost.
+  let FULL = null;
+  const isFull = (name) => FULL === null || FULL.has(name);
   function runIO(pass, name, fields, ins, outs, threads) {
     const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
     ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
     outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
     pass.setPipeline(pipelines[name]);
     pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    pass.dispatchWorkgroups(SKEL ? 1 : Math.ceil(threads / 64));
+    pass.dispatchWorkgroups(isFull(name) ? Math.ceil(threads / 64) : 1);
   }
   const run = (pass, name, fields, ins, out, threads) => runIO(pass, name, fields, ins, [out], threads);
   // dispatch exactly nWG workgroups (for subgroup kernels: one workgroup per row / per (query,head))
@@ -125,7 +128,7 @@ export async function createEngine(modelDir) {
     entries.push({ binding: ins.length + 1, resource: { buffer: out } });
     pass.setPipeline(pipelines[name]);
     pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    pass.dispatchWorkgroups(SKEL ? 1 : nWG);
+    pass.dispatchWorkgroups(isFull(name) ? nWG : 1);
   }
   // 2D workgroup dispatch (subgroup GEMV: one workgroup per output column)
   function runWG(pass, name, fields, ins, outs, wgX, wgY) {
@@ -134,7 +137,8 @@ export async function createEngine(modelDir) {
     outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
     pass.setPipeline(pipelines[name]);
     pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    pass.dispatchWorkgroups(SKEL ? 1 : wgX, SKEL ? 1 : wgY, 1);
+    const f = isFull(name);
+    pass.dispatchWorkgroups(f ? wgX : 1, f ? wgY : 1, 1);
   }
   const rms = (pass, x, g, R, Dn, out) => useSG
     ? runN(pass, 'rmsnorm_sg', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R)
@@ -210,8 +214,8 @@ export async function createEngine(modelDir) {
   }
   const argmax = (a) => { let bi = 0, bv = -1e30; for (let i = 0; i < a.length; i++) if (a[i] > bv) { bv = a[i]; bi = i; } return bi; };
 
-  async function generate(ids, nTokens, skel = false) {
-    SKEL = skel;
+  async function generate(ids, nTokens, full = null) {
+    FULL = full;
     const t0 = performance.now();
     const encP = device.createCommandEncoder();
     const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, 0);
@@ -240,7 +244,7 @@ export async function createEngine(modelDir) {
       tok = argmax(logits); gen.push(tok);
     }
     const decodeMs = performance.now() - t1, nd = nTokens - 1;
-    SKEL = false;
+    FULL = null;
     return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd };
   }
 
