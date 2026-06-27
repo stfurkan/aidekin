@@ -1,0 +1,8 @@
+# Local tooling artifacts, never committed.
+.venv/
+.work/
+*.onnx
+*.onnx_data
+*.safetensors
+*.npy
+golden/
