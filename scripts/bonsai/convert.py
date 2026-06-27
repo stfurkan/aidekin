@@ -49,16 +49,20 @@ def main() -> None:
     aux = bytearray()
 
     def place(name: str) -> dict:
-        """Reference an initializer: external -> point into model_q1.onnx_data; inline -> copy to aux."""
+        """Reference an initializer: external -> point into model_q1.onnx_data; inline -> copy to aux.
+        Always records dtype + shape so the loader is self-describing."""
         t = inits[name]
+        info = {"dtype": TensorProto.DataType.Name(t.data_type), "shape": list(t.dims)}
         if t.data_location == TensorProto.EXTERNAL:
             d = {x.key: x.value for x in t.external_data}
-            return {"src": "data", "off": int(d["offset"]), "len": int(d["length"])}
-        arr = numpy_helper.to_array(t)
-        b = arr.tobytes()
-        off = len(aux)
-        aux.extend(b)
-        return {"src": "aux", "off": off, "len": len(b), "dtype": str(arr.dtype), "shape": list(arr.shape)}
+            info.update({"src": "data", "off": int(d["offset"]), "len": int(d["length"])})
+        else:
+            arr = numpy_helper.to_array(t)
+            b = arr.tobytes()
+            off = len(aux)
+            aux.extend(b)
+            info.update({"src": "aux", "off": off, "len": len(b)})
+        return info
 
     tensors: dict[str, dict] = {}
 
@@ -99,7 +103,7 @@ def main() -> None:
     # RoPE caches (YaRN-scaled; reference as-is for exact parity)
     for c in ("cos_cache", "sin_cache"):
         if c in inits:
-            tensors[c] = {"kind": "f32", "shape": list(inits[c].dims), **place(c)}
+            tensors[c] = {"kind": "f32", **place(c)}
 
     # the two lookup tables
     luts = {"tgt2": place("unpack_lut_src1_tgt2"), "tgt4": place("unpack_lut_src1_tgt4")}
