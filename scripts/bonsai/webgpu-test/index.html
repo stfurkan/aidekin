@@ -28,8 +28,8 @@
                  inputs: [['x', 'f32'], ['signbits', 'u32'], ['scales', 'f32']], outElems: p => p.M * p.N };
     const TESTS = [
       { name: 'binary_matmul', wgsl: 'matmul_binary.wgsl', ...MM, dispatch: p => g1(p.M * p.N) },
-      { name: 'binary_matmul_tiled', dir: 'binary_matmul', wgsl: 'matmul_binary_tiled.wgsl', ...MM,
-        dispatch: p => [Math.ceil(p.N / 16), Math.ceil(p.M / 16), 1] },
+      { name: 'binary_matmul_nmajor', dir: 'binary_matmul', wgsl: 'matmul_binary_nmajor.wgsl', ...MM,
+        dispatch: p => g1(p.N) },
       { name: 'rmsnorm', wgsl: 'rmsnorm.wgsl',
         params: p => [['u', p.R], ['u', p.D], ['f', p.eps], ['u', 0]],
         inputs: [['x', 'f32'], ['gamma', 'f32']],
