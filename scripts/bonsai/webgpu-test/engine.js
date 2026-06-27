@@ -4,7 +4,7 @@
 // in one dispatch, gate/up in one, and the residual add folded into o_proj/down_proj.
 
 const VIEW = { FLOAT: Float32Array, UINT8: Uint8Array, FLOAT16: Uint16Array };
-const WGSLS = ['matmul_binary_vec4', 'matmul_split', 'matmul_resid', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy'];
+const WGSLS = ['matmul_binary_vec4', 'matmul_split', 'matmul_resid', 'matmul_split_gemv', 'matmul_resid_gemv', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy'];
 const MAXSEQ = 256;
 
 function makeParams(fields) {
@@ -112,12 +112,41 @@ export async function createEngine(modelDir) {
   }
   const run = (pass, name, fields, ins, out, threads) => runIO(pass, name, fields, ins, [out], threads);
   const rms = (pass, x, g, R, Dn, out) => run(pass, 'rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R);
+  // one full workgroup (128 threads) per output column, dispatched as a 2D grid (N can exceed 65535)
+  function runWG(pass, name, fields, ins, outs, wgX, wgY) {
+    const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+    ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
+    outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
+    pass.setPipeline(pipelines[name]);
+    pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
+    pass.dispatchWorkgroups(wgX, wgY, 1);
+  }
+  const GX = 32768;
+  // fused q/k/v or gate/up matmul: split-K GEMV for decode (S=1), one-thread-per-output for prefill
+  function fusedMM(pass, w, inBuf, S, outs) {
+    const Ntot = w.N0 + w.N1 + w.N2;
+    if (S === 1) {
+      const gx = Math.min(Ntot, GX);
+      runWG(pass, 'matmul_split_gemv', [['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2], ['u', gx]], [inBuf, w.sign, w.scales], outs, gx, Math.ceil(Ntot / gx));
+    } else {
+      runIO(pass, 'matmul_split', [['u', S], ['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2]], [inBuf, w.sign, w.scales], outs, S * Ntot);
+    }
+  }
+  // o_proj / down_proj matmul with fused residual: split-K GEMV for decode, one-thread-per-output for prefill
+  function residMM(pass, w, inBuf, resid, S, out) {
+    if (S === 1) {
+      const gx = Math.min(w.N, GX);
+      runWG(pass, 'matmul_resid_gemv', [['u', w.N], ['u', w.K], ['u', w.nb], ['u', gx], ['u', 0], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], gx, Math.ceil(w.N / gx));
+    } else {
+      runIO(pass, 'matmul_resid', [['u', S], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], S * w.N);
+    }
+  }
 
   function layer(pass, li, h, S, posBase, cos, sin) {
     const Ltot = posBase + S;
     const n1 = actBuf(S * Hd); rms(pass, h, `layers.${li}.input_layernorm`, S, Hd, n1);
     const qkv = W[`layers.${li}.attn.qkv`], q = actBuf(S * H * Dh), k = actBuf(S * KV * Dh), v = actBuf(S * KV * Dh);
-    runIO(pass, 'matmul_split', [['u', S], ['u', qkv.K], ['u', qkv.nb], ['u', qkv.N0], ['u', qkv.N1], ['u', qkv.N2]], [n1, qkv.sign, qkv.scales], [q, k, v], S * (qkv.N0 + qkv.N1 + qkv.N2));
+    fusedMM(pass, qkv, n1, S, [q, k, v]);
     const qn = actBuf(S * H * Dh), kn = actBuf(S * KV * Dh);
     rms(pass, q, `layers.${li}.attn.q_norm`, S * H, Dh, qn);
     rms(pass, k, `layers.${li}.attn.k_norm`, S * KV, Dh, kn);
@@ -129,13 +158,13 @@ export async function createEngine(modelDir) {
     const att = actBuf(S * H * Dh);
     run(pass, 'attention_cache', [['u', S], ['u', H], ['u', KV], ['u', Dh], ['u', posBase], ['u', Ltot]], [qr, Kc[li], Vc[li]], att, S * H);
     const o = W[`layers.${li}.attn.o_proj`], h2 = actBuf(S * Hd);
-    runIO(pass, 'matmul_resid', [['u', S], ['u', o.N], ['u', o.K], ['u', o.nb], ['u', 128], ['u', 0]], [att, o.sign, o.scales, h], [h2], S * o.N);
+    residMM(pass, o, att, h, S, h2);
     const n2 = actBuf(S * Hd); rms(pass, h2, `layers.${li}.post_attention_layernorm`, S, Hd, n2);
     const gu = W[`layers.${li}.mlp.gateup`], g = actBuf(S * F), u = actBuf(S * F);
-    runIO(pass, 'matmul_split', [['u', S], ['u', gu.K], ['u', gu.nb], ['u', gu.N0], ['u', gu.N1], ['u', gu.N2]], [n2, gu.sign, gu.scales], [g, u, dummy], S * (gu.N0 + gu.N1));
+    fusedMM(pass, gu, n2, S, [g, u, dummy]);
     const sw = actBuf(S * F); run(pass, 'swiglu', [['u', S * F], ['u', 0], ['u', 0], ['u', 0]], [g, u], sw, S * F);
     const d = W[`layers.${li}.mlp.down_proj`], hn = actBuf(S * Hd);
-    runIO(pass, 'matmul_resid', [['u', S], ['u', d.N], ['u', d.K], ['u', d.nb], ['u', 128], ['u', 0]], [sw, d.sign, d.scales, h2], [hn], S * d.N);
+    residMM(pass, d, sw, h2, S, hn);
     return hn;
   }
   function lmHead(pass, fn, M, out) { const lm = W.lm_head; run(pass, 'matmul_q2', [['u', M], ['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', 128], ['u', lm.zp]], [fn, lm.codes, lm.scales], out, M * lm.N); }
