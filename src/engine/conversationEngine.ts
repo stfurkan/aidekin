@@ -77,6 +77,19 @@ const DEFAULT_MAX_HISTORY_TOKENS = 6000
 // Rough token estimate (about 4 chars/token), good enough for a sliding-window trim.
 const approxTokens = (s: string): number => Math.ceil(s.length / 4)
 
+// Static answering rules for grounded (RAG) turns. Kept in the SYSTEM PROMPT (the cached
+// prefix), NOT re-injected into every user turn, so they are prefilled once and only the
+// per-turn <info> block + question land in the KV-cache delta. Phrased to be a no-op on turns
+// that carry no <info> block (greetings, small talk). Also forbids HTML/links so the small
+// model stops emitting mangled hrefs from grounded text.
+const RAG_INSTRUCTION =
+  'When the user message includes an <info> block, answer using ONLY the information inside it, ' +
+  'in your own words as if you already knew it, in 1-2 sentences. Do not mention the block or use ' +
+  'phrases like "the reference", "the text says", "based on the context", or "according to", and do ' +
+  'not add unrelated details. If the answer is not in the block, say you do not have that information. ' +
+  'Never output HTML or markdown; refer to pages by name and write a URL or email only if it appears ' +
+  'verbatim in the <info> block.'
+
 /** One conversation turn. `content` is the plain text (what the user actually said /
  *  the assistant replied) - used for display, persistence and hydration. `model` is the
  *  OPTIONAL augmented form sent to the LLM: a grounded (RAG) user turn carries its
@@ -116,6 +129,14 @@ export class ConversationEngine {
     return this.messages.map(toModel)
   }
 
+  /** The system prompt as the model sees it: the owner's persona plus, ONLY while RAG is
+   *  active, the static grounding rules. Keeping the rules in the cached prefix (not in every
+   *  user turn) means they are prefilled once, so each grounded turn's delta is just the
+   *  retrieved context + the question. */
+  private composedSystem(): string {
+    return this.retriever ? `${this.systemPrompt}\n\n${RAG_INSTRUCTION}` : this.systemPrompt
+  }
+
   private llm: Worker | null = null
   private ownsWorker = false
   // Track the largest file being downloaded (the model weights dominate) → one smooth
@@ -142,7 +163,7 @@ export class ConversationEngine {
     // Higher gate so small-talk ("hi", "thanks") and off-topic messages do NOT pull doc
     // chunks and get recited back. Relevant questions still clear it (bge-small scores
     // genuinely on-topic content ~0.5+). Tunable per deployment.
-    this.ragMinScore = opts.ragMinScore ?? 0.45
+    this.ragMinScore = opts.ragMinScore ?? 0.5
     this.chunkClauses = opts.chunkClauses ?? false
     this.alwaysThink = opts.reasoning ?? false
     this.persistKey = opts.persistKey
@@ -260,6 +281,11 @@ export class ConversationEngine {
       // off-topic score gap, so an off-topic message (a greeting, small-talk) scores below the
       // gate and is dropped here rather than pulled in and recited.
       const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
+      // Log the scores so the gate can be calibrated against real greetings vs questions.
+      console.info(
+        `[aidekin] RAG "${userText.slice(0, 40)}" top=${(hits[0]?.score ?? 0).toFixed(3)} ` +
+          `used=${relevant.length}/${hits.length} (gate ${this.ragMinScore})`,
+      )
       this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
       if (relevant.length) this.applyContext(userText, relevant)
     } catch (err) {
@@ -282,13 +308,9 @@ export class ConversationEngine {
       if (next.length > this.ragCharBudget) break
       used = next
     }
-    const augmented =
-      'Answer the question using only the information below, in your own words, as if you already ' +
-      'knew it. Reply directly in 1-2 sentences. Do NOT mention this information block or use phrases ' +
-      'like "the reference", "the text says", "based on the context", or "according to". Do not add ' +
-      'unrelated details. Never write a URL, link, or email address unless it appears word for word ' +
-      "in the information below. If the answer is not below, say you don't have that information.\n\n" +
-      `<info>\n${used}\n</info>\n\nQuestion: ${userText}`
+    // The static answering rules now live in the system prompt (RAG_INSTRUCTION), cached once.
+    // Only the per-turn context + question go here, so the KV-cache delta stays small.
+    const augmented = `<info>\n${used}\n</info>\n\nQuestion: ${userText}`
     const last = this.messages[this.messages.length - 1]
     if (last && last.role === 'user') last.model = augmented
   }
@@ -400,7 +422,7 @@ export class ConversationEngine {
   /** New session: clear back to just the system prompt (keeps it in storage). */
   reset(): void {
     this.abort()
-    this.messages = [{ role: 'system', content: this.systemPrompt }]
+    this.messages = [{ role: 'system', content: this.composedSystem() }]
     this.cacheDirty = true
     this.persist()
   }
@@ -419,7 +441,14 @@ export class ConversationEngine {
 
   /** Attach (or clear) RAG after construction - the index loads asynchronously. */
   setRetriever(retriever: Retriever | null): void {
+    const had = !!this.retriever
     this.retriever = retriever
+    // The grounding rules live in the system prompt only while RAG is active; toggling RAG
+    // changes the cached prefix, so refresh the system message and invalidate the cache once.
+    if (had !== !!retriever && this.messages[0]?.role === 'system') {
+      this.messages[0] = { role: 'system', content: this.composedSystem() }
+      this.cacheDirty = true
+    }
   }
 
   /** Toggle internal reasoning on plain (non-RAG) turns. */
@@ -440,9 +469,9 @@ export class ConversationEngine {
   setSystemPrompt(prompt: string): void {
     this.systemPrompt = prompt
     if (this.messages.length && this.messages[0].role === 'system') {
-      this.messages[0] = { role: 'system', content: prompt }
+      this.messages[0] = { role: 'system', content: this.composedSystem() }
     } else {
-      this.messages.unshift({ role: 'system', content: prompt })
+      this.messages.unshift({ role: 'system', content: this.composedSystem() })
     }
     this.cacheDirty = true // the cached prefix starts with the old system prompt
     this.persist()
@@ -511,7 +540,7 @@ export class ConversationEngine {
   }
 
   private hydrate(): Turn[] {
-    const fresh: Turn[] = [{ role: 'system', content: this.systemPrompt }]
+    const fresh: Turn[] = [{ role: 'system', content: this.composedSystem() }]
     if (!this.persistKey) return fresh
     try {
       const raw = localStorage.getItem(this.persistKey)
@@ -522,7 +551,7 @@ export class ConversationEngine {
       // grounded turn after a reload, then reuses from there. Always re-assert the current
       // system prompt as the head (config may have changed).
       const rest = parsed.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content }))
-      return [{ role: 'system', content: this.systemPrompt }, ...rest]
+      return [{ role: 'system', content: this.composedSystem() }, ...rest]
     } catch {
       return fresh
     }
