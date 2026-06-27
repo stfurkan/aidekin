@@ -41,7 +41,7 @@ export async function createEngine(modelDir) {
     pipelines[name] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main', constants } });
   };
   for (const name of WGSLS) await mkPipe(name);
-  if (useSG) { await mkPipe('rmsnorm_sg', { SG: sgMax }); await mkPipe('attention_sg', { SG: sgMax }); }
+  if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_resid_sg']) await mkPipe(n, { SG: sgMax });
 
   const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, U = GPUBufferUsage.UNIFORM;
   const upload = (typed, usage = S_ | CD) => { const b = device.createBuffer({ size: typed.byteLength, usage }); device.queue.writeBuffer(b, 0, typed); return b; };
@@ -127,17 +127,36 @@ export async function createEngine(modelDir) {
     pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
     pass.dispatchWorkgroups(SKEL ? 1 : nWG);
   }
+  // 2D workgroup dispatch (subgroup GEMV: one workgroup per output column)
+  function runWG(pass, name, fields, ins, outs, wgX, wgY) {
+    const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+    ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
+    outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
+    pass.setPipeline(pipelines[name]);
+    pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
+    pass.dispatchWorkgroups(SKEL ? 1 : wgX, SKEL ? 1 : wgY, 1);
+  }
   const rms = (pass, x, g, R, Dn, out) => useSG
     ? runN(pass, 'rmsnorm_sg', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R)
     : run(pass, 'rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R);
   // fused q/k/v or gate/up matmul (split-K GEMV lost to reduction overhead at K=2048, reverted)
   function fusedMM(pass, w, inBuf, S, outs) {
     const Ntot = w.N0 + w.N1 + w.N2;
-    runIO(pass, 'matmul_split', [['u', S], ['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2]], [inBuf, w.sign, w.scales], outs, S * Ntot);
+    if (useSG && S === 1) {
+      const gx = Math.min(Ntot, 65535);
+      runWG(pass, 'matmul_split_sg', [['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2], ['u', gx]], [inBuf, w.sign, w.scales], outs, gx, Math.ceil(Ntot / gx));
+    } else {
+      runIO(pass, 'matmul_split', [['u', S], ['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2]], [inBuf, w.sign, w.scales], outs, S * Ntot);
+    }
   }
   // o_proj / down_proj matmul with fused residual add
   function residMM(pass, w, inBuf, resid, S, out) {
-    runIO(pass, 'matmul_resid', [['u', S], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], S * w.N);
+    if (useSG && S === 1) {
+      const gx = Math.min(w.N, 65535);
+      runWG(pass, 'matmul_resid_sg', [['u', w.N], ['u', w.K], ['u', w.nb], ['u', gx], ['u', 0], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], gx, Math.ceil(w.N / gx));
+    } else {
+      runIO(pass, 'matmul_resid', [['u', S], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], S * w.N);
+    }
   }
 
   function layer(pass, li, h, S, posBase, cos, sin) {
