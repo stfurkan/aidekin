@@ -4,7 +4,7 @@
 // in one dispatch, gate/up in one, and the residual add folded into o_proj/down_proj.
 
 const VIEW = { FLOAT: Float32Array, UINT8: Uint8Array, FLOAT16: Uint16Array };
-const WGSLS = ['matmul_binary_vec4', 'matmul_split', 'matmul_resid', 'matmul_split_gemv', 'matmul_resid_gemv', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy'];
+const WGSLS = ['matmul_binary_vec4', 'matmul_split', 'matmul_resid', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy'];
 const MAXSEQ = 256;
 
 function makeParams(fields) {
@@ -112,34 +112,14 @@ export async function createEngine(modelDir) {
   }
   const run = (pass, name, fields, ins, out, threads) => runIO(pass, name, fields, ins, [out], threads);
   const rms = (pass, x, g, R, Dn, out) => run(pass, 'rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R);
-  // one full workgroup (128 threads) per output column, dispatched as a 2D grid (N can exceed 65535)
-  function runWG(pass, name, fields, ins, outs, wgX, wgY) {
-    const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
-    ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
-    outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
-    pass.setPipeline(pipelines[name]);
-    pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    pass.dispatchWorkgroups(wgX, wgY, 1);
-  }
-  const GX = 32768;
-  // fused q/k/v or gate/up matmul: split-K GEMV for decode (S=1), one-thread-per-output for prefill
+  // fused q/k/v or gate/up matmul (split-K GEMV lost to reduction overhead at K=2048, reverted)
   function fusedMM(pass, w, inBuf, S, outs) {
     const Ntot = w.N0 + w.N1 + w.N2;
-    if (S === 1) {
-      const gx = Math.min(Ntot, GX);
-      runWG(pass, 'matmul_split_gemv', [['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2], ['u', gx]], [inBuf, w.sign, w.scales], outs, gx, Math.ceil(Ntot / gx));
-    } else {
-      runIO(pass, 'matmul_split', [['u', S], ['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2]], [inBuf, w.sign, w.scales], outs, S * Ntot);
-    }
+    runIO(pass, 'matmul_split', [['u', S], ['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2]], [inBuf, w.sign, w.scales], outs, S * Ntot);
   }
-  // o_proj / down_proj matmul with fused residual: split-K GEMV for decode, one-thread-per-output for prefill
+  // o_proj / down_proj matmul with fused residual add
   function residMM(pass, w, inBuf, resid, S, out) {
-    if (S === 1) {
-      const gx = Math.min(w.N, GX);
-      runWG(pass, 'matmul_resid_gemv', [['u', w.N], ['u', w.K], ['u', w.nb], ['u', gx], ['u', 0], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], gx, Math.ceil(w.N / gx));
-    } else {
-      runIO(pass, 'matmul_resid', [['u', S], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], S * w.N);
-    }
+    runIO(pass, 'matmul_resid', [['u', S], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], S * w.N);
   }
 
   function layer(pass, li, h, S, posBase, cos, sin) {
