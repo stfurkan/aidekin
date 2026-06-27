@@ -198,18 +198,28 @@ export async function createEngine(modelDir) {
     const prefillMs = performance.now() - t0;
 
     const gen = [tok];
+    let recMs = 0, gpuMs = 0, rbMs = 0;            // per-token phase breakdown
     const t1 = performance.now();
     for (let i = 1; i < nTokens; i++) {
       const pos = ids.length + i - 1;
+      let t = performance.now();
       const enc = device.createCommandEncoder();
       const r = stack(enc, upload(embedDequant([tok]), S_ | CD), 1, pos);
+      const last = actBuf(Hd);
+      enc.copyBufferToBuffer(r.fn, 0, last, 0, Hd * 4);
+      const lg = device.createBuffer({ size: W.lm_head.N * 4, usage: S_ | CS });
+      const pass = enc.beginComputePass(); lmHead(pass, last, 1, lg); pass.end();
       device.queue.submit([enc.finish()]);
-      logits = await lastLogits(r.fn, 1);
+      recMs += performance.now() - t;
+      t = performance.now(); await device.queue.onSubmittedWorkDone(); gpuMs += performance.now() - t;
+      t = performance.now(); logits = await readback(lg, W.lm_head.N); rbMs += performance.now() - t;
       tok = argmax(logits);
       gen.push(tok);
     }
     const decodeMs = performance.now() - t1;
-    return { prefillMs, decodeMs, tokPerSec: (nTokens - 1) / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0] };
+    const nd = nTokens - 1;
+    return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0],
+             recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd };
   }
 
   return { device, adapter, forward, generate };

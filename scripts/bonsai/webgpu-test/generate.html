@@ -51,6 +51,7 @@
       log(`first token = ${g.firstArgmax} (expect 26194 = " Tokyo") ${g.firstArgmax === 26194 ? 'OK' : 'MISMATCH'}`);
       log(`prefill (TTFT, ${ids.length} tokens) = ${g.prefillMs.toFixed(0)} ms`);
       log(`decode = ${g.decodeMs.toFixed(0)} ms for 31 tokens  ->  ${g.tokPerSec.toFixed(2)} tok/s`);
+      log(`  per-token breakdown: record=${g.recMs.toFixed(1)}ms  gpu=${g.gpuMs.toFixed(1)}ms  readback=${g.rbMs.toFixed(1)}ms`);
       log(`baseline to beat: ~16 tok/s (transformers.js) / ~7s TTFT`);
       log(`generated ids: [${g.tokens.join(', ')}]`);
       out.insertAdjacentHTML('beforeend', `\n<span class="${g.firstArgmax === 26194 ? 'pass' : 'fail'}">decode ${g.tokPerSec.toFixed(2)} tok/s</span>`);
