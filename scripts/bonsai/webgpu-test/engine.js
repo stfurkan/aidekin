@@ -108,13 +108,14 @@ export async function createEngine(modelDir) {
     await rb.mapAsync(GPUMapMode.READ); const out = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); return out;
   }
 
+  let SKEL = false;   // diagnostic: dispatch every kernel with 1 workgroup (same dispatches/barriers, ~no compute)
   function runIO(pass, name, fields, ins, outs, threads) {
     const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
     ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
     outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
     pass.setPipeline(pipelines[name]);
     pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    pass.dispatchWorkgroups(Math.ceil(threads / 64));
+    pass.dispatchWorkgroups(SKEL ? 1 : Math.ceil(threads / 64));
   }
   const run = (pass, name, fields, ins, out, threads) => runIO(pass, name, fields, ins, [out], threads);
   // dispatch exactly nWG workgroups (for subgroup kernels: one workgroup per row / per (query,head))
@@ -124,7 +125,7 @@ export async function createEngine(modelDir) {
     entries.push({ binding: ins.length + 1, resource: { buffer: out } });
     pass.setPipeline(pipelines[name]);
     pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    pass.dispatchWorkgroups(nWG);
+    pass.dispatchWorkgroups(SKEL ? 1 : nWG);
   }
   const rms = (pass, x, g, R, Dn, out) => useSG
     ? runN(pass, 'rmsnorm_sg', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R)
@@ -190,7 +191,8 @@ export async function createEngine(modelDir) {
   }
   const argmax = (a) => { let bi = 0, bv = -1e30; for (let i = 0; i < a.length; i++) if (a[i] > bv) { bv = a[i]; bi = i; } return bi; };
 
-  async function generate(ids, nTokens) {
+  async function generate(ids, nTokens, skel = false) {
+    SKEL = skel;
     const t0 = performance.now();
     const encP = device.createCommandEncoder();
     const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, 0);
@@ -219,6 +221,7 @@ export async function createEngine(modelDir) {
       tok = argmax(logits); gen.push(tok);
     }
     const decodeMs = performance.now() - t1, nd = nTokens - 1;
+    SKEL = false;
     return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd };
   }
 

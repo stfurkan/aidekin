@@ -55,6 +55,11 @@
       log(`  per-token breakdown: record=${g.recMs.toFixed(1)}ms  gpu=${g.gpuMs.toFixed(1)}ms  readback=${g.rbMs.toFixed(1)}ms`);
       log(`baseline to beat: ~16 tok/s (transformers.js) / ~7s TTFT`);
       log(`generated ids: [${g.tokens.join(', ')}]`);
+
+      log('\nmeasuring dispatch/barrier overhead (skeleton = 1 workgroup per kernel, ~no compute)...');
+      const sk = await engine.generate(ids, 16, true);
+      log(`skeleton decode gpu = ${sk.gpuMs.toFixed(1)} ms/token   (real gpu = ${g.gpuMs.toFixed(1)} ms)`);
+      log(`=> ${(100 * sk.gpuMs / g.gpuMs).toFixed(0)}% of decode is dispatch/barrier overhead; ${(g.gpuMs - sk.gpuMs).toFixed(1)} ms is kernel compute`);
       out.insertAdjacentHTML('beforeend', `\n<span class="${g.firstArgmax === 26194 ? 'pass' : 'fail'}">decode ${g.tokPerSec.toFixed(2)} tok/s</span>`);
     }
 
