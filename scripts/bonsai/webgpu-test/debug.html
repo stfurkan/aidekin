@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bonsai decode diff (fused vs slow)</title>
+  <style>
+    body { font: 14px/1.5 ui-monospace, monospace; max-width: 900px; margin: 40px auto; padding: 0 16px; }
+    button { font: inherit; padding: 8px 14px; cursor: pointer; }
+    pre { background: #f4f4f5; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+    .ok { color: #166534; font-weight: 700; }
+    .bad { color: #b91c1c; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Bonsai decode diff: fused vs known-good</h1>
+  <p>Runs one decode step through the fused path and the slow (prefill) path on the same cache,
+     compares each checkpoint. The first checkpoint that diverges is the buggy fused kernel.</p>
+  <button id="run">Run diff</button>
+  <pre id="out">idle.</pre>
+  <script type="module">
+    import { createEngine } from './engine.js';
+    const out = document.getElementById('out');
+    const log = (s) => { out.textContent += s + '\n'; };
+    const cos = (a, e) => { let d = 0, na = 0, nb = 0; const n = Math.min(a.length, e.length); for (let i = 0; i < n; i++) { d += a[i] * e[i]; na += a[i] * a[i]; nb += e[i] * e[i]; } return d / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9); };
+    const maxAbs = (a, e) => { let m = 0; const n = Math.min(a.length, e.length); for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(a[i] - e[i])); return m; };
+    const argmax = (a) => { let bi = 0, bv = -1e30; for (let i = 0; i < a.length; i++) if (a[i] > bv) { bv = a[i]; bi = i; } return bi; };
+
+    async function run() {
+      out.textContent = '';
+      if (!navigator.gpu) { log('WebGPU not available.'); return; }
+      const fp = await (await fetch('./forward-fixtures/params.json')).json();
+      log('loading model (~290 MB)...');
+      const engine = await createEngine('./model');
+      log(`subgroup path: ${engine.useSG ? 'ON (SG=' + engine.sgSize + ')' : 'OFF'}`);
+      if (!engine.useSG) { log('no subgroup path -> nothing to diff.'); return; }
+
+      log('\nrunning one decode step through both paths...');
+      const { fast, slow } = await engine.debugDecode(fp.ids);
+      const order = ['qr', 'kc', 'vc', 'att', 'sw', 'fn', 'logits'];
+      const labels = { qr: 'qr   (q_norm+rope)', kc: 'kc   (K cache @pos)', vc: 'vc   (V cache @pos)', att: 'att  (attention out)', sw: 'sw   (gate/up+swiglu)', fn: 'fn   (final norm)', logits: 'logits' };
+      log('\n  checkpoint              cosine        maxAbsDiff');
+      for (const k of order) {
+        if (!(k in fast) || !(k in slow)) { log(`  ${labels[k].padEnd(22)} (missing)`); continue; }
+        const c = cos(fast[k], slow[k]), m = maxAbs(fast[k], slow[k]);
+        const good = c > 0.99999;
+        log(`  ${labels[k].padEnd(22)} ${c.toFixed(7)}   ${m.toExponential(2)}  ${good ? 'ok' : '<-- DIVERGES'}`);
+      }
+      const af = argmax(fast.logits), as = argmax(slow.logits);
+      out.insertAdjacentHTML('beforeend', `\n<span class="${af === as ? 'ok' : 'bad'}">argmax fast=${af} slow=${as} ${af === as ? 'MATCH' : 'MISMATCH'}</span>`);
+    }
+    document.getElementById('run').onclick = () => run().catch(e => log('ERROR: ' + e.message + '\n' + e.stack));
+  </script>
+</body>
+</html>

@@ -41,7 +41,7 @@ export async function createEngine(modelDir) {
     pipelines[name] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main', constants } });
   };
   for (const name of WGSLS) await mkPipe(name);
-  if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_resid_sg', 'matmul_q2_sg']) await mkPipe(n, { SG: sgMax });
+  if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_resid_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg', 'matmul_swiglu_sg']) await mkPipe(n, { SG: sgMax });
 
   const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, U = GPUBufferUsage.UNIFORM;
   const upload = (typed, usage = S_ | CD) => { const b = device.createBuffer({ size: typed.byteLength, usage }); device.queue.writeBuffer(b, 0, typed); return b; };
@@ -112,6 +112,10 @@ export async function createEngine(modelDir) {
   // all others dispatched as 1 workgroup. Lets us measure each kernel type's true in-context cost.
   let FULL = null;
   const isFull = (name) => FULL === null || FULL.has(name);
+  // differential debug: FORCE_SLOW routes S=1 through the prefill (known-good) path; DBG0 collects
+  // layer-0 checkpoint buffers so a fused step and a slow step can be compared kernel by kernel.
+  let FORCE_SLOW = false, DBG0 = null;
+  const cap = (li, name, buf) => { if (li === 0 && DBG0) DBG0[name] = buf; };
   function runIO(pass, name, fields, ins, outs, threads) {
     const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
     ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
@@ -166,7 +170,44 @@ export async function createEngine(modelDir) {
   function layer(pass, li, h, S, posBase, cos, sin) {
     const Ltot = posBase + S;
     const n1 = actBuf(S * Hd); rms(pass, h, `layers.${li}.input_layernorm`, S, Hd, n1);
-    const qkv = W[`layers.${li}.attn.qkv`], q = actBuf(S * H * Dh), k = actBuf(S * KV * Dh), v = actBuf(S * KV * Dh);
+    const qkv = W[`layers.${li}.attn.qkv`];
+
+    if (useSG && S === 1 && !FORCE_SLOW) {
+      // fused decode path: the dispatch/barrier floor is the dependent-chain length, so we fold
+      // copies and elementwise ops into the matmul/norm kernels (14 -> 9 dispatches per layer).
+      const q = actBuf(H * Dh), k = actBuf(KV * Dh), v = actBuf(KV * Dh);
+      const Ntot = qkv.N0 + qkv.N1 + qkv.N2, gx = Math.min(Ntot, 65535);
+      // qkv GEMV into temps; v copied into the V cache (writing v straight into the persistent
+      // cache from the matmul's 3rd output got dropped by the driver, so keep the v copy).
+      runWG(pass, 'matmul_split_sg',
+        [['u', qkv.K], ['u', qkv.nb], ['u', qkv.N0], ['u', qkv.N1], ['u', qkv.N2], ['u', gx]],
+        [n1, qkv.sign, qkv.scales], [q, k, v], gx, Math.ceil(Ntot / gx));
+      run(pass, 'copy', [['u', KV * Dh], ['u', posBase * KV * Dh], ['u', 0], ['u', 0]], [v], Vc[li], KV * Dh);
+      // per-head RMSNorm + RoPE fused; q -> qr, k -> straight into the K cache at this position
+      const qr = actBuf(H * Dh);
+      runN(pass, 'rmsnorm_rope_sg', [['u', H], ['u', Dh], ['f', A.rms_eps], ['u', 0], ['u', Dh], ['u', 0]],
+        [q, W[`layers.${li}.attn.q_norm`].buf, cos, sin], qr, H);
+      runN(pass, 'rmsnorm_rope_sg', [['u', KV], ['u', Dh], ['f', A.rms_eps], ['u', posBase * KV * Dh], ['u', Dh], ['u', 0]],
+        [k, W[`layers.${li}.attn.k_norm`].buf, cos, sin], Kc[li], KV);
+      cap(li, 'qr', qr);
+      const att = actBuf(H * Dh);
+      runN(pass, 'attention_sg', [['u', 1], ['u', H], ['u', KV], ['u', Dh], ['u', posBase], ['u', Ltot]], [qr, Kc[li], Vc[li]], att, H);
+      cap(li, 'att', att);
+      const o = W[`layers.${li}.attn.o_proj`], h2 = actBuf(Hd);
+      residMM(pass, o, att, h, 1, h2);
+      const n2 = actBuf(Hd); rms(pass, h2, `layers.${li}.post_attention_layernorm`, 1, Hd, n2);
+      // gate/up GEMV + SwiGLU fused (one workgroup computes g[n] and u[n], writes silu(g)*u)
+      const gu = W[`layers.${li}.mlp.gateup`], sw = actBuf(F), gxF = Math.min(F, 65535);
+      runWG(pass, 'matmul_swiglu_sg', [['u', gu.K], ['u', gu.nb], ['u', F], ['u', gxF], ['u', 0], ['u', 0]],
+        [n2, gu.sign, gu.scales], [sw], gxF, Math.ceil(F / gxF));
+      cap(li, 'sw', sw);
+      const d = W[`layers.${li}.mlp.down_proj`], hn = actBuf(Hd);
+      residMM(pass, d, sw, h2, 1, hn);
+      return hn;
+    }
+
+    // prefill / no-subgroup path: separate kernels (kept verbatim; validates correctness end to end)
+    const q = actBuf(S * H * Dh), k = actBuf(S * KV * Dh), v = actBuf(S * KV * Dh);
     fusedMM(pass, qkv, n1, S, [q, k, v]);
     const qn = actBuf(S * H * Dh), kn = actBuf(S * KV * Dh);
     rms(pass, q, `layers.${li}.attn.q_norm`, S * H, Dh, qn);
@@ -176,16 +217,19 @@ export async function createEngine(modelDir) {
     run(pass, 'rope', [['u', S], ['u', KV], ['u', Dh], ['u', 0]], [kn, cos, sin], kr, S * KV * Dh);
     run(pass, 'copy', [['u', S * KV * Dh], ['u', posBase * KV * Dh], ['u', 0], ['u', 0]], [kr], Kc[li], S * KV * Dh);
     run(pass, 'copy', [['u', S * KV * Dh], ['u', posBase * KV * Dh], ['u', 0], ['u', 0]], [v], Vc[li], S * KV * Dh);
+    cap(li, 'qr', qr);
     const att = actBuf(S * H * Dh);
     const attF = [['u', S], ['u', H], ['u', KV], ['u', Dh], ['u', posBase], ['u', Ltot]];
     if (useSG) runN(pass, 'attention_sg', attF, [qr, Kc[li], Vc[li]], att, S * H);
     else run(pass, 'attention_cache', attF, [qr, Kc[li], Vc[li]], att, S * H);
+    cap(li, 'att', att);
     const o = W[`layers.${li}.attn.o_proj`], h2 = actBuf(S * Hd);
     residMM(pass, o, att, h, S, h2);
     const n2 = actBuf(S * Hd); rms(pass, h2, `layers.${li}.post_attention_layernorm`, S, Hd, n2);
     const gu = W[`layers.${li}.mlp.gateup`], g = actBuf(S * F), u = actBuf(S * F);
     fusedMM(pass, gu, n2, S, [g, u, dummy]);
     const sw = actBuf(S * F); run(pass, 'swiglu', [['u', S * F], ['u', 0], ['u', 0], ['u', 0]], [g, u], sw, S * F);
+    cap(li, 'sw', sw);
     const d = W[`layers.${li}.mlp.down_proj`], hn = actBuf(S * Hd);
     residMM(pass, d, sw, h2, S, hn);
     return hn;
@@ -256,5 +300,36 @@ export async function createEngine(modelDir) {
     return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd };
   }
 
-  return { device, adapter, forward, generate, useSG, sgSize: sgMax };
+  // Run ONE decode step at the same position through the fused path and the slow (known-good) path
+  // and return layer-0 checkpoints + final norm + logits for each, so a divergence pinpoints the
+  // first fused kernel that differs. Both steps write their own cache[pos] then read 0..pos, and
+  // neither touches 0..pos-1 (prefill), so they don't interfere -> no cache restore needed.
+  async function debugDecode(prefillIds) {
+    const encP = device.createCommandEncoder();
+    stack(encP, upload(embedDequant(prefillIds), S_ | CD), prefillIds.length, 0);
+    device.queue.submit([encP.finish()]); await device.queue.onSubmittedWorkDone();
+    const pos = prefillIds.length, tok = prefillIds[prefillIds.length - 1];
+    const runStep = async (forceSlow) => {
+      FORCE_SLOW = forceSlow; DBG0 = {};
+      const enc = device.createCommandEncoder();
+      const r = stack(enc, upload(embedDequant([tok]), S_ | CD), 1, pos);
+      const lg = device.createBuffer({ size: W.lm_head.N * 4, usage: S_ | CS });
+      const pass = enc.beginComputePass(); lmHead(pass, r.fn, 1, lg); pass.end();
+      device.queue.submit([enc.finish()]); await device.queue.onSubmittedWorkDone();
+      const ck = {};
+      for (const [name, b] of Object.entries(DBG0)) ck[name] = await readback(b, b.size / 4);
+      // K/V cache slice at the just-written position (layer 0), to isolate k-write vs v-write bugs
+      const off = pos * KV * Dh;
+      ck.kc = (await readback(Kc[0], MAXSEQ * KV * Dh)).slice(off, off + KV * Dh);
+      ck.vc = (await readback(Vc[0], MAXSEQ * KV * Dh)).slice(off, off + KV * Dh);
+      ck.fn = await readback(r.fn, Hd);
+      ck.logits = await readback(lg, W.lm_head.N);
+      FORCE_SLOW = false; DBG0 = null;
+      return ck;
+    };
+    const fast = await runStep(false), slow = await runStep(true);
+    return { fast, slow };
+  }
+
+  return { device, adapter, forward, generate, debugDecode, useSG, sgSize: sgMax };
 }
