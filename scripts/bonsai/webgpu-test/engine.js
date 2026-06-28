@@ -7,12 +7,12 @@ const VIEW = { FLOAT: Float32Array, UINT8: Uint8Array, FLOAT16: Uint16Array };
 const WGSLS = ['matmul_binary_vec4', 'matmul_split', 'matmul_resid', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy'];
 const MAXSEQ = 256;
 
-function makeParams(fields) {
-  const ab = new ArrayBuffer(Math.ceil(fields.length / 4) * 16);
-  const dv = new DataView(ab);
-  fields.forEach(([t, v], i) => t === 'f' ? dv.setFloat32(i * 4, v, true) : dv.setUint32(i * 4, v >>> 0, true));
-  return ab;
+const PARAM_AB = new ArrayBuffer(64), PARAM_DV = new DataView(PARAM_AB), PARAM_U8 = new Uint8Array(PARAM_AB);
+function makeParams(fields) {                                 // fills a reused buffer (no per-dispatch alloc)
+  for (let i = 0; i < fields.length; i++) { const f = fields[i]; if (f[0] === 'f') PARAM_DV.setFloat32(i * 4, f[1], true); else PARAM_DV.setUint32(i * 4, f[1] >>> 0, true); }
+  return PARAM_U8.subarray(0, Math.ceil(fields.length / 4) * 16);
 }
+const eqBytes = (a, b) => { for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) return false; return true; };
 const concat = (Cls, arrs) => { let n = 0; for (const a of arrs) n += a.length; const o = new Cls(n); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
 
 export async function createEngine(modelDir) {
@@ -163,8 +163,9 @@ export async function createEngine(modelDir) {
     pass.setPipeline(pipelines[name]);
     if (pooling) {
       let slot = dispPool[dispIdx];
-      if (!slot) { slot = { uni: device.createBuffer({ size: 64, usage: U | CD }), bg: null }; dispPool[dispIdx] = slot; }
-      device.queue.writeBuffer(slot.uni, 0, new Uint8Array(makeParams(fields)));
+      if (!slot) { slot = { uni: device.createBuffer({ size: 64, usage: U | CD }), bg: null, last: null }; dispPool[dispIdx] = slot; }
+      const data = makeParams(fields);                       // reused view; only writeBuffer when the params changed
+      if (!slot.last || !eqBytes(slot.last, data)) { device.queue.writeBuffer(slot.uni, 0, data); slot.last = data.slice(); }
       if (!slot.bg) {
         const entries = [{ binding: 0, resource: { buffer: slot.uni } }];
         ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
@@ -173,7 +174,7 @@ export async function createEngine(modelDir) {
       }
       pass.setBindGroup(0, slot.bg); dispIdx++;
     } else {
-      const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+      const entries = [{ binding: 0, resource: { buffer: upload(makeParams(fields), U | CD) } }];
       ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
       outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
       pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
