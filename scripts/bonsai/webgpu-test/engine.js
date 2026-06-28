@@ -67,20 +67,13 @@ export async function createEngine(modelDir) {
   // the scratch + uniform buffers across batches (createBuffer is the dominant per-token record cost).
   // Counters increment per call and reset per batch, so within a batch every dispatch still gets its
   // own buffer (no aliasing of in-flight work); reuse happens only across batches (after the sync).
-  let pooling = false, bufPool = [], bufIdx = 0, uniPool = [], uniIdx = 0;
-  const poolReset = () => { bufIdx = 0; uniIdx = 0; };
+  let pooling = false, bufPool = [], bufIdx = 0, dispPool = [], dispIdx = 0;
+  const poolReset = () => { bufIdx = 0; dispIdx = 0; };
   const actBuf = (n) => {
     if (!pooling) return device.createBuffer({ size: n * 4, usage: S_ | CS | CD });
     let b = bufPool[bufIdx];
     if (!b || b.size !== n * 4) { b = device.createBuffer({ size: n * 4, usage: S_ | CS | CD }); bufPool[bufIdx] = b; }
     bufIdx++; return b;
-  };
-  const uniBuf = (fields) => {                              // pooled uniform buffer for a dispatch's params
-    const data = new Uint8Array(makeParams(fields));
-    if (!pooling) return upload(data, U | CD);
-    let b = uniPool[uniIdx];
-    if (!b) { b = device.createBuffer({ size: 64, usage: U | CD }); uniPool[uniIdx] = b; }
-    device.queue.writeBuffer(b, 0, data); uniIdx++; return b;
   };
   const dummy = device.createBuffer({ size: 16, usage: S_ });
 
@@ -162,34 +155,36 @@ export async function createEngine(modelDir) {
   // layer-0 checkpoint buffers so a fused step and a slow step can be compared kernel by kernel.
   let FORCE_SLOW = false, DBG0 = null;
   const cap = (li, name, buf) => { if (li === 0 && DBG0) DBG0[name] = buf; };
-  function runIO(pass, name, fields, ins, outs, threads) {
-    const entries = [{ binding: 0, resource: { buffer: uniBuf(fields) } }];
-    ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
-    outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
+  // set pipeline + bind group for a dispatch. When pooling (decode loop), the uniform buffer AND the
+  // bind group are cached per dispatch slot (the sequence is identical every batch and references the
+  // pooled buffers), so only writeBuffer of the changed params runs per token -> no per-token
+  // createBuffer/createBindGroup. dispIdx increments per dispatch and resets per batch.
+  function setup(pass, name, fields, ins, outs) {
     pass.setPipeline(pipelines[name]);
-    pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    pass.dispatchWorkgroups(isFull(name) ? Math.ceil(threads / 64) : 1);
+    if (pooling) {
+      let slot = dispPool[dispIdx];
+      if (!slot) { slot = { uni: device.createBuffer({ size: 64, usage: U | CD }), bg: null }; dispPool[dispIdx] = slot; }
+      device.queue.writeBuffer(slot.uni, 0, new Uint8Array(makeParams(fields)));
+      if (!slot.bg) {
+        const entries = [{ binding: 0, resource: { buffer: slot.uni } }];
+        ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
+        outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
+        slot.bg = device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries });
+      }
+      pass.setBindGroup(0, slot.bg); dispIdx++;
+    } else {
+      const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+      ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
+      outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
+      pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
+    }
   }
+  function runIO(pass, name, fields, ins, outs, threads) { setup(pass, name, fields, ins, outs); pass.dispatchWorkgroups(isFull(name) ? Math.ceil(threads / 64) : 1); }
   const run = (pass, name, fields, ins, out, threads) => runIO(pass, name, fields, ins, [out], threads);
-  // dispatch exactly nWG workgroups (for subgroup kernels: one workgroup per row / per (query,head))
-  function runN(pass, name, fields, ins, out, nWG) {
-    const entries = [{ binding: 0, resource: { buffer: uniBuf(fields) } }];
-    ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
-    entries.push({ binding: ins.length + 1, resource: { buffer: out } });
-    pass.setPipeline(pipelines[name]);
-    pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    pass.dispatchWorkgroups(isFull(name) ? nWG : 1);
-  }
+  // dispatch exactly nWG workgroups (subgroup kernels: one workgroup per row / per (query,head))
+  function runN(pass, name, fields, ins, out, nWG) { setup(pass, name, fields, ins, [out]); pass.dispatchWorkgroups(isFull(name) ? nWG : 1); }
   // 2D workgroup dispatch (subgroup GEMV: one workgroup per output column)
-  function runWG(pass, name, fields, ins, outs, wgX, wgY) {
-    const entries = [{ binding: 0, resource: { buffer: uniBuf(fields) } }];
-    ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
-    outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
-    pass.setPipeline(pipelines[name]);
-    pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }));
-    const f = isFull(name);
-    pass.dispatchWorkgroups(f ? wgX : 1, f ? wgY : 1, 1);
-  }
+  function runWG(pass, name, fields, ins, outs, wgX, wgY) { setup(pass, name, fields, ins, outs); const f = isFull(name); pass.dispatchWorkgroups(f ? wgX : 1, f ? wgY : 1, 1); }
   const rms = (pass, x, g, R, Dn, out) => useSG
     ? runN(pass, 'rmsnorm_sg', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R)
     : run(pass, 'rmsnorm', [['u', R], ['u', Dn], ['f', A.rms_eps], ['u', 0]], [x, W[g].buf], out, R);
