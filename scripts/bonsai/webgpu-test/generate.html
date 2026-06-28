@@ -71,6 +71,12 @@
         log(`  ${name.padEnd(10)} = ${Math.max(0, r.gpuMs - none.gpuMs).toFixed(1)} ms/token`);
       }
       log(`  (real full decode gpu = ${g.gpuMs.toFixed(1)} ms/token)`);
+
+      // long-prompt prefill timing (tiled GEMM win shows here; short prompts barely change). A/B with ?notile.
+      const long = []; while (long.length < 192) long.push(...ids);
+      const longIds = long.slice(0, 192);
+      const lp = await engine.generate(longIds, 1);
+      log(`\nlong-prompt prefill (${longIds.length} tokens) = ${lp.prefillMs.toFixed(0)} ms  (TTFT; compare default tiled vs ?notile scalar)`);
       out.insertAdjacentHTML('beforeend', `\n<span class="${g.firstArgmax === 26194 ? 'pass' : 'fail'}">decode ${g.tokPerSec.toFixed(2)} tok/s</span>`);
     }
 

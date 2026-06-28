@@ -36,6 +36,9 @@ export async function createEngine(modelDir) {
   const qp = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
   const forceNoSG = qp.has('nosg');
   const WG_NS = Math.min(256, parseInt(qp.get('wg'), 10) || 64);   // no-subgroup reduction workgroup size (?wg=128 etc.)
+  const NOTILE = qp.has('notile');                                 // ?notile forces the scalar prefill GEMM (A/B)
+  const FORCETILE = qp.has('forcetile');                           // ?forcetile uses tiled even for short prompts (validation)
+  const tiledPrefill = (S) => FORCETILE || (!NOTILE && S >= 64);   // tiled GEMM wins only once it fills its 64-row tiles
   const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64) && !forceNoSG;  // uniform >=32 -> head_dim/SG<=4; ?nosg forces the v1 fallback
   if (!useSG && typeof console !== 'undefined') console.log(`no-subgroup reduction WG = ${WG_NS}`);
   const device = await adapter.requestDevice({ requiredFeatures: useSG ? ['subgroups'] : [] });
@@ -46,6 +49,7 @@ export async function createEngine(modelDir) {
   };
   const ROWS_MR = 4;                                        // output rows per workgroup in the multi-row GEMV
   for (const name of WGSLS) await mkPipe(name);
+  for (const n of ['matmul_split_tiled', 'matmul_resid_tiled']) await mkPipe(n);  // prefill (M>1) tiled GEMM, all devices
   if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg']) await mkPipe(n, { SG: sgMax });
   if (useSG) for (const n of ['matmul_resid_mr_sg', 'matmul_swiglu_mr_sg']) await mkPipe(n, { SG: sgMax, ROWS: ROWS_MR });
   if (!useSG) for (const n of ['matmul_split_wg', 'matmul_resid_wg', 'matmul_q2_wg']) await mkPipe(n, { WG: WG_NS });  // no-subgroup fallback: workgroup-reduction GEMV
@@ -163,6 +167,8 @@ export async function createEngine(modelDir) {
     } else if (S === 1) {
       const gx = Math.min(Ntot, 65535);                     // no-subgroup decode: workgroup-reduction GEMV
       runWG(pass, 'matmul_split_wg', [['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2], ['u', gx]], [inBuf, w.sign, w.scales], outs, gx, Math.ceil(Ntot / gx));
+    } else if (tiledPrefill(S)) {
+      runWG(pass, 'matmul_split_tiled', [['u', S], ['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2]], [inBuf, w.sign, w.scales], outs, Math.ceil(Ntot / 64), Math.ceil(S / 64));  // long-prompt prefill: tiled GEMM
     } else {
       runIO(pass, 'matmul_split', [['u', S], ['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2]], [inBuf, w.sign, w.scales], outs, S * Ntot);
     }
@@ -176,6 +182,8 @@ export async function createEngine(modelDir) {
     } else if (S === 1) {
       const gx = Math.min(w.N, 65535);                      // no-subgroup decode: workgroup-reduction GEMV + residual
       runWG(pass, 'matmul_resid_wg', [['u', w.N], ['u', w.K], ['u', w.nb], ['u', gx], ['u', 0], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], gx, Math.ceil(w.N / gx));
+    } else if (tiledPrefill(S)) {
+      runWG(pass, 'matmul_resid_tiled', [['u', S], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 0], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], Math.ceil(w.N / 64), Math.ceil(S / 64));  // long-prompt prefill: tiled GEMM
     } else {
       runIO(pass, 'matmul_resid', [['u', S], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], S * w.N);
     }
