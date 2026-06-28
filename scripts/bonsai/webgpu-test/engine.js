@@ -33,8 +33,11 @@ export async function createEngine(modelDir) {
   const hasSG = adapter.features.has('subgroups');
   const info = adapter.info ?? {};                          // subgroup sizes live on GPUAdapterInfo
   const sgMax = info.subgroupMaxSize ?? 32, sgMin = info.subgroupMinSize ?? sgMax;
-  const forceNoSG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nosg');
+  const qp = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
+  const forceNoSG = qp.has('nosg');
+  const WG_NS = Math.min(256, parseInt(qp.get('wg'), 10) || 64);   // no-subgroup reduction workgroup size (?wg=128 etc.)
   const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64) && !forceNoSG;  // uniform >=32 -> head_dim/SG<=4; ?nosg forces the v1 fallback
+  if (!useSG && typeof console !== 'undefined') console.log(`no-subgroup reduction WG = ${WG_NS}`);
   const device = await adapter.requestDevice({ requiredFeatures: useSG ? ['subgroups'] : [] });
   const pipelines = {};
   const mkPipe = async (name, constants) => {
@@ -45,7 +48,7 @@ export async function createEngine(modelDir) {
   for (const name of WGSLS) await mkPipe(name);
   if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg']) await mkPipe(n, { SG: sgMax });
   if (useSG) for (const n of ['matmul_resid_mr_sg', 'matmul_swiglu_mr_sg']) await mkPipe(n, { SG: sgMax, ROWS: ROWS_MR });
-  if (!useSG) for (const n of ['matmul_split_wg', 'matmul_resid_wg', 'matmul_q2_wg']) await mkPipe(n, { WG: 64 });  // no-subgroup fallback: workgroup-reduction GEMV
+  if (!useSG) for (const n of ['matmul_split_wg', 'matmul_resid_wg', 'matmul_q2_wg']) await mkPipe(n, { WG: WG_NS });  // no-subgroup fallback: workgroup-reduction GEMV
 
   const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, U = GPUBufferUsage.UNIFORM;
   const upload = (typed, usage = S_ | CD) => { const b = device.createBuffer({ size: typed.byteLength, usage }); device.queue.writeBuffer(b, 0, typed); return b; };
