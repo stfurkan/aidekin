@@ -39,6 +39,7 @@ export async function createEngine(modelDir) {
   const NOTILE = qp.has('notile');                                 // ?notile forces the scalar prefill GEMM (A/B)
   const FORCETILE = qp.has('forcetile');                           // ?forcetile uses tiled even for short prompts (validation)
   const tiledPrefill = (S) => FORCETILE || (!NOTILE && S >= 64);   // tiled GEMM wins only once it fills its 64-row tiles
+  const SYNC_N = Math.max(1, parseInt(qp.get('sync'), 10) || 4);   // decode: chain N steps per CPU sync (?sync=1 = old per-token)
   const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64) && !forceNoSG;  // uniform >=32 -> head_dim/SG<=4; ?nosg forces the v1 fallback
   if (!useSG && typeof console !== 'undefined') console.log(`no-subgroup reduction WG = ${WG_NS}`);
   const device = await adapter.requestDevice({ requiredFeatures: useSG ? ['subgroups'] : [] });
@@ -50,6 +51,7 @@ export async function createEngine(modelDir) {
   const ROWS_MR = 4;                                        // output rows per workgroup in the multi-row GEMV
   for (const name of WGSLS) await mkPipe(name);
   for (const n of ['matmul_split_tiled', 'matmul_resid_tiled']) await mkPipe(n);  // prefill (M>1) tiled GEMM, all devices
+  for (const n of ['argmax', 'embed_gather']) await mkPipe(n);                    // GPU-resident decode loop, all devices
   if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg']) await mkPipe(n, { SG: sgMax });
   if (useSG) for (const n of ['matmul_resid_mr_sg', 'matmul_swiglu_mr_sg']) await mkPipe(n, { SG: sgMax, ROWS: ROWS_MR });
   if (!useSG) for (const n of ['matmul_split_wg', 'matmul_resid_wg', 'matmul_q2_wg']) await mkPipe(n, { WG: WG_NS });  // no-subgroup fallback: workgroup-reduction GEMV
@@ -87,6 +89,9 @@ export async function createEngine(modelDir) {
 
   const embWq = readRef(T.embed_tokens.weight), embScales = readRef(T.embed_tokens.scales), embZp = readRef(T.embed_tokens.zp);
   const cosCache = readRef(T.cos_cache), sinCache = readRef(T.sin_cache);
+  // GPU-resident embedding table (for the on-GPU embed gather in the async decode loop). uint8 arrays
+  // are uploaded as bytes and read as u32 (byte-extracted) in embed_gather.wgsl. ~49MB VRAM.
+  const embWqG = upload(embWq), tgt4G = upload(tgt4), embScalesG = upload(embScales), embZpG = upload(embZp);
 
   function embedDequant(ids) {
     const H = A.hidden, out = new Float32Array(ids.length * H);
@@ -117,6 +122,11 @@ export async function createEngine(modelDir) {
     const rb = device.createBuffer({ size: n * 4, usage: GPUBufferUsage.MAP_READ | CD });
     const enc = device.createCommandEncoder(); enc.copyBufferToBuffer(buf, 0, rb, 0, n * 4); device.queue.submit([enc.finish()]);
     await rb.mapAsync(GPUMapMode.READ); const out = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); return out;
+  }
+  async function readbackU32(buf, n) {
+    const rb = device.createBuffer({ size: n * 4, usage: GPUBufferUsage.MAP_READ | CD });
+    const enc = device.createCommandEncoder(); enc.copyBufferToBuffer(buf, 0, rb, 0, n * 4); device.queue.submit([enc.finish()]);
+    await rb.mapAsync(GPUMapMode.READ); const out = new Uint32Array(rb.getMappedRange().slice(0)); rb.unmap(); return out;
   }
 
   // diagnostic: FULL = null -> every kernel at real size; FULL = Set(names) -> only those at real size,
@@ -291,34 +301,53 @@ export async function createEngine(modelDir) {
   }
   const argmax = (a) => { let bi = 0, bv = -1e30; for (let i = 0; i < a.length; i++) if (a[i] > bv) { bv = a[i]; bi = i; } return bi; };
 
-  async function generate(ids, nTokens, full = null) {
+  // GPU-resident decode: argmax + embedding gather run on the GPU so the token id never leaves it;
+  // chain syncN steps per CPU sync (deferred readback) instead of awaiting every token. Bit-exact:
+  // identical logits/tokens, only the readback timing changes.
+  async function generate(ids, nTokens, full = null, syncN = SYNC_N) {
     FULL = full;
+    const vocab = W.lm_head.N;
+    const tokBuf = device.createBuffer({ size: Math.max(1, nTokens) * 4, usage: S_ | CS });  // GPU-resident token ids
+    const embG = actBuf(Hd);                                   // GPU embedding of the current token
+    const lg = device.createBuffer({ size: vocab * 4, usage: S_ | CS });
+
     const t0 = performance.now();
+    // prefill (CPU embed of the known prompt) -> last hidden -> lm_head -> GPU argmax -> tokBuf[0]
     const encP = device.createCommandEncoder();
     const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, 0);
-    const lg0 = device.createBuffer({ size: W.lm_head.N * 4, usage: S_ | CS });
     const lastP = actBuf(Hd); encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4);
-    const passP = encP.beginComputePass(); lmHead(passP, lastP, 1, lg0); passP.end();
-    device.queue.submit([encP.finish()]);
-    let tok = argmax(await readback(lg0, W.lm_head.N));
+    let pp = encP.beginComputePass(); lmHead(pp, lastP, 1, lg); pp.end();
+    pp = encP.beginComputePass(); runN(pp, 'argmax', [['u', vocab], ['u', 0], ['u', 0], ['u', 0]], [lg], tokBuf, 1); pp.end();
+    device.queue.submit([encP.finish()]); await device.queue.onSubmittedWorkDone();
+    const firstTok = (await readbackU32(tokBuf, 1))[0];
     const prefillMs = performance.now() - t0;
 
-    const gen = [tok];
+    const gen = [firstTok];
     let recMs = 0, gpuMs = 0, rbMs = 0;
     const t1 = performance.now();
-    for (let i = 1; i < nTokens; i++) {
-      const pos = ids.length + i - 1;
+    let total = 1;                                             // tokens emitted (incl. prefill's first)
+    while (total < nTokens) {
+      const batch = Math.min(syncN, nTokens - total);
       let t = performance.now();
       const enc = device.createCommandEncoder();
-      const r = stack(enc, upload(embedDequant([tok]), S_ | CD), 1, pos);
-      const last = actBuf(Hd); enc.copyBufferToBuffer(r.fn, 0, last, 0, Hd * 4);
-      const lg = device.createBuffer({ size: W.lm_head.N * 4, usage: S_ | CS });
-      const pass = enc.beginComputePass(); lmHead(pass, last, 1, lg); pass.end();
+      for (let j = 0; j < batch; j++) {
+        const idxOut = total + j, pos = ids.length + idxOut - 1;
+        let pass = enc.beginComputePass();
+        runN(pass, 'embed_gather', [['u', Hd], ['u', idxOut - 1], ['u', 0], ['u', 0]], [tokBuf, embWqG, tgt4G, embScalesG, embZpG], embG, 1);
+        pass.end();
+        const r = stack(enc, embG, 1, pos);
+        const last = actBuf(Hd); enc.copyBufferToBuffer(r.fn, 0, last, 0, Hd * 4);
+        pass = enc.beginComputePass();
+        lmHead(pass, last, 1, lg);
+        runN(pass, 'argmax', [['u', vocab], ['u', idxOut], ['u', 0], ['u', 0]], [lg], tokBuf, 1);
+        pass.end();
+      }
       device.queue.submit([enc.finish()]);
       recMs += performance.now() - t;
       t = performance.now(); await device.queue.onSubmittedWorkDone(); gpuMs += performance.now() - t;
-      t = performance.now(); const logits = await readback(lg, W.lm_head.N); rbMs += performance.now() - t;
-      tok = argmax(logits); gen.push(tok);
+      t = performance.now(); const toks = await readbackU32(tokBuf, total + batch); rbMs += performance.now() - t;
+      for (let j = 0; j < batch; j++) gen.push(toks[total + j]);
+      total += batch;
     }
     const decodeMs = performance.now() - t1, nd = nTokens - 1;
     FULL = null;
