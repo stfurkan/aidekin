@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>@aidekin/webgpu-llm - package verification</title>
+  <style>
+    body { font: 14px/1.5 ui-monospace, monospace; max-width: 900px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 18px; }
+    button { font: inherit; padding: 8px 14px; cursor: pointer; }
+    pre { background: #f4f4f5; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+    .pass { color: #166534; font-weight: 700; }
+    .fail { color: #b91c1c; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>@aidekin/webgpu-llm - package verification</h1>
+  <p>Imports the <b>built package</b> (<code>../dist/index.js</code>) and re-runs the bit-exact
+     correctness + decode-throughput checks, to prove the extraction (TS port, inlined shaders,
+     options API) is identical to the validated engine.</p>
+  <button id="run">Run verification</button>
+  <pre id="out">idle.</pre>
+
+  <script type="module">
+    import { createEngine, WebGPUUnavailableError } from '../dist/index.js';
+
+    const out = document.getElementById('out');
+    const log = (s) => { out.textContent += s + '\n'; };
+    const buf = async (u) => await (await fetch(u)).arrayBuffer();
+    const cos = (a, e) => { let d = 0, na = 0, nb = 0; for (let i = 0; i < e.length; i++) { d += a[i] * e[i]; na += a[i] * a[i]; nb += e[i] * e[i]; } return d / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9); };
+
+    // The committed known-good greedy continuation for the fixture prompt (bit-exact gate).
+    const KNOWN_GOOD = [26194, 13, 576, 6722, 315, 279, 3639, 4180, 374, 6515, 11, 422, 727, 13, 576, 6722, 315, 279, 3639, 15072, 374, 7148, 13, 576, 6722, 315, 279, 25662, 374, 37741, 13, 576];
+
+    async function run() {
+      out.textContent = '';
+      const fp = await (await fetch('./forward-fixtures/params.json')).json();
+      const ids = fp.ids;
+      log('loading model (~290 MB) via the packaged engine...');
+      let engine;
+      try {
+        engine = await createEngine({ modelUrl: './model', onProgress: (p) => log(`  [load] ${p.phase}`) });
+      } catch (e) {
+        if (e instanceof WebGPUUnavailableError) { log('WebGPU not available: ' + e.message); return; }
+        throw e;
+      }
+      const cap = engine.capabilities;
+      log(`path: ${cap.useSubgroups ? 'subgroups (SG=' + cap.subgroupSize + ')' : 'no-subgroup fallback'}  adapter: ${cap.adapter.vendor || '?'}/${cap.adapter.architecture || '?'}`);
+
+      // 1) forward correctness vs reference fixtures
+      log('\nchecking correctness vs reference...');
+      const r = await engine.forward(ids);
+      let ok = true;
+      for (const name of ['embed', 'layer0', 'finalnorm', 'logits']) {
+        const c = cos(r[name], new Float32Array(await buf(`./forward-fixtures/${name}.bin`)));
+        const pass = c > 0.999; ok = ok && pass;
+        log(`  ${pass ? '[PASS]' : '[FAIL]'} ${name.padEnd(11)} cosine=${c.toFixed(7)}`);
+      }
+
+      // 2) generate + bit-exact id check
+      log('\ngenerating 32 tokens...');
+      const g = await engine.generate(ids, { maxTokens: 32 });
+      const idsMatch = g.tokens.length === KNOWN_GOOD.length && g.tokens.every((t, i) => t === KNOWN_GOOD[i]);
+      ok = ok && idsMatch;
+      log(`first token = ${g.tokens[0]} (expect 26194 = " Tokyo") ${g.tokens[0] === 26194 ? 'OK' : 'MISMATCH'}`);
+      log(`ids vs known-good: ${idsMatch ? '[PASS] identical' : '[FAIL] DIVERGED'}`);
+      log(`prefill (TTFT, ${ids.length} tokens) = ${g.prefillMs.toFixed(0)} ms`);
+      log(`decode = ${g.decodeMs.toFixed(0)} ms for ${g.tokens.length - 1} tokens  ->  ${g.tokensPerSecond.toFixed(2)} tok/s`);
+      log(`  per-token breakdown: record=${g.timing.recordMs.toFixed(1)}ms  gpu=${g.timing.gpuMs.toFixed(1)}ms  readback=${g.timing.readbackMs.toFixed(1)}ms`);
+      log(`generated ids: [${g.tokens.join(', ')}]`);
+
+      // 3) per-kernel breakdown (diagnostic handle)
+      log('\nin-context per-kernel breakdown...');
+      const groups = {
+        'layer matmul': ['matmul_split_sg', 'matmul_resid_mr_sg', 'matmul_swiglu_mr_sg', 'matmul_split_wg', 'matmul_resid_wg'],
+        'lm_head': ['matmul_q2_sg', 'matmul_q2', 'matmul_q2_wg'],
+        attention: ['attention_sg'],
+        'norm+rope': ['rmsnorm_rope_sg'],
+        rmsnorm: ['rmsnorm_sg'],
+      };
+      const none = await engine.profileDecode(ids, 12, new Set());
+      log(`  skeleton (dispatch/barrier floor) = ${none.gpuMs.toFixed(1)} ms/token`);
+      for (const [name, ks] of Object.entries(groups)) {
+        const pr = await engine.profileDecode(ids, 12, new Set(ks));
+        log(`  ${name.padEnd(10)} = ${Math.max(0, pr.gpuMs - none.gpuMs).toFixed(1)} ms/token`);
+      }
+
+      // 4) long-prompt prefill (tiled GEMM path)
+      const long = []; while (long.length < 192) long.push(...ids);
+      const lp = await engine.generate(long.slice(0, 192), { maxTokens: 1 });
+      log(`\nlong-prompt prefill (192 tokens) = ${lp.prefillMs.toFixed(0)} ms`);
+
+      out.insertAdjacentHTML('beforeend', `\n<span class="${ok ? 'pass' : 'fail'}">${ok ? 'PACKAGE OK' : 'REGRESSION'} - decode ${g.tokensPerSecond.toFixed(2)} tok/s</span>`);
+    }
+
+    document.getElementById('run').onclick = () => run().catch(e => log('ERROR: ' + e.message + '\n' + e.stack));
+  </script>
+</body>
+</html>

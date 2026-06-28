@@ -6,6 +6,9 @@
   "license": "MIT",
   "author": "Sait Furkan Teke",
   "description": "aidekin: a 100% client-side, embeddable voice and text AI widget that runs entirely in the browser (WebGPU). No backend, no API keys, no per-message cost.",
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
     "node": ">=24.0.0"
   },
