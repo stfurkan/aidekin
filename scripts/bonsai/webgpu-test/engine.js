@@ -33,15 +33,19 @@ export async function createEngine(modelDir) {
   const hasSG = adapter.features.has('subgroups');
   const info = adapter.info ?? {};                          // subgroup sizes live on GPUAdapterInfo
   const sgMax = info.subgroupMaxSize ?? 32, sgMin = info.subgroupMinSize ?? sgMax;
-  const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64);  // uniform >=32 -> head_dim/SG<=4
-  const device = await adapter.requestDevice({ requiredFeatures: hasSG ? ['subgroups'] : [] });
+  const forceNoSG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nosg');
+  const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64) && !forceNoSG;  // uniform >=32 -> head_dim/SG<=4; ?nosg forces the v1 fallback
+  const device = await adapter.requestDevice({ requiredFeatures: useSG ? ['subgroups'] : [] });
   const pipelines = {};
   const mkPipe = async (name, constants) => {
     const code = await (await fetch(`./${name}.wgsl`)).text();
     pipelines[name] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main', constants } });
   };
+  const ROWS_MR = 4;                                        // output rows per workgroup in the multi-row GEMV
   for (const name of WGSLS) await mkPipe(name);
-  if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_resid_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg', 'matmul_swiglu_sg']) await mkPipe(n, { SG: sgMax });
+  if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg']) await mkPipe(n, { SG: sgMax });
+  if (useSG) for (const n of ['matmul_resid_mr_sg', 'matmul_swiglu_mr_sg']) await mkPipe(n, { SG: sgMax, ROWS: ROWS_MR });
+  if (!useSG) for (const n of ['matmul_split_wg', 'matmul_resid_wg', 'matmul_q2_wg']) await mkPipe(n, { WG: 64 });  // no-subgroup fallback: workgroup-reduction GEMV
 
   const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, U = GPUBufferUsage.UNIFORM;
   const upload = (typed, usage = S_ | CD) => { const b = device.createBuffer({ size: typed.byteLength, usage }); device.queue.writeBuffer(b, 0, typed); return b; };
@@ -153,6 +157,9 @@ export async function createEngine(modelDir) {
     if (useSG && S === 1) {
       const gx = Math.min(Ntot, 65535);
       runWG(pass, 'matmul_split_sg', [['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2], ['u', gx]], [inBuf, w.sign, w.scales], outs, gx, Math.ceil(Ntot / gx));
+    } else if (S === 1) {
+      const gx = Math.min(Ntot, 65535);                     // no-subgroup decode: workgroup-reduction GEMV
+      runWG(pass, 'matmul_split_wg', [['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2], ['u', gx]], [inBuf, w.sign, w.scales], outs, gx, Math.ceil(Ntot / gx));
     } else {
       runIO(pass, 'matmul_split', [['u', S], ['u', w.K], ['u', w.nb], ['u', w.N0], ['u', w.N1], ['u', w.N2]], [inBuf, w.sign, w.scales], outs, S * Ntot);
     }
@@ -160,8 +167,12 @@ export async function createEngine(modelDir) {
   // o_proj / down_proj matmul with fused residual add
   function residMM(pass, w, inBuf, resid, S, out) {
     if (useSG && S === 1) {
-      const gx = Math.min(w.N, 65535);
-      runWG(pass, 'matmul_resid_sg', [['u', w.N], ['u', w.K], ['u', w.nb], ['u', gx], ['u', 0], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], gx, Math.ceil(w.N / gx));
+      const nwg = Math.ceil(w.N / ROWS_MR);                 // multi-row GEMV: ROWS_MR output cols per workgroup
+      const gx = Math.min(nwg, 65535);
+      runWG(pass, 'matmul_resid_mr_sg', [['u', w.N], ['u', w.K], ['u', w.nb], ['u', gx], ['u', 0], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], gx, Math.ceil(nwg / gx));
+    } else if (S === 1) {
+      const gx = Math.min(w.N, 65535);                      // no-subgroup decode: workgroup-reduction GEMV + residual
+      runWG(pass, 'matmul_resid_wg', [['u', w.N], ['u', w.K], ['u', w.nb], ['u', gx], ['u', 0], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], gx, Math.ceil(w.N / gx));
     } else {
       runIO(pass, 'matmul_resid', [['u', S], ['u', w.N], ['u', w.K], ['u', w.nb], ['u', 128], ['u', 0]], [inBuf, w.sign, w.scales, resid], [out], S * w.N);
     }
@@ -196,10 +207,10 @@ export async function createEngine(modelDir) {
       const o = W[`layers.${li}.attn.o_proj`], h2 = actBuf(Hd);
       residMM(pass, o, att, h, 1, h2);
       const n2 = actBuf(Hd); rms(pass, h2, `layers.${li}.post_attention_layernorm`, 1, Hd, n2);
-      // gate/up GEMV + SwiGLU fused (one workgroup computes g[n] and u[n], writes silu(g)*u)
-      const gu = W[`layers.${li}.mlp.gateup`], sw = actBuf(F), gxF = Math.min(F, 65535);
-      runWG(pass, 'matmul_swiglu_sg', [['u', gu.K], ['u', gu.nb], ['u', F], ['u', gxF], ['u', 0], ['u', 0]],
-        [n2, gu.sign, gu.scales], [sw], gxF, Math.ceil(F / gxF));
+      // gate/up GEMV + SwiGLU fused, multi-row (ROWS_MR intermediate cols per workgroup)
+      const gu = W[`layers.${li}.mlp.gateup`], sw = actBuf(F), nwgF = Math.ceil(F / ROWS_MR), gxF = Math.min(nwgF, 65535);
+      runWG(pass, 'matmul_swiglu_mr_sg', [['u', gu.K], ['u', gu.nb], ['u', F], ['u', gxF], ['u', 0], ['u', 0]],
+        [n2, gu.sign, gu.scales], [sw], gxF, Math.ceil(nwgF / gxF));
       cap(li, 'sw', sw);
       const d = W[`layers.${li}.mlp.down_proj`], hn = actBuf(Hd);
       residMM(pass, d, sw, h2, 1, hn);
@@ -239,6 +250,9 @@ export async function createEngine(modelDir) {
     if (useSG && M === 1) {
       const gx = Math.min(lm.N, 65535);
       runWG(pass, 'matmul_q2_sg', [['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', lm.zp], ['u', gx], ['u', 0]], [fn, lm.codes, lm.scales], [out], gx, Math.ceil(lm.N / gx));
+    } else if (M === 1) {
+      const gx = Math.min(lm.N, 65535);                     // no-subgroup decode: workgroup-reduction 2-bit GEMV
+      runWG(pass, 'matmul_q2_wg', [['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', lm.zp], ['u', gx], ['u', 0]], [fn, lm.codes, lm.scales], [out], gx, Math.ceil(lm.N / gx));
     } else {
       run(pass, 'matmul_q2', [['u', M], ['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', 128], ['u', lm.zp]], [fn, lm.codes, lm.scales], out, M * lm.N);
     }
