@@ -42,23 +42,46 @@ export async function createEngine(modelDir) {
   const SYNC_N = Math.max(1, parseInt(qp.get('sync'), 10) || 4);   // decode: chain N steps per CPU sync (?sync=1 = old per-token)
   const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64) && !forceNoSG;  // uniform >=32 -> head_dim/SG<=4; ?nosg forces the v1 fallback
   if (!useSG && typeof console !== 'undefined') console.log(`no-subgroup reduction WG = ${WG_NS}`);
-  const device = await adapter.requestDevice({ requiredFeatures: useSG ? ['subgroups'] : [] });
+  const device = await adapter.requestDevice({ requiredFeatures: useSG ? ['subgroups'] : [] });  // no requiredLimits -> code to the guaranteed minimums (runs on low-end/mobile)
+  const L = adapter.limits;                                  // awareness: largest binding (lm_head ~77MB) < 128MiB, shared mem <=8KB < 16KB min, WG <=256
+  if (typeof console !== 'undefined') console.log(`limits: storageBinding=${Math.round(Number(L.maxStorageBufferBindingSize) / 1048576)}MiB wgStorage=${L.maxComputeWorkgroupStorageSize}B wgInvocs=${L.maxComputeInvocationsPerWorkgroup}`);
   const pipelines = {};
+  // async pipeline creation: compile in parallel, non-blocking -> faster, stall-free cold start (MDN-recommended)
   const mkPipe = async (name, constants) => {
     const code = await (await fetch(`./${name}.wgsl`)).text();
-    pipelines[name] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main', constants } });
+    pipelines[name] = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main', constants } });
   };
   const ROWS_MR = 4;                                        // output rows per workgroup in the multi-row GEMV
-  for (const name of WGSLS) await mkPipe(name);
-  for (const n of ['matmul_split_tiled', 'matmul_resid_tiled']) await mkPipe(n);  // prefill (M>1) tiled GEMM, all devices
-  for (const n of ['argmax', 'embed_gather']) await mkPipe(n);                    // GPU-resident decode loop, all devices
-  if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg']) await mkPipe(n, { SG: sgMax });
-  if (useSG) for (const n of ['matmul_resid_mr_sg', 'matmul_swiglu_mr_sg']) await mkPipe(n, { SG: sgMax, ROWS: ROWS_MR });
-  if (!useSG) for (const n of ['matmul_split_wg', 'matmul_resid_wg', 'matmul_q2_wg']) await mkPipe(n, { WG: WG_NS });  // no-subgroup fallback: workgroup-reduction GEMV
+  const specs = [...WGSLS.map(n => [n]), ['matmul_split_tiled'], ['matmul_resid_tiled'], ['argmax'], ['embed_gather']];
+  if (useSG) {
+    for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg']) specs.push([n, { SG: sgMax }]);
+    for (const n of ['matmul_resid_mr_sg', 'matmul_swiglu_mr_sg']) specs.push([n, { SG: sgMax, ROWS: ROWS_MR }]);
+  } else {
+    for (const n of ['matmul_split_wg', 'matmul_resid_wg', 'matmul_q2_wg']) specs.push([n, { WG: WG_NS }]);
+  }
+  await Promise.all(specs.map(([n, c]) => mkPipe(n, c)));   // parallel compile of all pipelines
 
   const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, U = GPUBufferUsage.UNIFORM;
   const upload = (typed, usage = S_ | CD) => { const b = device.createBuffer({ size: typed.byteLength, usage }); device.queue.writeBuffer(b, 0, typed); return b; };
-  const actBuf = (n) => device.createBuffer({ size: n * 4, usage: S_ | CS | CD });
+  // Decode resource pool: in the decode loop the dispatch sequence is identical every batch, so reuse
+  // the scratch + uniform buffers across batches (createBuffer is the dominant per-token record cost).
+  // Counters increment per call and reset per batch, so within a batch every dispatch still gets its
+  // own buffer (no aliasing of in-flight work); reuse happens only across batches (after the sync).
+  let pooling = false, bufPool = [], bufIdx = 0, uniPool = [], uniIdx = 0;
+  const poolReset = () => { bufIdx = 0; uniIdx = 0; };
+  const actBuf = (n) => {
+    if (!pooling) return device.createBuffer({ size: n * 4, usage: S_ | CS | CD });
+    let b = bufPool[bufIdx];
+    if (!b || b.size !== n * 4) { b = device.createBuffer({ size: n * 4, usage: S_ | CS | CD }); bufPool[bufIdx] = b; }
+    bufIdx++; return b;
+  };
+  const uniBuf = (fields) => {                              // pooled uniform buffer for a dispatch's params
+    const data = new Uint8Array(makeParams(fields));
+    if (!pooling) return upload(data, U | CD);
+    let b = uniPool[uniIdx];
+    if (!b) { b = device.createBuffer({ size: 64, usage: U | CD }); uniPool[uniIdx] = b; }
+    device.queue.writeBuffer(b, 0, data); uniIdx++; return b;
+  };
   const dummy = device.createBuffer({ size: 16, usage: S_ });
 
   const tgt2 = readRef(manifest.luts.tgt2), tgt4 = readRef(manifest.luts.tgt4);
@@ -111,7 +134,9 @@ export async function createEngine(modelDir) {
   function ropeBufs(posBase, S) {
     const D = A.head_dim, cos = new Float32Array(S * D), sin = new Float32Array(S * D);
     for (let s = 0; s < S; s++) for (let d = 0; d < D; d++) { cos[s * D + d] = cosCache[(posBase + s) * 64 + (d % 64)]; sin[s * D + d] = sinCache[(posBase + s) * 64 + (d % 64)]; }
-    return { cos: upload(cos), sin: upload(sin) };
+    const cb = actBuf(S * D), sb = actBuf(S * D);
+    device.queue.writeBuffer(cb, 0, cos); device.queue.writeBuffer(sb, 0, sin);
+    return { cos: cb, sin: sb };
   }
 
   const KV = A.kv_heads, Dh = A.head_dim, Hd = A.hidden, H = A.heads, F = A.intermediate;
@@ -138,7 +163,7 @@ export async function createEngine(modelDir) {
   let FORCE_SLOW = false, DBG0 = null;
   const cap = (li, name, buf) => { if (li === 0 && DBG0) DBG0[name] = buf; };
   function runIO(pass, name, fields, ins, outs, threads) {
-    const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+    const entries = [{ binding: 0, resource: { buffer: uniBuf(fields) } }];
     ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
     outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
     pass.setPipeline(pipelines[name]);
@@ -148,7 +173,7 @@ export async function createEngine(modelDir) {
   const run = (pass, name, fields, ins, out, threads) => runIO(pass, name, fields, ins, [out], threads);
   // dispatch exactly nWG workgroups (for subgroup kernels: one workgroup per row / per (query,head))
   function runN(pass, name, fields, ins, out, nWG) {
-    const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+    const entries = [{ binding: 0, resource: { buffer: uniBuf(fields) } }];
     ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
     entries.push({ binding: ins.length + 1, resource: { buffer: out } });
     pass.setPipeline(pipelines[name]);
@@ -157,7 +182,7 @@ export async function createEngine(modelDir) {
   }
   // 2D workgroup dispatch (subgroup GEMV: one workgroup per output column)
   function runWG(pass, name, fields, ins, outs, wgX, wgY) {
-    const entries = [{ binding: 0, resource: { buffer: upload(new Uint8Array(makeParams(fields)), U | CD) } }];
+    const entries = [{ binding: 0, resource: { buffer: uniBuf(fields) } }];
     ins.forEach((b, i) => entries.push({ binding: i + 1, resource: { buffer: b } }));
     outs.forEach((b, i) => entries.push({ binding: 1 + ins.length + i, resource: { buffer: b } }));
     pass.setPipeline(pipelines[name]);
@@ -326,8 +351,10 @@ export async function createEngine(modelDir) {
     let recMs = 0, gpuMs = 0, rbMs = 0;
     const t1 = performance.now();
     let total = 1;                                             // tokens emitted (incl. prefill's first)
+    pooling = true;                                            // reuse decode scratch + uniform buffers across batches
     while (total < nTokens) {
       const batch = Math.min(syncN, nTokens - total);
+      poolReset();
       let t = performance.now();
       const enc = device.createCommandEncoder();
       for (let j = 0; j < batch; j++) {
@@ -349,6 +376,7 @@ export async function createEngine(modelDir) {
       for (let j = 0; j < batch; j++) gen.push(toks[total + j]);
       total += batch;
     }
+    pooling = false;
     const decodeMs = performance.now() - t1, nd = nTokens - 1;
     FULL = null;
     return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd };
