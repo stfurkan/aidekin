@@ -29,7 +29,7 @@ export async function createEngine(modelDir) {
     return new V(src.slice(ref.off, ref.off + ref.len));
   };
 
-  const adapter = await navigator.gpu.requestAdapter();
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });  // pick the discrete GPU on multi-GPU machines, not the weak iGPU
   const hasSG = adapter.features.has('subgroups');
   const info = adapter.info ?? {};                          // subgroup sizes live on GPUAdapterInfo
   const sgMax = info.subgroupMaxSize ?? 32, sgMin = info.subgroupMinSize ?? sgMax;
