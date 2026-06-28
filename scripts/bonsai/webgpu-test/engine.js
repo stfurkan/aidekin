@@ -41,7 +41,7 @@ export async function createEngine(modelDir) {
     pipelines[name] = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main', constants } });
   };
   for (const name of WGSLS) await mkPipe(name);
-  if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_resid_sg']) await mkPipe(n, { SG: sgMax });
+  if (useSG) for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_resid_sg', 'matmul_q2_sg']) await mkPipe(n, { SG: sgMax });
 
   const S_ = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, U = GPUBufferUsage.UNIFORM;
   const upload = (typed, usage = S_ | CD) => { const b = device.createBuffer({ size: typed.byteLength, usage }); device.queue.writeBuffer(b, 0, typed); return b; };
@@ -190,7 +190,15 @@ export async function createEngine(modelDir) {
     residMM(pass, d, sw, h2, S, hn);
     return hn;
   }
-  function lmHead(pass, fn, M, out) { const lm = W.lm_head; run(pass, 'matmul_q2', [['u', M], ['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', 128], ['u', lm.zp]], [fn, lm.codes, lm.scales], out, M * lm.N); }
+  function lmHead(pass, fn, M, out) {
+    const lm = W.lm_head;
+    if (useSG && M === 1) {
+      const gx = Math.min(lm.N, 65535);
+      runWG(pass, 'matmul_q2_sg', [['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', lm.zp], ['u', gx], ['u', 0]], [fn, lm.codes, lm.scales], [out], gx, Math.ceil(lm.N / gx));
+    } else {
+      run(pass, 'matmul_q2', [['u', M], ['u', lm.N], ['u', lm.K], ['u', lm.nb], ['u', 128], ['u', lm.zp]], [fn, lm.codes, lm.scales], out, M * lm.N);
+    }
+  }
 
   function stack(enc, h, S, posBase) {
     const { cos, sin } = ropeBufs(posBase, S);

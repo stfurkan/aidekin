@@ -58,7 +58,8 @@
 
       log('\nin-context per-kernel breakdown (only that type at full size, rest 1-workgroup)...');
       const groups = {
-        matmul: ['matmul_split_sg', 'matmul_resid_sg', 'matmul_q2'],
+        'layer matmul': ['matmul_split_sg', 'matmul_resid_sg'],
+        'lm_head': ['matmul_q2', 'matmul_q2_sg'],
         attention: ['attention_sg'], rmsnorm: ['rmsnorm_sg'],
         rope: ['rope'], copy: ['copy'], swiglu: ['swiglu'],
       };
