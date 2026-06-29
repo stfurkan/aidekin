@@ -25,7 +25,10 @@ async function load(onProgress?: EmbedProgress): Promise<Embedder> {
   if (!embedderPromise) {
     embedderPromise = withRetry(
       async () => {
-        const urls = embedModelUrls()
+        // dev: the local mirror (public/models/embed) so offline dev needs no download; prod: HF Hub.
+        const urls = import.meta.env.DEV
+          ? { onnxUrl: '/models/embed/model_quantized.onnx', tokenizerJsonUrl: '/models/embed/tokenizer.json', tokenizerConfigUrl: '/models/embed/tokenizer_config.json' }
+          : embedModelUrls()
         const [tokJson, tokCfg] = await Promise.all([
           fetch(urls.tokenizerJsonUrl).then((r) => r.json()),
           fetch(urls.tokenizerConfigUrl).then((r) => r.json()),
