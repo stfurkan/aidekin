@@ -215,7 +215,13 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       void import('@/rag/retriever')
         .then(({ createRetriever }) => createRetriever(url))
         .then(({ retriever }) => {
-          if (alive) engineRef.current?.setRetriever(retriever)
+          if (!alive) return
+          engineRef.current?.setRetriever(retriever)
+          // Prewarm the embedder's ORT session NOW, in the background (overlapping the LLM load),
+          // so the FIRST query doesn't pay the cold load. Building the bge wasm session is several
+          // seconds and otherwise lands on the user's first message - and the LLM's ttft metric
+          // does not include it, which is why a "2s" reply can feel like 10s+ the first time.
+          void import('@/rag/embedder').then(({ loadEmbedder }) => loadEmbedder()).catch(() => {})
         })
         .catch((e: unknown) => {
           if (alive) console.warn('[aidekin] knowledge load failed:', e)

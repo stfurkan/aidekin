@@ -25,6 +25,7 @@ async function load(onProgress?: EmbedProgress): Promise<Embedder> {
   if (!embedderPromise) {
     embedderPromise = withRetry(
       async () => {
+        const t0 = performance.now()
         // dev: the local mirror (public/models/embed) so offline dev needs no download; prod: HF Hub.
         const urls = import.meta.env.DEV
           ? { onnxUrl: '/models/embed/model_quantized.onnx', tokenizerJsonUrl: '/models/embed/tokenizer.json', tokenizerConfigUrl: '/models/embed/tokenizer_config.json' }
@@ -38,6 +39,7 @@ async function load(onProgress?: EmbedProgress): Promise<Embedder> {
           onProgress?.({ file: 'embedder', loaded: p.loaded, total: p.total, progress: p.total ? (100 * p.loaded) / p.total : 0 }),
         )
         const session = await ort.InferenceSession.create(onnx)
+        console.info(`[aidekin] embedder ready in ${(performance.now() - t0).toFixed(0)}ms`)
         return { tok, session }
       },
       { onRetry: (n, _e, ms) => console.warn(`[aidekin] embedder load failed (transient); retry ${n} in ${ms}ms`) },
