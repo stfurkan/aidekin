@@ -84,6 +84,9 @@ export type LlmIn =
       readonly resetCache?: boolean
     }
   | { readonly kind: 'abort'; readonly id: number }
+  // Prewarm the KV cache with the (static) system prompt at load, so the user's FIRST turn is a
+  // cache-append instead of a cold full prefill. Best-effort; the worker runs it when idle.
+  | { readonly kind: 'prewarm'; readonly system: ChatMessage }
 export type LlmOut =
   | Lifecycle
   | { readonly kind: 'token'; readonly id: number; readonly text: string }

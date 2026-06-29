@@ -152,6 +152,7 @@ export class ConversationEngine {
   private assistant = ''
   private pending: { id: number; resolve: (text: string) => void } | null = null
   private ready: { resolve: () => void; reject: (e: Error) => void } | null = null
+  private prewarmTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(opts: EngineOptions) {
     this.cb = opts.callbacks ?? {}
@@ -216,12 +217,14 @@ export class ConversationEngine {
       }
       throw err
     }
+    this.schedulePrewarm() // warm the system prompt into the cache while the user reads the greeting
   }
 
   /** Voice path: reuse the orchestrator's already-initialized worker. */
   adoptLlmWorker(w: Worker): void {
     this.llm = w
     this.ownsWorker = false
+    this.schedulePrewarm()
   }
 
   /** Voice path: the orchestrator forwards the worker's token/done events here. */
@@ -442,6 +445,23 @@ export class ConversationEngine {
     }
   }
 
+  /** Warm the worker's KV cache with the CURRENT system prompt so the user's first turn is a cheap
+   *  cache-append, not a cold full prefill (the otherwise-hidden seconds before the first token).
+   *  Debounced, so loading + the async RAG attach coalesce into ONE prewarm with the final system
+   *  view. Best-effort; the worker serializes the prefill before any generation. Clears cacheDirty
+   *  because the prewarm rebuilds the cache to match exactly this system view. */
+  private schedulePrewarm(): void {
+    if (!this.llm) return
+    if (this.prewarmTimer) clearTimeout(this.prewarmTimer)
+    this.prewarmTimer = setTimeout(() => {
+      this.prewarmTimer = null
+      if (!this.llm) return
+      const system: ChatMessage = { role: 'system', content: this.composedSystem() }
+      this.llm.postMessage({ kind: 'prewarm', system })
+      this.cacheDirty = false
+    }, 300)
+  }
+
   /** Attach (or clear) RAG after construction - the index loads asynchronously. */
   setRetriever(retriever: Retriever | null): void {
     const had = !!this.retriever
@@ -451,6 +471,7 @@ export class ConversationEngine {
     if (had !== !!retriever && this.messages[0]?.role === 'system') {
       this.messages[0] = { role: 'system', content: this.composedSystem() }
       this.cacheDirty = true
+      this.schedulePrewarm() // re-warm the cache with the new (RAG) system view, off the first turn
     }
   }
 
@@ -477,6 +498,7 @@ export class ConversationEngine {
       this.messages.unshift({ role: 'system', content: this.composedSystem() })
     }
     this.cacheDirty = true // the cached prefix starts with the old system prompt
+    this.schedulePrewarm() // re-warm with the new system prompt so the next turn still reuses the cache
     this.persist()
   }
 

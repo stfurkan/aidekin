@@ -112,6 +112,11 @@ export interface EngineCapabilities {
 export interface Engine {
   /** Generate tokens from a prompt given as token ids. */
   generate(promptTokenIds: number[], options?: GenerateOptions): Promise<GenerateResult>
+  /** Prefill a prompt PREFIX into the KV cache without decoding, so a later
+   *  `generate(delta, { reuseCache: true })` continues from it. Use to warm a static system prompt
+   *  at load time so the first real turn is a cheap cache-append, not a full prefill. Resets any
+   *  existing cache (the prefix becomes the whole history). Returns the prefill wall-time. */
+  prefill(promptTokenIds: number[]): Promise<{ prefillMs: number }>
   /** Run a single forward pass and return hidden states + logits (diagnostic / correctness checks). */
   forward(tokenIds: number[]): Promise<ForwardResult>
   /** Clear the cross-turn KV cache and token history (start a fresh conversation). */

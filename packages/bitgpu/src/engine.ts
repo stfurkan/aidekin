@@ -959,8 +959,27 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     }
   }
 
+  // Prefill a prompt PREFIX into the KV cache without decoding, then stop. A later
+  // generate(delta, {reuseCache:true}) continues from it, so a static system prompt can be warmed at
+  // load and the user's first turn becomes a cheap cache-append instead of a full prefill. Like a
+  // non-reuse generate's prefill it resets the cache (this prefix becomes the whole history); it
+  // writes K/V for EVERY prefilled position, so the reuse path's re-fed last token just overwrites
+  // position len-1 idempotently and the result is identical to a cold full prefill.
+  async function prefill(ids: number[]): Promise<{ prefillMs: number }> {
+    if (ids.length === 0) throw new Error('prefill: no tokens to process')
+    if (ids.length > maxSeqLen) throw new Error(`prefill: sequence length ${ids.length} exceeds maxSeqLen ${maxSeqLen}`)
+    const t0 = performance.now()
+    const enc = device.createCommandEncoder()
+    stack(enc, upload(embedDequant(ids), S_ | CD), ids.length, 0) // posBase 0: fresh prefix; writes K/V for every position
+    device.queue.submit([enc.finish()])
+    await device.queue.onSubmittedWorkDone()
+    fullHistory = [...ids]
+    return { prefillMs: performance.now() - t0 }
+  }
+
   const api: EngineInternal = {
     generate,
+    prefill,
     forward,
     resetCache,
     capabilities,

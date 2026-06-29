@@ -159,6 +159,30 @@
       const sReuseOk = sReuseT2.tokens.length === sFullT2.tokens.length && sReuseT2.tokens.every((t, i) => t === sFullT2.tokens[i]);
       ok = ok && sReuseOk;
       log(`  ${sReuseOk ? '[PASS]' : '[FAIL]'} sampled reuse turn-2 == full-prefill turn-2 (seed 7)`);
+
+      // 6c) prefill() primitive (system-prompt prewarming): prefill(prefix) + reuse(delta) must equal
+      // a COLD full prefill of [prefix, ...delta], token-for-token - the exact property the worker's
+      // load-time prewarm relies on (prefill the system block, then the first turn reuses it).
+      log('\nprefill() prewarm checks...');
+      const split = Math.max(1, ids.length - 3), PFX = ids.slice(0, split), APP = ids.slice(split);
+      engine.resetCache();
+      await engine.prefill(PFX);                                                   // warm the prefix, no decode
+      const pwReuse = await engine.generate(APP, { maxTokens: R2, reuseCache: true });
+      engine.resetCache();
+      const pwCold = await engine.generate([...PFX, ...APP], { maxTokens: R2 });    // cold full prefill of the same
+      const pwOk = pwReuse.tokens.length === pwCold.tokens.length && pwReuse.tokens.every((t, i) => t === pwCold.tokens[i]);
+      ok = ok && pwOk;
+      log(`  ${pwOk ? '[PASS]' : '[FAIL]'} prefill(prefix)+reuse == cold full-prefill (greedy, bit-exact)`);
+      engine.resetCache();
+      await engine.prefill(PFX);
+      const pwSReuse = await engine.generate(APP, { ...SS, maxTokens: R2, reuseCache: true });
+      engine.resetCache();
+      const pwSCold = await engine.generate([...PFX, ...APP], { ...SS, maxTokens: R2 });
+      const pwSOk = pwSReuse.tokens.length === pwSCold.tokens.length && pwSReuse.tokens.every((t, i) => t === pwSCold.tokens[i]);
+      ok = ok && pwSOk;
+      log(`  ${pwSOk ? '[PASS]' : '[FAIL]'} sampled prefill(prefix)+reuse == cold (seed 7)`);
+      engine.resetCache();
+
       let guardOk = false;
       try { await engine.generate(ids, { maxTokens: 9_999_999 }); } catch (e) { guardOk = /maxSeqLen/.test(e.message); }
       ok = ok && guardOk;

@@ -116,6 +116,9 @@ interface GenJob {
 }
 let running = false
 let queued: GenJob | null = null
+// A background system-prompt prewarm (engine.prefill). runGeneration awaits it before deciding
+// cache reuse, so a prewarm prefill can never overlap a decode and the first turn sees the warm cache.
+let prewarmPromise: Promise<void> | null = null
 
 // ── cross-turn cache bookkeeping ───────────────────────────────────────────────
 // The engine owns the physical KV cache (generate(delta, {reuseCache}) / resetCache). We track the
@@ -144,6 +147,8 @@ async function handle(msg: LlmIn): Promise<void> {
         invalidateCache = true // partial generation -> cache no longer matches a clean prefix
         abortController?.abort()
       }
+    } else if (msg.kind === 'prewarm') {
+      await prewarm(msg.system)
     }
   } catch (err) {
     post({ kind: 'error', message: `LLM: ${(err as Error).message}` })
@@ -202,6 +207,29 @@ async function warmup(): Promise<void> {
   }
 }
 
+/** Prefill the static system prompt into the KV cache at load, so the user's FIRST turn is a cheap
+ *  cache-append instead of a cold full prefill (the otherwise-hidden few seconds before the first
+ *  token). We render the system block and drop its trailing newline so the cache ends exactly at
+ *  <|im_end|>; the standard cache-reuse delta (which begins with "\n", see runGeneration) then
+ *  reconstructs the first [system,user] prompt token-for-token. Best-effort; skipped mid-generation. */
+async function prewarm(system: ChatMessage): Promise<void> {
+  if (!engine || !tokenizer || !chatWrap || running) return // need ChatML wrappers; never disturb a live turn
+  const job = (async () => {
+    try {
+      const sysStr = tokenizer!.applyChatTemplate([system], { addGenerationPrompt: false, enableThinking: false }).replace(/\n$/, '')
+      const ids = tokenizer!.encode(sysStr, false)
+      const t0 = performance.now()
+      await engine!.prefill(ids)
+      cachedMessages = [system] // the cache now represents exactly [system]; the next clean append reuses it
+      console.info(`[aidekin] LLM system prewarm ${(performance.now() - t0).toFixed(0)}ms (${ids.length} tok)`)
+    } catch (e) {
+      console.warn('[aidekin] LLM prewarm skipped:', (e as Error).message)
+    }
+  })()
+  prewarmPromise = job
+  await job
+}
+
 // Sampling params (match the prior transformers.js config exactly; top_p is a no-op there and here).
 const SAMPLING = { temperature: 0.5, topK: 20, topP: 0.85, repetitionPenalty: 1.15, noRepeatNgramSize: 3 } as const
 
@@ -235,6 +263,13 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
   currentId = id
   invalidateCache = false
   abortController = new AbortController()
+
+  // If a system-prompt prewarm is still in flight, let it finish first: it populates the cache this
+  // turn may reuse, and the engine must never run a prefill and a decode concurrently.
+  if (prewarmPromise) {
+    try { await prewarmPromise } catch { /* prewarm is best-effort */ }
+    prewarmPromise = null
+  }
 
   // Reuse the engine's cache only on a clean append (committed conversation + one new user turn), in
   // non-thinking mode (a stripped <think> block isn't reflected in the cached tokens), with ChatML
