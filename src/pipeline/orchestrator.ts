@@ -122,11 +122,11 @@ export class Orchestrator {
   private readonly waiters = new Map<string, Waiter>()
 
   private readonly loadMap = new Map<string, ComponentLoad>([
-    ['LLM', { label: 'LLM', title: 'Brain · Bonsai', status: 'pending', detail: 'transformers.js / WebGPU', fraction: 0 }],
+    ['LLM', { label: 'LLM', title: 'Brain · Bonsai', status: 'pending', detail: '@aidekin/webgpu-llm', fraction: 0 }],
     ['ASR', { label: 'ASR', title: 'Hearing · Nemotron 3.5', status: 'pending', detail: 'onnxruntime-web', fraction: 0 }],
     ['TTS', { label: 'TTS', title: 'Voice · Supertonic-3', status: 'pending', detail: 'onnxruntime-web', fraction: 0 }],
     ['VAD', { label: 'VAD', title: 'Activity · Silero v5', status: 'pending', detail: 'vad-web', fraction: 0 }],
-    ['Turn', { label: 'Turn', title: 'Turn-taking · Smart Turn v3', status: 'pending', detail: 'transformers.js', fraction: 0 }],
+    ['Turn', { label: 'Turn', title: 'Turn-taking · Smart Turn v3', status: 'pending', detail: 'onnxruntime-web / WASM', fraction: 0 }],
   ])
 
   constructor(opts: OrchestratorOptions) {
