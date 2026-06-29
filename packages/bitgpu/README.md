@@ -2,7 +2,7 @@
 
 A fast, dependency-free WebGPU runtime for **low-bit LLMs** in the browser.
 
-Today it runs **1-bit (binary-weight)** models; the kernels and format are built to extend to 2/4/8-bit.
+Today it runs **1-bit (binary-weight)** models.
 Reference target is Bonsai-1.7B (Qwen3 architecture, sign-packed binary linear weights + 2/4-bit tied
 embeddings). Bit-exact with the reference forward, GPU-resident decode (greedy or sampled), streaming,
 EOS stop, `AbortSignal`, and cross-turn KV-cache reuse. Runs the fast subgroup path on Apple / NVIDIA /
