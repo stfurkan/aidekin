@@ -102,7 +102,7 @@ interface EngineInternal extends Engine {
 type TypedArrayCtor = Float32ArrayConstructor | Uint8ArrayConstructor | Uint16ArrayConstructor
 const VIEW: Record<string, TypedArrayCtor> = { FLOAT: Float32Array, UINT8: Uint8Array, FLOAT16: Uint16Array }
 const WGSLS = ['matmul_binary_vec4', 'matmul_split', 'matmul_resid', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy']
-const MAXSEQ = 256
+const DEFAULT_MAX_SEQ = 2048
 
 const PARAM_AB = new ArrayBuffer(64)
 const PARAM_DV = new DataView(PARAM_AB)
@@ -173,6 +173,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const FORCETILE = opts.prefillTiling === 'always' // use tiled even for short prompts (validation)
   const tiledPrefill = (S: number): boolean => FORCETILE || (!NOTILE && S >= 64) // tiled GEMM wins only once it fills its 64-row tiles
   const SYNC_N = Math.max(1, opts.syncSteps ?? 4) // decode: chain N steps per CPU sync
+  const maxSeqLen = Math.max(1, opts.maxSeqLen ?? DEFAULT_MAX_SEQ) // KV-cache length cap (VRAM ~ maxSeqLen x 224KB)
   const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64) && !forceNoSG // uniform >=32 -> head_dim/SG<=4
   const device = await adapter.requestDevice({ requiredFeatures: useSG ? (['subgroups'] as GPUFeatureName[]) : [] }) // no requiredLimits -> code to the guaranteed minimums (runs on low-end/mobile)
   const L = adapter.limits // awareness: largest binding (lm_head ~77MB) < 128MiB, shared mem <=8KB < 16KB min, WG <=256
@@ -247,6 +248,16 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     return b
   }
   const dummy = device.createBuffer({ size: 16, usage: S_ })
+
+  // Cross-turn state. fullHistory is the entire conversation's token sequence (prompt turns + replies),
+  // needed because the sampler's repetition_penalty / no_repeat_ngram see the FULL sequence (like
+  // transformers.js, independent of the KV cache). Derived from it: the cache fill length is
+  // fullHistory.length - 1 (the last token's K/V is never written during decode), and that last token
+  // is re-fed when resuming so its K/V gets written. The persistent Kc/Vc (below) hold the cached K/V.
+  let fullHistory: number[] = []
+  const resetCache = (): void => {
+    fullHistory = []
+  }
 
   const tgt2 = readU8(manifest.luts.tgt2),
     tgt4 = readU8(manifest.luts.tgt4)
@@ -365,8 +376,8 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const Kc: GPUBuffer[] = [],
     Vc: GPUBuffer[] = []
   for (let li = 0; li < A.layers; li++) {
-    Kc.push(actBuf(MAXSEQ * KV * Dh))
-    Vc.push(actBuf(MAXSEQ * KV * Dh))
+    Kc.push(actBuf(maxSeqLen * KV * Dh))
+    Vc.push(actBuf(maxSeqLen * KV * Dh))
   }
 
   async function readback(buf: GPUBuffer, n: number): Promise<Float32Array> {
@@ -611,7 +622,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
 
   // GPU-resident decode: argmax + embedding gather run on the GPU so the token id never leaves it;
   // chain syncN steps per CPU sync (deferred readback). Bit-exact: only the readback timing changes.
-  async function generateImpl(ids: number[], nTokens: number, full: Set<string> | null = null, syncN: number = SYNC_N, ctl?: { stopTokens?: number[]; onToken?: (id: number) => void; signal?: AbortSignal }): Promise<RawGenResult> {
+  async function generateImpl(ids: number[], posBase: number, nTokens: number, full: Set<string> | null = null, syncN: number = SYNC_N, ctl?: { stopTokens?: number[]; onToken?: (id: number) => void; signal?: AbortSignal }): Promise<RawGenResult> {
     FULL = full
     const vocab = W.lm_head.N!
     const tokBuf = device.createBuffer({ size: Math.max(1, nTokens) * 4, usage: S_ | CS }) // GPU-resident token ids
@@ -621,7 +632,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     const t0 = performance.now()
     // prefill (CPU embed of the known prompt) -> last hidden -> lm_head -> GPU argmax -> tokBuf[0]
     const encP = device.createCommandEncoder()
-    const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, 0)
+    const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
     const lastP = actBuf(Hd)
     encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
     let pp = encP.beginComputePass()
@@ -654,7 +665,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       const enc = device.createCommandEncoder()
       for (let j = 0; j < batch; j++) {
         const idxOut = total + j,
-          pos = ids.length + idxOut - 1
+          pos = posBase + ids.length + idxOut - 1
         let pass = enc.beginComputePass()
         runN(pass, 'embed_gather', [['u', Hd], ['u', idxOut - 1], ['u', 0], ['u', 0]], [tokBuf, embWqG, tgt4G, embScalesG, embZpG], embG, 1)
         pass.end()
@@ -694,7 +705,10 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   // are read back, and the CPU does temperature + softmax + MT19937 multinomial (exact transformers.js
   // semantics). Per-step (syncN=1) because the chosen token is picked on the CPU and feeds the next
   // step's embed gather. Greedy decode (generateImpl) is the separate, untouched GPU-resident path.
-  async function generateSampledImpl(ids: number[], nTokens: number, genOpts: GenerateOptions): Promise<RawGenResult> {
+  async function generateSampledImpl(ids: number[], posBase: number, nTokens: number, genOpts: GenerateOptions, history: number[]): Promise<RawGenResult> {
+    // `ids` = the tokens to prefill this turn (the whole prompt, or [lastToken, ...delta] on reuse).
+    // `history` = the FULL conversation token sequence (shared, mutated): the sampler's penalty/ngram
+    // see the entire sequence, like transformers.js; generated tokens are pushed onto it.
     const vocab = W.lm_head.N!
     const K = Math.max(1, Math.min(genOpts.topK ?? 20, vocab))
     const temperature = genOpts.temperature ?? 1
@@ -710,9 +724,8 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     const lg = device.createBuffer({ size: vocab * 4, usage: S_ | CS })
     const candIds = device.createBuffer({ size: K * 4, usage: S_ | CS })
     const candVals = device.createBuffer({ size: K * 4, usage: S_ | CS })
-    const maxHist = ids.length + nTokens
-    const affBuf = device.createBuffer({ size: Math.max(1, maxHist) * 4, usage: S_ | CD })
-    const banBuf = device.createBuffer({ size: Math.max(1, maxHist) * 4, usage: S_ | CD })
+    const affBuf = device.createBuffer({ size: maxSeqLen * 4, usage: S_ | CD }) // upper bound = full vocab can't exceed seq len
+    const banBuf = device.createBuffer({ size: maxSeqLen * 4, usage: S_ | CD })
     const rbBuf = device.createBuffer({ size: K * 8, usage: GPUBufferUsage.MAP_READ | CD })
     const embG = device.createBuffer({ size: Hd * 4, usage: S_ | CS | CD })
 
@@ -743,10 +756,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     }
 
     const t0 = performance.now()
-    const history = [...ids]
     // prefill -> last hidden -> lm_head -> sampler chain (non-pooling), CPU samples the first token
     const encP = device.createCommandEncoder()
-    const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, 0)
+    const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
     const lastP = actBuf(Hd)
     encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
     const pf = writeAffBan(history)
@@ -776,7 +788,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     while (total < nTokens && !stopped) {
       if (signal?.aborted) break
       poolReset()
-      const idxOut = total, pos = ids.length + idxOut - 1
+      const idxOut = total, pos = posBase + ids.length + idxOut - 1
       let t = performance.now()
       const { affLen, banLen } = writeAffBan(history)
       const enc = device.createCommandEncoder()
@@ -838,8 +850,8 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       const ck: Record<string, Float32Array> = {}
       for (const [name, b] of Object.entries(DBG0)) ck[name] = await readback(b, b.size / 4)
       const off = pos * KV * Dh
-      ck.kc = (await readback(Kc[0], MAXSEQ * KV * Dh)).slice(off, off + KV * Dh)
-      ck.vc = (await readback(Vc[0], MAXSEQ * KV * Dh)).slice(off, off + KV * Dh)
+      ck.kc = (await readback(Kc[0], maxSeqLen * KV * Dh)).slice(off, off + KV * Dh)
+      ck.vc = (await readback(Vc[0], maxSeqLen * KV * Dh)).slice(off, off + KV * Dh)
       ck.fn = await readback(r.fn, Hd)
       ck.logits = await readback(lg, W.lm_head.N!)
       FORCE_SLOW = false
@@ -904,13 +916,36 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   }
 
   // Public generate: routes to sampled decode when a sampling temperature is set, else greedy.
-  // Both honor stopTokens / onToken / signal and map to the typed result shape.
+  // Both honor stopTokens / onToken / signal. With reuseCache, `promptTokenIds` is the DELTA to append
+  // to the cached conversation (the prior turn's last token is re-fed so its K/V lands); otherwise the
+  // cache resets and `promptTokenIds` is the full prompt. The KV cache lives across calls in Kc/Vc.
   async function generate(promptTokenIds: number[], genOpts: GenerateOptions = {}): Promise<GenerateResult> {
     const maxTokens = genOpts.maxTokens ?? 256
     const sampled = genOpts.temperature != null && genOpts.temperature > 0 && genOpts.temperature !== 1
-    const r = sampled
-      ? await generateSampledImpl(promptTokenIds, maxTokens, genOpts)
-      : await generateImpl(promptTokenIds, maxTokens, null, SYNC_N, { stopTokens: genOpts.stopTokens, onToken: genOpts.onToken, signal: genOpts.signal })
+    const reuse = (genOpts.reuseCache ?? false) && fullHistory.length > 0
+
+    let prefillTokens: number[]
+    let posBase: number
+    if (reuse) {
+      posBase = fullHistory.length - 1 // the prior last token (uncached); re-feed it then the delta
+      prefillTokens = [fullHistory[fullHistory.length - 1], ...promptTokenIds]
+      fullHistory.push(...promptTokenIds) // the delta is now part of the conversation (last token already present)
+    } else {
+      fullHistory = [...promptTokenIds]
+      posBase = 0
+      prefillTokens = promptTokenIds
+    }
+    if (prefillTokens.length === 0) throw new Error('generate: no tokens to process')
+    const cap = posBase + prefillTokens.length + maxTokens
+    if (cap > maxSeqLen) throw new Error(`generate: sequence length ${cap} exceeds maxSeqLen ${maxSeqLen}; trim history or raise maxSeqLen`)
+
+    let r: RawGenResult
+    if (sampled) {
+      r = await generateSampledImpl(prefillTokens, posBase, maxTokens, genOpts, fullHistory) // pushes generated tokens onto fullHistory
+    } else {
+      r = await generateImpl(prefillTokens, posBase, maxTokens, null, SYNC_N, { stopTokens: genOpts.stopTokens, onToken: genOpts.onToken, signal: genOpts.signal })
+      fullHistory.push(...r.tokens) // greedy doesn't touch history; record the generated tokens for the next turn
+    }
     return {
       tokens: r.tokens,
       prefillMs: r.prefillMs,
@@ -923,11 +958,12 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const api: EngineInternal = {
     generate,
     forward,
+    resetCache,
     capabilities,
     dispose: () => device.destroy(),
     device,
     adapter,
-    profileDecode: (ids, nTokens, full = null, syncN = SYNC_N) => generateImpl(ids, nTokens, full, syncN),
+    profileDecode: (ids, nTokens, full = null, syncN = SYNC_N) => generateImpl(ids, 0, nTokens, full, syncN),
     debugDecode,
     debugSampler,
   }

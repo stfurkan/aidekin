@@ -23,6 +23,8 @@ export interface EngineOptions {
   syncSteps?: number
   /** Prefill GEMM tiling: `'auto'` tiles once a prompt fills the 64-row tiles, `'always'`/`'never'` force it. Default `'auto'`. */
   prefillTiling?: 'auto' | 'always' | 'never'
+  /** Max KV-cache length (prompt + generated positions). Caps VRAM (~`maxSeqLen` x 224 KB). Default `2048`. */
+  maxSeqLen?: number
   /** Called as the model loads. */
   onProgress?: (progress: LoadProgress) => void
 }
@@ -33,6 +35,10 @@ export interface EngineOptions {
 export interface GenerateOptions {
   /** Maximum number of new tokens to generate. Default `256`. */
   maxTokens?: number
+  /** Reuse the KV cache from the previous turn: treat the passed token ids as the DELTA to append to
+   *  the cached conversation (not a full prompt), prefilling only those tokens. Requires a prior
+   *  generate on this engine (else it falls back to a full prefill). Default `false` (reset + full prefill). */
+  reuseCache?: boolean
   /** Token ids that end generation when produced (e.g. EOS). The stop token is not emitted. */
   stopTokens?: number[]
   /** Called with each generated token id as it is produced (per-token when sampling). */
@@ -95,6 +101,8 @@ export interface Engine {
   generate(promptTokenIds: number[], options?: GenerateOptions): Promise<GenerateResult>
   /** Run a single forward pass and return hidden states + logits (diagnostic / correctness checks). */
   forward(tokenIds: number[]): Promise<ForwardResult>
+  /** Clear the cross-turn KV cache and token history (start a fresh conversation). */
+  resetCache(): void
   /** Detected GPU capabilities and selected code path. */
   readonly capabilities: EngineCapabilities
   /** Release GPU resources. The engine is unusable afterward. */

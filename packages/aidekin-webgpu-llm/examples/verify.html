@@ -133,6 +133,38 @@
       log(`  sampled ids (seed 42): [${s1.tokens.join(', ')}]`);
       log(`  sampled decode = ${s1.tokensPerSecond.toFixed(2)} tok/s (greedy was ${g.tokensPerSecond.toFixed(2)})`);
 
+      // 6) cross-turn KV reuse (Phase 2b): a reused turn must equal a full prefill of the same sequence
+      log('\ncross-turn KV reuse checks...');
+      const R1 = 8, R2 = 8, delta = ids.slice(0, 5);
+      engine.resetCache();
+      const turn1 = await engine.generate(ids, { maxTokens: R1 });               // reset + full prefill
+      const reuseT2 = await engine.generate(delta, { maxTokens: R2, reuseCache: true }); // append delta, reuse cache
+      engine.resetCache();
+      const fullSeq = [...ids, ...turn1.tokens, ...delta];
+      const fullT2 = await engine.generate(fullSeq, { maxTokens: R2 });          // full prefill of the same total sequence
+      const reuseOk = reuseT2.tokens.length === fullT2.tokens.length && reuseT2.tokens.every((t, i) => t === fullT2.tokens[i]);
+      ok = ok && reuseOk;
+      log(`  ${reuseOk ? '[PASS]' : '[FAIL]'} reuse turn-2 == full-prefill turn-2 (greedy, bit-exact)`);
+      log(`    reuse: [${reuseT2.tokens.join(', ')}]`);
+      log(`    full:  [${fullT2.tokens.join(', ')}]`);
+      log(`    TTFT: reuse(delta ${delta.length}) ${reuseT2.prefillMs.toFixed(0)}ms vs full(${fullSeq.length}) ${fullT2.prefillMs.toFixed(0)}ms`);
+      // sampled reuse (the worker's actual path): greedy turn-1 to fix the state, then sampled turn-2
+      // with a fixed seed; reuse must still equal a full prefill (tests cross-turn penalty history + cache)
+      const SS = { temperature: 0.5, topK: 20, repetitionPenalty: 1.15, noRepeatNgramSize: 3, seed: 7 };
+      engine.resetCache();
+      const sT1 = await engine.generate(ids, { maxTokens: R1 });
+      const sReuseT2 = await engine.generate(delta, { ...SS, maxTokens: R2, reuseCache: true });
+      engine.resetCache();
+      const sFullT2 = await engine.generate([...ids, ...sT1.tokens, ...delta], { ...SS, maxTokens: R2 });
+      const sReuseOk = sReuseT2.tokens.length === sFullT2.tokens.length && sReuseT2.tokens.every((t, i) => t === sFullT2.tokens[i]);
+      ok = ok && sReuseOk;
+      log(`  ${sReuseOk ? '[PASS]' : '[FAIL]'} sampled reuse turn-2 == full-prefill turn-2 (seed 7)`);
+      let guardOk = false;
+      try { await engine.generate(ids, { maxTokens: 9_999_999 }); } catch (e) { guardOk = /maxSeqLen/.test(e.message); }
+      ok = ok && guardOk;
+      log(`  ${guardOk ? '[PASS]' : '[FAIL]'} length guard throws past maxSeqLen`);
+      engine.resetCache();
+
       out.insertAdjacentHTML('beforeend', `\n<span class="${ok ? 'pass' : 'fail'}">${ok ? 'PACKAGE OK' : 'REGRESSION'} - greedy ${g.tokensPerSecond.toFixed(2)} / sampled ${s1.tokensPerSecond.toFixed(2)} tok/s</span>`);
     }
 
