@@ -195,6 +195,17 @@ export function llmModelUrls(): { manifestUrl: string; dataUrl: string; auxUrl: 
   }
 }
 
+/** URLs for the RAG embedder (bge-small) run on onnxruntime + @huggingface/tokenizers (no
+ *  transformers.js). The q8 ONNX + tokenizer stream from the HF Hub (CORS-clean, cached). */
+export function embedModelUrls(): { onnxUrl: string; tokenizerJsonUrl: string; tokenizerConfigUrl: string } {
+  const base = HF_RESOLVE(EMBED.hfModelId)
+  return {
+    onnxUrl: `${base}/onnx/model_quantized.onnx`,
+    tokenizerJsonUrl: `${base}/tokenizer.json`,
+    tokenizerConfigUrl: `${base}/tokenizer_config.json`,
+  }
+}
+
 export function modelSource(role: 'asr' | 'tts' | 'vad'): string {
   const cdn = (import.meta.env.VITE_MODEL_CDN as string | undefined)?.replace(/\/$/, '')
   if (cdn) return `${cdn}/${role}`

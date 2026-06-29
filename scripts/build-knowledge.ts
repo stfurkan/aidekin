@@ -9,7 +9,7 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
 import { chunkText } from '../src/rag/chunker.ts'
-import { embedMany } from '../src/rag/embedder.ts'
+import { embedMany } from '../src/rag/embedderNode.ts'
 import { serializeIndex, type IndexChunk } from '../src/rag/store.ts'
 
 const TEXT_EXT = new Set([

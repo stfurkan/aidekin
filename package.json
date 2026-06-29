@@ -23,7 +23,8 @@
     "fetch-models": "node scripts/fetch-models.mjs",
     "build-knowledge": "tsx scripts/build-knowledge.ts",
     "verify-knowledge": "tsx scripts/verify-knowledge.ts",
-    "verify-tokenizer": "tsx scripts/verify-tokenizer.ts"
+    "verify-tokenizer": "tsx scripts/verify-tokenizer.ts",
+    "verify-embedder": "tsx scripts/verify-embedder.ts"
   },
   "dependencies": {
     "@aidekin/webgpu-llm": "*",

@@ -6,7 +6,7 @@
 //   npx tsx scripts/verify-knowledge.ts ./public/knowledge.bin
 
 import { readFile } from 'node:fs/promises'
-import { embedOne } from '../src/rag/embedder.ts'
+import { embedOne } from '../src/rag/embedderNode.ts'
 import { VectorStore } from '../src/rag/store.ts'
 
 const MIN_SCORE = 0.9
