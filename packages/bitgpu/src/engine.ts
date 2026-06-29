@@ -377,11 +377,42 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     Hd = A.hidden,
     H = A.heads,
     F = A.intermediate
+  // The KV cache GROWS on demand (doubling, up to maxSeqLen) instead of pinning the full maxSeqLen
+  // up front: a short conversation keeps a small cache (~KV_INITIAL positions), so idle VRAM stays
+  // low on memory-constrained devices (the full 2048-position cache is ~448 MB; 512 is ~112 MB).
+  // ensureKvCapacity() reallocates + copies the existing K/V when a turn needs more room.
+  const KV_INITIAL = 512
+  let kvCapacity = Math.min(maxSeqLen, KV_INITIAL)
   const Kc: GPUBuffer[] = [],
     Vc: GPUBuffer[] = []
   for (let li = 0; li < A.layers; li++) {
-    Kc.push(actBuf(maxSeqLen * KV * Dh))
-    Vc.push(actBuf(maxSeqLen * KV * Dh))
+    Kc.push(actBuf(kvCapacity * KV * Dh))
+    Vc.push(actBuf(kvCapacity * KV * Dh))
+  }
+  // Grow every layer's K/V buffer to hold at least `needed` positions, preserving the cached content
+  // (so a cross-turn reuse mid-conversation survives a growth). Rare (only when crossing a capacity
+  // threshold); the copy is GPU-side and bounded geometrically. Invalidates cached decode bind groups
+  // since they referenced the old buffers.
+  async function ensureKvCapacity(needed: number): Promise<void> {
+    if (needed <= kvCapacity) return
+    const newCap = Math.min(maxSeqLen, Math.max(needed, kvCapacity * 2))
+    const copyBytes = kvCapacity * KV * Dh * 4 // preserve all currently-allocated K/V
+    const enc = device.createCommandEncoder()
+    const olds: GPUBuffer[] = []
+    for (let li = 0; li < A.layers; li++) {
+      const nk = device.createBuffer({ size: newCap * KV * Dh * 4, usage: S_ | CS | CD })
+      const nv = device.createBuffer({ size: newCap * KV * Dh * 4, usage: S_ | CS | CD })
+      enc.copyBufferToBuffer(Kc[li], 0, nk, 0, copyBytes)
+      enc.copyBufferToBuffer(Vc[li], 0, nv, 0, copyBytes)
+      olds.push(Kc[li], Vc[li])
+      Kc[li] = nk
+      Vc[li] = nv
+    }
+    device.queue.submit([enc.finish()])
+    await device.queue.onSubmittedWorkDone()
+    for (const b of olds) b.destroy()
+    kvCapacity = newCap
+    poolInvalidate()
   }
 
   async function readback(buf: GPUBuffer, n: number): Promise<Float32Array> {
@@ -604,8 +635,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   }
 
   async function forward(ids: number[]): Promise<ForwardResult> {
-    const S = ids.length,
-      embedOut = upload(embedDequant(ids), S_ | CD | CS)
+    const S = ids.length
+    await ensureKvCapacity(S)
+    const embedOut = upload(embedDequant(ids), S_ | CD | CS)
     const enc = device.createCommandEncoder()
     const { fn, layer0 } = stack(enc, embedOut, S, 0)
     const logits = device.createBuffer({ size: S * W.lm_head.N! * 4, usage: S_ | CS })
@@ -627,6 +659,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   // GPU-resident decode: argmax + embedding gather run on the GPU so the token id never leaves it;
   // chain syncN steps per CPU sync (deferred readback). Bit-exact: only the readback timing changes.
   async function generateImpl(ids: number[], posBase: number, nTokens: number, full: Set<string> | null = null, syncN: number = SYNC_N, ctl?: { stopTokens?: number[]; onToken?: (id: number) => void; signal?: AbortSignal }): Promise<RawGenResult> {
+    await ensureKvCapacity(posBase + ids.length + nTokens)
     FULL = full
     const vocab = W.lm_head.N!
     const tokBuf = device.createBuffer({ size: Math.max(1, nTokens) * 4, usage: S_ | CS }) // GPU-resident token ids
@@ -710,6 +743,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   // semantics). Per-step (syncN=1) because the chosen token is picked on the CPU and feeds the next
   // step's embed gather. Greedy decode (generateImpl) is the separate, untouched GPU-resident path.
   async function generateSampledImpl(ids: number[], posBase: number, nTokens: number, genOpts: GenerateOptions, history: number[]): Promise<RawGenResult> {
+    await ensureKvCapacity(posBase + ids.length + nTokens)
     // `ids` = the tokens to prefill this turn (the whole prompt, or [lastToken, ...delta] on reuse).
     // `history` = the FULL conversation token sequence (shared, mutated): the sampler's penalty/ngram
     // see the entire sequence, like transformers.js; generated tokens are pushed onto it.
@@ -968,6 +1002,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   async function prefill(ids: number[]): Promise<{ prefillMs: number }> {
     if (ids.length === 0) throw new Error('prefill: no tokens to process')
     if (ids.length > maxSeqLen) throw new Error(`prefill: sequence length ${ids.length} exceeds maxSeqLen ${maxSeqLen}`)
+    await ensureKvCapacity(ids.length)
     const t0 = performance.now()
     const enc = device.createCommandEncoder()
     stack(enc, upload(embedDequant(ids), S_ | CD), ids.length, 0) // posBase 0: fresh prefix; writes K/V for every position

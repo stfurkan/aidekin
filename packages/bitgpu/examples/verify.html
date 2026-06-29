@@ -183,6 +183,21 @@
       log(`  ${pwSOk ? '[PASS]' : '[FAIL]'} sampled prefill(prefix)+reuse == cold (seed 7)`);
       engine.resetCache();
 
+      // 6d) growable KV cache: a reuse turn that crosses the initial capacity (512) must GROW the
+      // cache, preserve the prior K/V, and still equal a cold full prefill of the same total sequence.
+      log('\ngrowable KV cache check (reuse turn crosses 512)...');
+      const bigT1 = []; while (bigT1.length < 504) bigT1.push(...ids); // first turn just under the 512 floor
+      const bigDelta = ids.slice(0, 30);                               // appended turn pushes the cache past 512
+      engine.resetCache();
+      const gT1 = await engine.generate(bigT1, { maxTokens: 4 });      // fill the cache near 512 (no growth yet)
+      const gReuse = await engine.generate(bigDelta, { maxTokens: 8, reuseCache: true }); // crosses 512 -> grows
+      engine.resetCache();
+      const gCold = await engine.generate([...bigT1, ...gT1.tokens, ...bigDelta], { maxTokens: 8 });
+      const growOk = gReuse.tokens.length === gCold.tokens.length && gReuse.tokens.every((t, i) => t === gCold.tokens[i]);
+      ok = ok && growOk;
+      log(`  ${growOk ? '[PASS]' : '[FAIL]'} reuse-across-growth == cold full-prefill (bit-exact, ${bigT1.length}->${bigT1.length + gT1.tokens.length + bigDelta.length} tok)`);
+      engine.resetCache();
+
       let guardOk = false;
       try { await engine.generate(ids, { maxTokens: 9_999_999 }); } catch (e) { guardOk = /maxSeqLen/.test(e.message); }
       ok = ok && guardOk;
