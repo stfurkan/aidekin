@@ -135,18 +135,22 @@ function concat<A extends Uint8Array | Float32Array>(Cls: { new (n: number): A }
 /** Load a 1-bit model and return an {@link Engine}. Pass a model URL string for defaults. */
 export async function createEngine(options: EngineOptions | string): Promise<Engine> {
   const opts: EngineOptions = typeof options === 'string' ? { modelUrl: options } : options
-  const modelDir = opts.modelUrl.replace(/\/$/, '')
+  const modelDir = opts.modelUrl ? opts.modelUrl.replace(/\/$/, '') : null
+  if (!modelDir && !opts.manifestUrl) throw new Error('createEngine: provide modelUrl or manifestUrl')
   const powerPreference = opts.powerPreference ?? 'high-performance'
+  const fetchJson = opts.fetchJson ?? (async (url: string) => (await fetch(url)).json())
+  const fetchBytes = opts.fetchArrayBuffer ?? (async (url: string) => (await fetch(url)).arrayBuffer())
 
   if (typeof navigator === 'undefined' || !navigator.gpu) {
     throw new WebGPUUnavailableError('WebGPU is not available (no navigator.gpu). Use a WebGPU-capable browser over a secure context.')
   }
 
   opts.onProgress?.({ phase: 'manifest' })
-  const manifest = (await (await fetch(`${modelDir}/manifest.json`)).json()) as Manifest
+  const manifest = (await fetchJson(opts.manifestUrl ?? `${modelDir}/manifest.json`)) as Manifest
   opts.onProgress?.({ phase: 'weights' })
-  const data = await (await fetch(`${modelDir}/${manifest.data_file}`)).arrayBuffer()
-  const aux = await (await fetch(`${modelDir}/${manifest.aux_file}`)).arrayBuffer()
+  const dataUrl = opts.dataUrl ?? `${modelDir}/${manifest.data_file}`
+  const auxUrl = opts.auxUrl ?? `${modelDir}/${manifest.aux_file}`
+  const [data, aux] = await Promise.all([fetchBytes(dataUrl), fetchBytes(auxUrl)])
   const A = manifest.arch
   const T = manifest.tensors
 

@@ -9,10 +9,23 @@ export interface LoadProgress {
   total?: number
 }
 
-/** Options for {@link createEngine}. Pass a string to use defaults with just a model URL. */
+/** Options for {@link createEngine}. Pass a string to use defaults with just a model URL.
+ *  Provide either `modelUrl` (a directory holding manifest.json + the data/aux files) or the explicit
+ *  `manifestUrl`/`dataUrl`/`auxUrl` (which lets the large data file come from one host, e.g. the HF Hub,
+ *  and the small manifest/aux from another). The explicit URLs win over the `modelUrl`-relative ones. */
 export interface EngineOptions {
   /** Base URL of the model directory containing `manifest.json` and its data/aux files. */
-  modelUrl: string
+  modelUrl?: string
+  /** Explicit URL for manifest.json (overrides `${modelUrl}/manifest.json`). */
+  manifestUrl?: string
+  /** Explicit URL for the weights data file (overrides `${modelUrl}/<data_file>`). */
+  dataUrl?: string
+  /** Explicit URL for the aux file (overrides `${modelUrl}/<aux_file>`). */
+  auxUrl?: string
+  /** Fetch JSON (manifest). Override to add caching. Default: `fetch(url).json()`. */
+  fetchJson?: (url: string) => Promise<unknown>
+  /** Fetch binary (data/aux). Override to add caching (e.g. OPFS) for the ~290MB data file. Default: `fetch(url).arrayBuffer()`. */
+  fetchArrayBuffer?: (url: string) => Promise<ArrayBuffer>
   /** GPU power preference. Default `'high-performance'` (picks the discrete GPU on multi-GPU machines). */
   powerPreference?: GPUPowerPreference
   /** Force the no-subgroup reduction path (for testing the fallback). Default `false`. */
