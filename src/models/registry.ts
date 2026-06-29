@@ -35,7 +35,7 @@ const vadVersion = typeof __VAD_VERSION__ === 'string' ? __VAD_VERSION__ : 'late
 // that fits with the speech stack, and is the proven demo size. Measure tokens/sec in
 // the console.
 export const LLM = {
-  // Run on our own @aidekin/webgpu-llm engine (no transformers.js / onnxruntime for the brain).
+  // Run on our own bitgpu engine (no transformers.js / onnxruntime for the brain).
   tokenizerModelId: 'onnx-community/Bonsai-1.7B-ONNX', // HF repo for tokenizer.json + tokenizer_config.json
   eosTokenId: 151645, //                                  <|im_end|>
   maxSeqLen: 2048, //                                     KV-cache length cap (~448MB VRAM)

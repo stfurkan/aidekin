@@ -1,4 +1,4 @@
-// Public types for @aidekin/webgpu-llm.
+// Public types for bitgpu.
 
 /** Progress event emitted while a model loads. */
 export interface LoadProgress {

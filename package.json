@@ -14,7 +14,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build:engine": "npm run build -w @aidekin/webgpu-llm",
+    "build:engine": "npm run build -w bitgpu",
     "build": "npm run build:engine && tsc --noEmit && vite build && vite build --config vite.loader.config.ts",
     "build:app": "vite build",
     "build:loader": "vite build --config vite.loader.config.ts",
@@ -28,7 +28,7 @@
     "verify-turn": "tsx scripts/verify-turn.ts"
   },
   "dependencies": {
-    "@aidekin/webgpu-llm": "*",
+    "bitgpu": "*",
     "@huggingface/jinja": "0.5.9",
     "@huggingface/tokenizers": "0.1.3",
     "@ricky0123/vad-web": "0.0.30",

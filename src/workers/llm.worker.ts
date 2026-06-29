@@ -1,10 +1,10 @@
 /// <reference lib="webworker" />
 // LLM worker: the "brain" - PrismML Bonsai (Qwen3-architecture, 1-bit/binary weights) run on WebGPU
-// via our own @aidekin/webgpu-llm engine (NO transformers.js / onnxruntime). The tokenizer is the
+// via our own bitgpu engine (NO transformers.js / onnxruntime). The tokenizer is the
 // standalone LlmTokenizer (@huggingface/tokenizers + @huggingface/jinja, byte-exact with HF). Streams
 // tokens, strips Qwen3 <think> blocks, toggles reasoning via the chat template's enable_thinking flag,
 // reuses the engine's cross-turn KV cache (prefill only the new turn), and logs tokens/sec.
-import { createEngine, type Engine } from '@aidekin/webgpu-llm'
+import { createEngine, type Engine } from 'bitgpu'
 import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
 import { LlmTokenizer } from '../core/tokenizer'
 import { getModelAsset } from '../core/modelStore'
@@ -184,7 +184,7 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
 
   await warmup()
   const cap = engine.capabilities
-  post({ kind: 'ready', info: `aidekin-webgpu-llm (${cap.useSubgroups ? 'subgroups SG=' + cap.subgroupSize : 'workgroup fallback'})` })
+  post({ kind: 'ready', info: `bitgpu (${cap.useSubgroups ? 'subgroups SG=' + cap.subgroupSize : 'workgroup fallback'})` })
 }
 
 /** Warm the decode path once so the user's FIRST message isn't a cold start. Best-effort; resets the

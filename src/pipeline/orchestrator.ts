@@ -122,7 +122,7 @@ export class Orchestrator {
   private readonly waiters = new Map<string, Waiter>()
 
   private readonly loadMap = new Map<string, ComponentLoad>([
-    ['LLM', { label: 'LLM', title: 'Brain · Bonsai', status: 'pending', detail: '@aidekin/webgpu-llm', fraction: 0 }],
+    ['LLM', { label: 'LLM', title: 'Brain · Bonsai', status: 'pending', detail: 'bitgpu', fraction: 0 }],
     ['ASR', { label: 'ASR', title: 'Hearing · Nemotron 3.5', status: 'pending', detail: 'onnxruntime-web', fraction: 0 }],
     ['TTS', { label: 'TTS', title: 'Voice · Supertonic-3', status: 'pending', detail: 'onnxruntime-web', fraction: 0 }],
     ['VAD', { label: 'VAD', title: 'Activity · Silero v5', status: 'pending', detail: 'vad-web', fraction: 0 }],
@@ -270,7 +270,7 @@ export class Orchestrator {
     // is required (as it is for the LLM). Reads from the OPFS cache warmed in phase 1.
     await this.initWorker(this.asr, { kind: 'init', modelBase: modelSource('asr'), device: 'webgpu' }, 'ASR', false)
     await this.initWorker(this.tts, { kind: 'init', modelBase: modelSource('tts'), device: this.device }, 'TTS', false)
-    // Brain: Bonsai on our @aidekin/webgpu-llm engine / WebGPU (data streams from the HF Hub, caches
+    // Brain: Bonsai on our bitgpu engine / WebGPU (data streams from the HF Hub, caches
     // to OPFS; manifest + aux served same-origin).
     // Brain: only in standalone mode. Shared mode reuses the widget engine's LLM.
     if (this.llm) {

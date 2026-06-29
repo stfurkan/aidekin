@@ -56,7 +56,7 @@ export type AsrOut =
   | { readonly kind: 'partial'; readonly id?: number; readonly text: string } // running transcript fragment
   | { readonly kind: 'final'; readonly id?: number; readonly text: string }
 
-// ── LLM worker (Bonsai via @aidekin/webgpu-llm) ──────────────────────────────
+// ── LLM worker (Bonsai via bitgpu) ──────────────────────────────
 export interface ChatMessage {
   readonly role: 'system' | 'user' | 'assistant'
   readonly content: string
