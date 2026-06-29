@@ -35,11 +35,13 @@
     "build": "npm run gen:shaders && tsdown",
     "dev": "npm run gen:shaders && tsdown --watch",
     "typecheck": "npm run gen:shaders && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "test:sampler": "tsx scripts/verify-sampler.ts",
     "check:publish": "publint --strict && attw --pack . --profile esm-only",
     "prepublishOnly": "npm run build && npm run check:publish"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.4",
+    "@huggingface/transformers": "4.2.0",
     "@types/node": "26.0.0",
     "@webgpu/types": "0.1.70",
     "publint": "0.3.21",

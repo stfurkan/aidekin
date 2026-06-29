@@ -27,29 +27,29 @@ export interface EngineOptions {
   onProgress?: (progress: LoadProgress) => void
 }
 
-/** Options for a single {@link Engine.generate} call. Sampling fields are reserved for a
- *  later release; the current build decodes greedily (argmax). */
+/** Options for a single {@link Engine.generate} call. Set `temperature` to a value other than 0 or 1
+ *  to sample; otherwise decoding is greedy (argmax). Sampling matches transformers.js v4.2.0 exactly
+ *  (repetition_penalty, no_repeat_ngram, temperature, top_k, multinomial via a Mersenne-Twister RNG). */
 export interface GenerateOptions {
   /** Maximum number of new tokens to generate. Default `256`. */
   maxTokens?: number
-  // --- the following are accepted but not yet honored (greedy decode only) ---
-  /** Token ids that end generation when produced (e.g. EOS). */
+  /** Token ids that end generation when produced (e.g. EOS). The stop token is not emitted. */
   stopTokens?: number[]
-  /** Called with each generated token id as it is read back. */
+  /** Called with each generated token id as it is produced (per-token when sampling). */
   onToken?: (tokenId: number) => void
-  /** Aborts generation when signaled. */
+  /** Aborts generation when signaled (checked at each step). */
   signal?: AbortSignal
-  /** Softmax temperature. */
+  /** Softmax temperature. A value other than 0 or 1 enables sampling; 0 or 1 (or unset) is greedy. */
   temperature?: number
-  /** Top-k sampling cutoff. */
+  /** Top-k sampling cutoff (candidate count). Default `20` when sampling. */
   topK?: number
-  /** Top-p (nucleus) sampling cutoff. */
+  /** Top-p (nucleus) cutoff. Accepted for API compatibility but not applied (a no-op, matching transformers.js v4.2.0). */
   topP?: number
-  /** Repetition penalty applied to already-generated tokens. */
+  /** Repetition penalty over the deduped prompt+generated id set (`logit<0 ? *p : /p`). Default `1` (off). */
   repetitionPenalty?: number
-  /** Block any repeated n-gram of this size. */
+  /** Block any n-gram of this size from repeating. Default `0` (off). */
   noRepeatNgramSize?: number
-  /** Seed for the sampler RNG. */
+  /** Seed for the sampler RNG. Omit to seed from entropy (non-deterministic, like production). */
   seed?: number
 }
 

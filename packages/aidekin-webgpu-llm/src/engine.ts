@@ -9,6 +9,7 @@
 // (now typed options, not URL params), and the public surface differ.
 import { SHADERS } from './shaders.generated'
 import { WebGPUUnavailableError } from './errors'
+import { MT19937, affectedIds, ngramBans, sampleFromCandidates } from './sampler'
 import type {
   Engine,
   EngineCapabilities,
@@ -94,6 +95,8 @@ interface EngineInternal extends Engine {
   profileDecode(ids: number[], nTokens: number, full?: Set<string> | null, syncN?: number): Promise<RawGenResult>
   /** Differential debug: one decode step through the fast and slow paths, checkpoint by checkpoint. */
   debugDecode(prefillIds: number[]): Promise<{ fast: Record<string, Float32Array>; slow: Record<string, Float32Array> }>
+  /** Debug: GPU base + penalized logits + top-K for a prefill, to diff the sampler kernels vs CPU math. */
+  debugSampler(ids: number[], genOpts: GenerateOptions): Promise<{ base: Float32Array; penalized: Float32Array; candIds: Uint32Array; candVals: Float32Array }>
 }
 
 type TypedArrayCtor = Float32ArrayConstructor | Uint8ArrayConstructor | Uint16ArrayConstructor
@@ -180,13 +183,14 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const mkPipe = async (name: string, constants?: Record<string, number>): Promise<void> => {
     const code = SHADERS[name]
     if (code === undefined) throw new Error(`shader not found: ${name}`)
-    pipelines[name] = await device.createComputePipelineAsync({
-      layout: 'auto',
-      compute: { module: device.createShaderModule({ code }), entryPoint: 'main', constants },
-    })
+    const module = device.createShaderModule({ code, label: name }) // label so errors name the shader
+    const info = await module.getCompilationInfo()
+    const err = info.messages.find((m) => m.type === 'error')
+    if (err) throw new Error(`WGSL compile error in ${name} (L${err.lineNum}:${err.linePos}): ${err.message}`)
+    pipelines[name] = await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'main', constants } })
   }
   const ROWS_MR = 4 // output rows per workgroup in the multi-row GEMV
-  const specs: Array<[string, Record<string, number>?]> = [...WGSLS.map((n): [string] => [n]), ['matmul_split_tiled'], ['matmul_resid_tiled'], ['argmax'], ['embed_gather']]
+  const specs: Array<[string, Record<string, number>?]> = [...WGSLS.map((n): [string] => [n]), ['matmul_split_tiled'], ['matmul_resid_tiled'], ['argmax'], ['embed_gather'], ['sampler_penalty'], ['argmax_masked']]
   if (useSG) {
     for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg']) specs.push([n, { SG: sgMax }])
     for (const n of ['matmul_resid_mr_sg', 'matmul_swiglu_mr_sg']) specs.push([n, { SG: sgMax, ROWS: ROWS_MR }])
@@ -221,6 +225,16 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const poolReset = (): void => {
     bufIdx = 0
     dispIdx = 0
+  }
+  // The cached bind groups reference this generate() call's buffers (tokBuf/lg/candIds/... are created
+  // per call). A later call creates new buffers, so the cache MUST be rebuilt at each decode entry or it
+  // would bind the previous call's (dead) buffers - or, across greedy<->sampled, a different pipeline's
+  // auto-layout bind group (a validation error). Buffers are stable within a call, so one rebuild suffices.
+  const poolInvalidate = (): void => {
+    for (const s of dispPool) {
+      s.bg = null
+      s.last = null
+    }
   }
   const actBuf = (n: number): GPUBuffer => {
     if (!pooling) return device.createBuffer({ size: n * 4, usage: S_ | CS | CD })
@@ -597,7 +611,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
 
   // GPU-resident decode: argmax + embedding gather run on the GPU so the token id never leaves it;
   // chain syncN steps per CPU sync (deferred readback). Bit-exact: only the readback timing changes.
-  async function generateImpl(ids: number[], nTokens: number, full: Set<string> | null = null, syncN: number = SYNC_N): Promise<RawGenResult> {
+  async function generateImpl(ids: number[], nTokens: number, full: Set<string> | null = null, syncN: number = SYNC_N, ctl?: { stopTokens?: number[]; onToken?: (id: number) => void; signal?: AbortSignal }): Promise<RawGenResult> {
     FULL = full
     const vocab = W.lm_head.N!
     const tokBuf = device.createBuffer({ size: Math.max(1, nTokens) * 4, usage: S_ | CS }) // GPU-resident token ids
@@ -627,8 +641,13 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       rbMs = 0
     const t1 = performance.now()
     let total = 1 // tokens emitted (incl. prefill's first)
+    const stopSet = ctl?.stopTokens ? new Set(ctl.stopTokens) : null
+    if (ctl?.onToken && !stopSet?.has(firstTok)) ctl.onToken(firstTok)
+    let stopped = stopSet?.has(firstTok) ?? false
     pooling = true // reuse decode scratch + uniform buffers across batches
-    while (total < nTokens) {
+    poolInvalidate() // rebuild cached bind groups against this call's buffers
+    while (total < nTokens && !stopped) {
+      if (ctl?.signal?.aborted) break
       const batch = Math.min(syncN, nTokens - total)
       poolReset()
       let t = performance.now()
@@ -655,13 +674,143 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       t = performance.now()
       const toks = await readbackU32(tokBuf, total + batch)
       rbMs += performance.now() - t
-      for (let j = 0; j < batch; j++) gen.push(toks[total + j])
+      for (let j = 0; j < batch; j++) {
+        const tk = toks[total + j]
+        if (stopSet?.has(tk)) { stopped = true; break } // EOS lands at the batch boundary (greedy)
+        gen.push(tk)
+        ctl?.onToken?.(tk)
+      }
       total += batch
     }
     pooling = false
     const decodeMs = performance.now() - t1,
-      nd = nTokens - 1
+      nd = Math.max(1, gen.length - 1)
     FULL = null
+    return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd }
+  }
+
+  // Sampled decode (do_sample): the GPU pre-filters the logits in place (repetition_penalty +
+  // no_repeat_ngram bans) and selects the top-K via K masked-argmax passes; only K (id, logit) pairs
+  // are read back, and the CPU does temperature + softmax + MT19937 multinomial (exact transformers.js
+  // semantics). Per-step (syncN=1) because the chosen token is picked on the CPU and feeds the next
+  // step's embed gather. Greedy decode (generateImpl) is the separate, untouched GPU-resident path.
+  async function generateSampledImpl(ids: number[], nTokens: number, genOpts: GenerateOptions): Promise<RawGenResult> {
+    const vocab = W.lm_head.N!
+    const K = Math.max(1, Math.min(genOpts.topK ?? 20, vocab))
+    const temperature = genOpts.temperature ?? 1
+    const penalty = genOpts.repetitionPenalty ?? 1
+    const ngramN = genOpts.noRepeatNgramSize ?? 0
+    const stopSet = genOpts.stopTokens ? new Set(genOpts.stopTokens) : null
+    const onToken = genOpts.onToken
+    const signal = genOpts.signal
+    const rng = new MT19937(genOpts.seed)
+
+    // persistent buffers (stable across steps for bind-group caching; not via actBuf)
+    const tokBuf = device.createBuffer({ size: Math.max(1, nTokens) * 4, usage: S_ | CS | CD })
+    const lg = device.createBuffer({ size: vocab * 4, usage: S_ | CS })
+    const candIds = device.createBuffer({ size: K * 4, usage: S_ | CS })
+    const candVals = device.createBuffer({ size: K * 4, usage: S_ | CS })
+    const maxHist = ids.length + nTokens
+    const affBuf = device.createBuffer({ size: Math.max(1, maxHist) * 4, usage: S_ | CD })
+    const banBuf = device.createBuffer({ size: Math.max(1, maxHist) * 4, usage: S_ | CD })
+    const rbBuf = device.createBuffer({ size: K * 8, usage: GPUBufferUsage.MAP_READ | CD })
+    const embG = device.createBuffer({ size: Hd * 4, usage: S_ | CS | CD })
+
+    // upload the CPU-computed deduped id set + ngram bans for the current history; return their lengths
+    const writeAffBan = (history: number[]): { affLen: number; banLen: number } => {
+      const aff = penalty !== 1 ? affectedIds(history) : new Uint32Array(0)
+      if (aff.length) device.queue.writeBuffer(affBuf, 0, aff)
+      const ban = ngramN > 0 ? ngramBans(history, ngramN) : []
+      if (ban.length) device.queue.writeBuffer(banBuf, 0, Uint32Array.from(ban))
+      return { affLen: aff.length, banLen: ban.length }
+    }
+    // penalty pre-filter + K masked-argmax, all in the given pass (after lm_head wrote lg)
+    const samplerChain = (pass: GPUComputePassEncoder, affLen: number, banLen: number): void => {
+      setup(pass, 'sampler_penalty', [['u', affLen], ['u', banLen], ['f', penalty], ['u', 0xff800000]], [affBuf, banBuf], [lg])
+      pass.dispatchWorkgroups(1)
+      for (let r = 0; r < K; r++) {
+        setup(pass, 'argmax_masked', [['u', vocab], ['u', r], ['u', 0], ['u', 0]], [lg], [candIds, candVals])
+        pass.dispatchWorkgroups(1)
+      }
+    }
+    const readCands = async (): Promise<{ ci: Uint32Array; cv: Float32Array }> => {
+      await rbBuf.mapAsync(GPUMapMode.READ)
+      const mapped = rbBuf.getMappedRange()
+      const ci = new Uint32Array(mapped.slice(0, K * 4))
+      const cv = new Float32Array(mapped.slice(K * 4, K * 8))
+      rbBuf.unmap()
+      return { ci, cv }
+    }
+
+    const t0 = performance.now()
+    const history = [...ids]
+    // prefill -> last hidden -> lm_head -> sampler chain (non-pooling), CPU samples the first token
+    const encP = device.createCommandEncoder()
+    const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, 0)
+    const lastP = actBuf(Hd)
+    encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
+    const pf = writeAffBan(history)
+    let pass = encP.beginComputePass()
+    lmHead(pass, lastP, 1, lg)
+    samplerChain(pass, pf.affLen, pf.banLen)
+    pass.end()
+    encP.copyBufferToBuffer(candIds, 0, rbBuf, 0, K * 4)
+    encP.copyBufferToBuffer(candVals, 0, rbBuf, K * 4, K * 4)
+    device.queue.submit([encP.finish()])
+    await device.queue.onSubmittedWorkDone()
+    const first = await readCands()
+    const firstTok = sampleFromCandidates(first.ci, first.cv, temperature, rng)
+    const prefillMs = performance.now() - t0
+
+    const gen = [firstTok]
+    history.push(firstTok)
+    let stopped = stopSet?.has(firstTok) ?? false
+    if (onToken && !stopped) onToken(firstTok)
+    device.queue.writeBuffer(tokBuf, 0, new Uint32Array([firstTok]))
+
+    let recMs = 0, gpuMs = 0, rbMs = 0
+    const t1 = performance.now()
+    let total = 1
+    pooling = true
+    poolInvalidate() // rebuild cached bind groups against this call's buffers
+    while (total < nTokens && !stopped) {
+      if (signal?.aborted) break
+      poolReset()
+      const idxOut = total, pos = ids.length + idxOut - 1
+      let t = performance.now()
+      const { affLen, banLen } = writeAffBan(history)
+      const enc = device.createCommandEncoder()
+      let p2 = enc.beginComputePass()
+      runN(p2, 'embed_gather', [['u', Hd], ['u', idxOut - 1], ['u', 0], ['u', 0]], [tokBuf, embWqG, tgt4G, embScalesG, embZpG], embG, 1)
+      p2.end()
+      const r = stack(enc, embG, 1, pos)
+      const last = actBuf(Hd)
+      enc.copyBufferToBuffer(r.fn, 0, last, 0, Hd * 4)
+      p2 = enc.beginComputePass()
+      lmHead(p2, last, 1, lg)
+      samplerChain(p2, affLen, banLen)
+      p2.end()
+      enc.copyBufferToBuffer(candIds, 0, rbBuf, 0, K * 4)
+      enc.copyBufferToBuffer(candVals, 0, rbBuf, K * 4, K * 4)
+      device.queue.submit([enc.finish()])
+      recMs += performance.now() - t
+      t = performance.now()
+      await device.queue.onSubmittedWorkDone()
+      gpuMs += performance.now() - t
+      t = performance.now()
+      const { ci, cv } = await readCands()
+      rbMs += performance.now() - t
+      const tk = sampleFromCandidates(ci, cv, temperature, rng)
+      total += 1
+      if (stopSet?.has(tk)) { stopped = true; break } // EOS: stop without emitting the stop token
+      gen.push(tk)
+      history.push(tk)
+      onToken?.(tk)
+      device.queue.writeBuffer(tokBuf, idxOut * 4, new Uint32Array([tk])) // feed the next step's embed gather
+    }
+    pooling = false
+    const decodeMs = performance.now() - t1
+    const nd = Math.max(1, gen.length - 1)
     return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd }
   }
 
@@ -702,6 +851,48 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     return { fast, slow }
   }
 
+  // Debug hook for the browser harness: run a prefill for `ids` (history = ids), then return the GPU
+  // lm_head logits (base, pre-penalty), the GPU penalized logits, and the GPU top-K. The page penalizes
+  // `base` on the CPU and diffs vs `penalized` (exact, same input), and compares its top-K vs candIds,
+  // validating sampler_penalty.wgsl and argmax_masked.wgsl in isolation against the headless-checked math.
+  async function debugSampler(ids: number[], genOpts: GenerateOptions): Promise<{ base: Float32Array; penalized: Float32Array; candIds: Uint32Array; candVals: Float32Array }> {
+    const vocab = W.lm_head.N!
+    const K = Math.max(1, Math.min(genOpts.topK ?? 20, vocab))
+    const penalty = genOpts.repetitionPenalty ?? 1
+    const ngramN = genOpts.noRepeatNgramSize ?? 0
+    const lg = device.createBuffer({ size: vocab * 4, usage: S_ | CS })
+    const candIds = device.createBuffer({ size: K * 4, usage: S_ | CS })
+    const candVals = device.createBuffer({ size: K * 4, usage: S_ | CS })
+    const aff = penalty !== 1 ? affectedIds(ids) : new Uint32Array(0)
+    const ban = ngramN > 0 ? ngramBans(ids, ngramN) : []
+    const affBuf = upload(aff.length ? aff : new Uint32Array(1), S_ | CD)
+    const banBuf = upload(ban.length ? Uint32Array.from(ban) : new Uint32Array(1), S_ | CD)
+    // pass 1: prefill -> lm_head -> base logits
+    const enc1 = device.createCommandEncoder()
+    const { fn } = stack(enc1, upload(embedDequant(ids), S_ | CD), ids.length, 0)
+    const lastP = device.createBuffer({ size: Hd * 4, usage: S_ | CS | CD })
+    enc1.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
+    let pass = enc1.beginComputePass()
+    lmHead(pass, lastP, 1, lg)
+    pass.end()
+    device.queue.submit([enc1.finish()])
+    await device.queue.onSubmittedWorkDone()
+    const base = await readback(lg, vocab)
+    // pass 2: penalty (in place on lg) + K masked-argmax
+    const enc2 = device.createCommandEncoder()
+    pass = enc2.beginComputePass()
+    setup(pass, 'sampler_penalty', [['u', aff.length], ['u', ban.length], ['f', penalty], ['u', 0xff800000]], [affBuf, banBuf], [lg])
+    pass.dispatchWorkgroups(1)
+    for (let r = 0; r < K; r++) {
+      setup(pass, 'argmax_masked', [['u', vocab], ['u', r], ['u', 0], ['u', 0]], [lg], [candIds, candVals])
+      pass.dispatchWorkgroups(1)
+    }
+    pass.end()
+    device.queue.submit([enc2.finish()])
+    await device.queue.onSubmittedWorkDone()
+    return { base, penalized: await readback(lg, vocab), candIds: await readbackU32(candIds, K), candVals: await readback(candVals, K) }
+  }
+
   const capabilities: EngineCapabilities = {
     useSubgroups: useSG,
     subgroupSize: sgMax,
@@ -712,11 +903,14 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     },
   }
 
-  // Public generate: greedy decode (sampling options reserved). Maps to the typed result shape.
+  // Public generate: routes to sampled decode when a sampling temperature is set, else greedy.
+  // Both honor stopTokens / onToken / signal and map to the typed result shape.
   async function generate(promptTokenIds: number[], genOpts: GenerateOptions = {}): Promise<GenerateResult> {
     const maxTokens = genOpts.maxTokens ?? 256
-    const r = await generateImpl(promptTokenIds, maxTokens, null, SYNC_N)
-    if (genOpts.onToken) for (const t of r.tokens) genOpts.onToken(t)
+    const sampled = genOpts.temperature != null && genOpts.temperature > 0 && genOpts.temperature !== 1
+    const r = sampled
+      ? await generateSampledImpl(promptTokenIds, maxTokens, genOpts)
+      : await generateImpl(promptTokenIds, maxTokens, null, SYNC_N, { stopTokens: genOpts.stopTokens, onToken: genOpts.onToken, signal: genOpts.signal })
     return {
       tokens: r.tokens,
       prefillMs: r.prefillMs,
@@ -735,6 +929,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     adapter,
     profileDecode: (ids, nTokens, full = null, syncN = SYNC_N) => generateImpl(ids, nTokens, full, syncN),
     debugDecode,
+    debugSampler,
   }
   return api
 }

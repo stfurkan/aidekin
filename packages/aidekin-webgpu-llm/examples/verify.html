@@ -89,7 +89,51 @@
       const lp = await engine.generate(long.slice(0, 192), { maxTokens: 1 });
       log(`\nlong-prompt prefill (192 tokens) = ${lp.prefillMs.toFixed(0)} ms`);
 
-      out.insertAdjacentHTML('beforeend', `\n<span class="${ok ? 'pass' : 'fail'}">${ok ? 'PACKAGE OK' : 'REGRESSION'} - decode ${g.tokensPerSecond.toFixed(2)} tok/s</span>`);
+      // 5) sampler (Phase 2): kernel diff vs CPU math, determinism, sampled tok/s
+      log('\nsampler (do_sample) checks...');
+      const SOPT = { temperature: 0.5, topK: 20, repetitionPenalty: 1.15, noRepeatNgramSize: 3 };
+      // CPU emulation helpers (mirror sampler.ts; that math is headless bit-exact vs transformers.js)
+      const affected = (h) => [...new Set(h)];
+      const ngramBans = (h, n) => {
+        if (h.length + 1 < n) return [];
+        const gen = new Map();
+        for (let j = 0; j < h.length + 1 - n; j++) {
+          const ng = h.slice(j, j + n), key = JSON.stringify(ng.slice(0, n - 1));
+          const arr = gen.get(key) || []; arr.push(ng[n - 1]); gen.set(key, arr);
+        }
+        return gen.get(JSON.stringify(h.slice(h.length + 1 - n, h.length))) || [];
+      };
+      const topKSort = (data, k) => { const idx = Array.from(data, (_, i) => i); idx.sort((a, b) => data[b] - data[a] || a - b); return idx.slice(0, k); };
+
+      // (a) kernel diff: penalize the kernel's OWN base logits on the CPU and diff vs the GPU result
+      const dbg = await engine.debugSampler(ids, SOPT);
+      const cpu = dbg.base.slice();
+      for (const id of affected(ids)) cpu[id] = cpu[id] < 0 ? cpu[id] * 1.15 : cpu[id] / 1.15;
+      for (const id of ngramBans(ids, 3)) cpu[id] = -Infinity;
+      let pmax = 0, pmis = 0;
+      for (let i = 0; i < cpu.length; i++) {
+        if (cpu[i] === -Infinity && dbg.penalized[i] === -Infinity) continue;
+        const d = Math.abs(dbg.penalized[i] - cpu[i]);
+        if (d > pmax) pmax = d;
+        if (d > 1e-4) pmis++;
+      }
+      const penOk = pmis === 0; ok = ok && penOk;
+      log(`  ${penOk ? '[PASS]' : '[FAIL]'} sampler_penalty kernel == CPU (maxdiff=${pmax.toExponential(1)}, mism=${pmis})`);
+      const cpuTop = topKSort(cpu, 20);
+      let candOk = true; for (let i = 0; i < 20; i++) if (dbg.candIds[i] !== cpuTop[i]) candOk = false;
+      ok = ok && candOk;
+      log(`  ${candOk ? '[PASS]' : '[FAIL]'} argmax_masked top-20 == CPU top-20`);
+
+      // (b) determinism: same seed -> identical sequence twice
+      const s1 = await engine.generate(ids, { ...SOPT, maxTokens: 24, seed: 42 });
+      const s2 = await engine.generate(ids, { ...SOPT, maxTokens: 24, seed: 42 });
+      const detOk = s1.tokens.length === s2.tokens.length && s1.tokens.every((t, i) => t === s2.tokens[i]);
+      ok = ok && detOk;
+      log(`  ${detOk ? '[PASS]' : '[FAIL]'} determinism (seed 42 identical twice)`);
+      log(`  sampled ids (seed 42): [${s1.tokens.join(', ')}]`);
+      log(`  sampled decode = ${s1.tokensPerSecond.toFixed(2)} tok/s (greedy was ${g.tokensPerSecond.toFixed(2)})`);
+
+      out.insertAdjacentHTML('beforeend', `\n<span class="${ok ? 'pass' : 'fail'}">${ok ? 'PACKAGE OK' : 'REGRESSION'} - greedy ${g.tokensPerSecond.toFixed(2)} / sampled ${s1.tokensPerSecond.toFixed(2)} tok/s</span>`);
     }
 
     document.getElementById('run').onclick = () => run().catch(e => log('ERROR: ' + e.message + '\n' + e.stack));
