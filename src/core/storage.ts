@@ -1,11 +1,10 @@
 // Browser storage helpers for the cached model weights. Everything Aidekin caches
 // lives in ORIGIN-SCOPED storage:
-//   • OPFS dir "aidekin-llm-cache" → the Bonsai LLM weights (transformers.js via a custom
-//                                    cache - Cache Storage can't hold a ~290 MB entry; see
-//                                    opfsModelCache.ts)
-//   • OPFS dir "aidekin-models"    → ASR/TTS/VAD weights (our modelStore)
-//   • Cache Storage                → transformers.js (transformers-cache): only the small
-//                                    Smart-Turn + embedder model/config files
+//   • OPFS dir "aidekin-models"    → all model weights (LLM, ASR/TTS/VAD, Smart-Turn, RAG embedder)
+//                                    via our modelStore.getModelAsset
+//   • OPFS dir "aidekin-llm-cache" → legacy transformers.js LLM cache (no longer written; swept on clear)
+//   • Cache Storage                → no aidekin model files anymore (transformers.js is gone); the
+//                                    clear sweep only scrubs any legacy/HTTP-injected stores
 //   • IndexedDB                    → our "aidekin" fallback
 // In a normal window this persists on disk across restarts; in a private window
 // it is ephemeral and wiped when the session closes.
@@ -143,8 +142,8 @@ export async function clearModelCaches(): Promise<ClearResult> {
     errors.push(`OPFS: ${(e as Error).message}`)
   }
 
-  // 2) Cache Storage - transformers.js (transformers-cache: small Smart-Turn + embedder
-  //    configs; the LLM weights live in OPFS, swept by (1) above).
+  // 2) Cache Storage - no aidekin model files live here anymore (LLM + speech + embedder all cache in
+  //    OPFS, swept by (1) above). Clear it best-effort to scrub any legacy / HTTP-injected stores.
   try {
     const keys = await caches.keys()
     const results = await Promise.allSettled(keys.map((k) => caches.delete(k)))

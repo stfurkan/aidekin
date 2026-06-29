@@ -104,7 +104,7 @@ export const ASR = {
 
 // ── Turn detection (Smart Turn v3 - confirmed real) ──────────────────────────
 export const TURN = {
-  runtime: 'transformers.js' satisfies Runtime,
+  runtime: 'onnxruntime-web' satisfies Runtime,
   hfModelId: 'onnx-community/smart-turn-v3-ONNX',
   rawModelId: 'pipecat-ai/smart-turn-v3', // raw .onnx (smart-turn-v3.2-cpu.onnx ~8MB int8) for the onnxruntime-web path
   // Whisper-Tiny encoder + linear head, ~8M params, semantic turn detection on raw
@@ -153,7 +153,7 @@ export const TTS = {
 // runtimes (q4f16 has an onnxruntime-node fusion bug); int8 is applied only to the stored
 // corpus vectors. bge-v1.5 needs NO query prefix; 'mean' pooling A/B-beat 'cls' here.
 export const EMBED = {
-  runtime: 'transformers.js' satisfies Runtime,
+  runtime: 'onnxruntime-web' satisfies Runtime,
   hfModelId: 'Xenova/bge-small-en-v1.5',
   dim: 384,
   maxSeqTokens: 512,
@@ -183,15 +183,17 @@ export const ORT_WASM_CDN = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortV
  *                 (e.g. `VITE_MODEL_CDN=/models npm run dev` after `npm run fetch-models`)
  */
 /** URLs for the LLM (manifest-format) model. The ~290MB data file streams from the HF Hub (free,
- *  CORS-clean, cached to OPFS); the tiny manifest + aux are served same-origin from /models/llm. Set
- *  VITE_MODEL_CDN=/models (and put all three under public/models/llm) to mirror everything locally. */
+ *  CORS-clean, cached to OPFS); the tiny manifest + aux are served same-origin from /models/llm.
+ *  This is independent of VITE_MODEL_CDN (which only redirects the speech models) so a plain
+ *  `npm run dev` works: manifest + aux + (in dev) the data file all load from the local public/models/llm
+ *  mirror; production serves the manifest + aux from /models/llm and streams the 290MB data from the HF Hub. */
 export function llmModelUrls(): { manifestUrl: string; dataUrl: string; auxUrl: string } {
-  const cdn = (import.meta.env.VITE_MODEL_CDN as string | undefined)?.replace(/\/$/, '')
-  const base = cdn ?? ASSET_PATHS.models
+  const base = ASSET_PATHS.models // always same-origin /models/llm (decoupled from the speech VITE_MODEL_CDN)
   return {
     manifestUrl: `${base}/llm/manifest.json`,
     auxUrl: `${base}/llm/bonsai.aux.bin`,
-    dataUrl: cdn ? `${cdn}/llm/model_q1.onnx_data` : `${HF_RESOLVE(LLM.tokenizerModelId)}/onnx/model_q1.onnx_data`,
+    // dev: the local mirror (public/models/llm). prod: the HF Hub (free, cached to OPFS).
+    dataUrl: import.meta.env.DEV ? `${base}/llm/model_q1.onnx_data` : `${HF_RESOLVE(LLM.tokenizerModelId)}/onnx/model_q1.onnx_data`,
   }
 }
 
