@@ -298,7 +298,13 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
   }
 
   const tps = result.tokensPerSecond
-  console.info(`[aidekin] LLM(bonsai) done id=${id} ${canReuse ? 'cache-reuse' : 'full-prefill'} tokens=${nTokens} ${tps.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms, visible=${full.length})`)
+  const nd = Math.max(1, result.tokens.length - 1)
+  const per = result.decodeMs / nd
+  const tm = result.timing
+  const other = Math.max(0, per - tm.gpuMs - tm.recordMs - tm.readbackMs) // CPU sample + onToken decode/stream + writeBuffer
+  console.info(
+    `[aidekin] LLM(bonsai) done id=${id} ${canReuse ? 'cache-reuse' : 'full-prefill'} tokens=${nTokens} ${tps.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms) | per-token ${per.toFixed(1)}ms = gpu ${tm.gpuMs.toFixed(1)} + record ${tm.recordMs.toFixed(1)} + readback ${tm.readbackMs.toFixed(1)} + other ${other.toFixed(1)}`,
+  )
   post({ kind: 'done', id, text: full, tps })
   if (currentId === id) currentId = null
 }

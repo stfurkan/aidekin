@@ -10,3 +10,6 @@ dist-ssr
 # Local model mirror for offline dev (npm run fetch-models). Never committed —
 # in production every weight streams from a CDN and is cached in the visitor's browser.
 public/models/
+
+# LLM weights data file: the 277MB streams from the HF Hub in prod; only the local dev mirror is ignored.
+public/llm/model_q1.onnx_data

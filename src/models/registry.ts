@@ -188,12 +188,13 @@ export const ORT_WASM_CDN = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortV
  *  `npm run dev` works: manifest + aux + (in dev) the data file all load from the local public/models/llm
  *  mirror; production serves the manifest + aux from /models/llm and streams the 290MB data from the HF Hub. */
 export function llmModelUrls(): { manifestUrl: string; dataUrl: string; auxUrl: string } {
-  const base = ASSET_PATHS.models // always same-origin /models/llm (decoupled from the speech VITE_MODEL_CDN)
+  // manifest + aux (160KB) are COMMITTED to public/llm so they ship in the deploy (served same-origin,
+  // independent of the speech VITE_MODEL_CDN). The 290MB data file is NOT committed: dev reads the local
+  // mirror (public/llm/model_q1.onnx_data, gitignored), prod streams from the HF Hub (free, OPFS-cached).
   return {
-    manifestUrl: `${base}/llm/manifest.json`,
-    auxUrl: `${base}/llm/bonsai.aux.bin`,
-    // dev: the local mirror (public/models/llm). prod: the HF Hub (free, cached to OPFS).
-    dataUrl: import.meta.env.DEV ? `${base}/llm/model_q1.onnx_data` : `${HF_RESOLVE(LLM.tokenizerModelId)}/onnx/model_q1.onnx_data`,
+    manifestUrl: '/llm/manifest.json',
+    auxUrl: '/llm/bonsai.aux.bin',
+    dataUrl: import.meta.env.DEV ? '/llm/model_q1.onnx_data' : `${HF_RESOLVE(LLM.tokenizerModelId)}/onnx/model_q1.onnx_data`,
   }
 }
 
