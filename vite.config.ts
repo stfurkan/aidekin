@@ -1,14 +1,15 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Cross-origin isolation is REQUIRED for SharedArrayBuffer + WASM threads, which
-// onnxruntime-web (threaded) + transformers.js depend on. Safari does NOT support
-// COEP: credentialless, so we use require-corp. All model/runtime assets are loaded
-// from CORS+CORP-clean CDNs (Hugging Face, jsDelivr), so they pass under require-corp.
+// Cross-origin isolation is REQUIRED for SharedArrayBuffer + WASM threads, which the threaded
+// onnxruntime-web (speech models) depends on. Safari does NOT support COEP: credentialless, so we use
+// require-corp. All model/runtime assets load from CORS+CORP-clean CDNs (Hugging Face, jsDelivr), so
+// they pass under require-corp.
 const COI_HEADERS: Record<string, string> = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -43,8 +44,23 @@ function installedVersion(pkg: string): string {
   return (JSON.parse(readFileSync(url, 'utf8')) as { version: string }).version
 }
 
+// The gitignored local dev mirrors (public/llm/model_q1.onnx_data, public/models/*) are served
+// same-origin only for offline dev. In production the LLM data + embedder + speech models all stream
+// from HF/CDN, so these must NOT ship. A git-based deploy never has them, but strip them from the
+// build output too, so a local build can't accidentally ship the 277MB weights.
+function stripDevModelMirrors(): Plugin {
+  return {
+    name: 'aidekin:strip-dev-model-mirrors',
+    apply: 'build',
+    closeBundle() {
+      const out = fileURLToPath(new URL('./dist', import.meta.url))
+      for (const p of ['llm/model_q1.onnx_data', 'models']) rmSync(join(out, p), { recursive: true, force: true })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), crossOriginIsolation()],
+  plugins: [react(), tailwindcss(), crossOriginIsolation(), stripDevModelMirrors()],
   define: {
     __ORT_VERSION__: JSON.stringify(installedVersion('onnxruntime-web')),
     __VAD_VERSION__: JSON.stringify(installedVersion('@ricky0123/vad-web')),
@@ -59,7 +75,7 @@ export default defineConfig({
     // URL(...))` workers, so the FIRST mic tap discovers new deps, re-optimizes, and
     // force-reloads the page (dev only). Listing the workers here scans them at boot.
     entries: ['index.html', 'widget/index.html', 'src/workers/*.worker.ts'],
-    exclude: ['onnxruntime-web', '@huggingface/transformers'],
+    exclude: ['onnxruntime-web'],
   },
   build: {
     // The large chunks (transformers, onnxruntime, pdf.js, the embedder) are all loaded via
