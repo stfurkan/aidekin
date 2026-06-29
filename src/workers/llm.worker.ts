@@ -1,40 +1,22 @@
 /// <reference lib="webworker" />
-// LLM worker: the "brain" - PrismML Bonsai (Qwen3-architecture, ternary→ONNX) run on
-// WebGPU via @huggingface/transformers. Streams tokens, strips Qwen3 <think> blocks,
-// toggles reasoning via the chat template's enable_thinking flag, reuses a cross-turn
-// KV cache (see below), and logs tokens/sec.
-
-import {
-  AutoModelForCausalLM,
-  AutoTokenizer,
-  TextStreamer,
-  InterruptableStoppingCriteria,
-  DynamicCache,
-  Tensor,
-  env,
-  type PreTrainedModel,
-  type PreTrainedTokenizer,
-} from '@huggingface/transformers'
+// LLM worker: the "brain" - PrismML Bonsai (Qwen3-architecture, 1-bit/binary weights) run on WebGPU
+// via our own @aidekin/webgpu-llm engine (NO transformers.js / onnxruntime). The tokenizer is the
+// standalone LlmTokenizer (@huggingface/tokenizers + @huggingface/jinja, byte-exact with HF). Streams
+// tokens, strips Qwen3 <think> blocks, toggles reasoning via the chat template's enable_thinking flag,
+// reuses the engine's cross-turn KV cache (prefill only the new turn), and logs tokens/sec.
+import { createEngine, type Engine } from '@aidekin/webgpu-llm'
 import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
-import { installOpfsModelCache } from '../core/opfsModelCache'
+import { LlmTokenizer } from '../core/tokenizer'
+import { getModelAsset } from '../core/modelStore'
 import { withRetry } from '../core/retry'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: LlmOut): void => ctx.postMessage(m)
 
-env.allowRemoteModels = true // stream model files from the HF Hub
-// ORT wasm: leave transformers.js's default CDN (jsDelivr, pinned to the exact immutable
-// onnxruntime-web version it bundles). That's the supported out-of-the-box path; the JS glue
-// and wasm MUST be the same build, so we can NOT substitute our root onnxruntime-web here. The
-// same jsDelivr origin already serves the speech workers' wasm under COEP in production.
-// Cache the ~290 MB model in OPFS, not Cache Storage (which errors on an entry this large, so
-// the weights would otherwise re-download every visit). Best-effort: see opfsModelCache.ts.
-installOpfsModelCache(env)
-
 // ── Qwen3 <think> stripping ──────────────────────────────────────────────────
-// Bonsai keeps Qwen3's chat template and can emit <think>…</think> blocks we must
-// never show or speak. This strips them from the token STREAM (tags can straddle token
-// boundaries), holding back only a possible partial tag at each chunk's edge.
+// Bonsai keeps Qwen3's chat template and can emit <think>...</think> blocks we must never show or
+// speak. This strips them from the token STREAM (tags can straddle token boundaries), holding back
+// only a possible partial tag at each chunk's edge.
 const THINK_OPEN = '<think>'
 const THINK_CLOSE = '</think>'
 function holdback(s: string, tag: string): number {
@@ -80,12 +62,10 @@ class ThinkFilter {
   }
 }
 
-/** True iff `next` is exactly `cached` plus one new trailing user turn - i.e. a clean
- *  append, so we can extend the KV cache with just that turn instead of re-prefilling.
- *  (We can't compare re-tokenized prompts: Bonsai's template renders an assistant turn
- *  WITH an empty <think> block when it's last but STRIPS it once a newer turn follows,
- *  so a re-tokenized history is never a token-prefix of the cached sequence. We track the
- *  committed MESSAGES instead and append the new turn's delta tokens - see runGeneration.) */
+/** True iff `next` is exactly `cached` plus one new trailing user turn - a clean append, so the engine
+ *  can extend its KV cache with just that turn instead of re-prefilling. We track committed MESSAGES
+ *  (not token ids) because Bonsai's template renders past assistant turns differently from the live one
+ *  (empty <think> block), so a re-tokenized history is never a token-prefix of what's cached. */
 function isCleanAppend(cached: readonly ChatMessage[] | null, next: readonly ChatMessage[]): boolean {
   if (!cached || next.length !== cached.length + 1) return false
   if (next[next.length - 1].role !== 'user') return false
@@ -95,17 +75,15 @@ function isCleanAppend(cached: readonly ChatMessage[] | null, next: readonly Cha
   return true
 }
 
-/** Chat-template wrappers, derived from the tokenizer at init so the cache-append never
- *  hardcodes a template. `genPrompt` is what add_generation_prompt appends; `userPrefix`/
- *  `userSuffix` wrap a user turn's content. null when the model isn't standard ChatML, in
- *  which case cache-append is disabled (we fall back to full-prefill - correct, just slower). */
+/** Chat-template wrappers, derived from the tokenizer at init (never hardcoded). `genPrompt` is what
+ *  add_generation_prompt appends; `userPrefix`/`userSuffix` wrap a user turn. null when the model isn't
+ *  standard ChatML, in which case cross-turn reuse is disabled (full-prefill each turn - correct, slower). */
 let chatWrap: { genPrompt: string; userPrefix: string; userSuffix: string } | null = null
 
-function deriveChatWrap(tk: PreTrainedTokenizer): typeof chatWrap {
+function deriveChatWrap(tk: LlmTokenizer): typeof chatWrap {
   try {
-    const render = (msgs: Array<{ role: string; content: string }>, agp: boolean): string =>
-      tk.apply_chat_template(msgs, { add_generation_prompt: agp, tokenize: false, enable_thinking: false } as never) as unknown as string
-    const SENT = 'SENT'
+    const render = (msgs: ChatMessage[], agp: boolean): string => tk.applyChatTemplate(msgs, { addGenerationPrompt: agp, enableThinking: false })
+    const SENT = 'SENT'
     const userOnly = render([{ role: 'user', content: SENT }], false)
     const userGen = render([{ role: 'user', content: SENT }], true)
     const genPrompt = userGen.slice(userOnly.length) // e.g. "<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -122,18 +100,14 @@ function deriveChatWrap(tk: PreTrainedTokenizer): typeof chatWrap {
 
 // ── worker state ─────────────────────────────────────────────────────────────
 let currentId: number | null = null
-let model: PreTrainedModel | null = null
-let tokenizer: PreTrainedTokenizer | null = null
+let engine: Engine | null = null
+let tokenizer: LlmTokenizer | null = null
 let eosTokenId = 151645
-let stopper: InterruptableStoppingCriteria | null = null
+let abortController: AbortController | null = null
 
 // ── single-flight generation queue (latest-wins) ──────────────────────────────
-// model.generate() must NEVER run twice at once: a second call reassigns the shared
-// `stopper`, orphaning the first run so it keeps chewing the GPU forever - N rapid
-// turns then stack N zombie generations that split the GPU N ways (the "stuck for
-// minutes, stops responding" spiral). So we serialize: a new request interrupts the
-// running one and is stashed as `queued`; the in-flight loop picks up only the LATEST
-// queued request once the current run fully unwinds. One generation on the GPU at a time.
+// Only one generation may run on the GPU at a time; a new request aborts the running one and is
+// stashed as `queued`; the loop picks up only the LATEST queued request once the current run unwinds.
 interface GenJob {
   id: number
   messages: readonly ChatMessage[]
@@ -143,25 +117,15 @@ interface GenJob {
 let running = false
 let queued: GenJob | null = null
 
-// ── cross-turn KV cache ───────────────────────────────────────────────────────
-// A persistent DynamicCache so each new turn only prefills the NEW turn instead of the
-// whole transcript (the cause of "replies get slower every message").
-//   • kvCache         - the live cache (key/value tensors), kept alive across turns.
-//   • cachedMessages  - the committed conversation (incl. assistant replies) the cache
-//                       physically represents. The cache is reused ONLY when the next
-//                       request is exactly this + one new user turn (isCleanAppend); then
-//                       we feed just that turn's delta tokens. Anything else (think turn,
-//                       history trim, system-prompt change, barge-in abort) rebuilds.
-// We track MESSAGES, not token ids, because Bonsai's template renders past assistant turns
-// differently from the live one (empty <think> block), so a re-tokenized history is never a
-// token-prefix of what's cached. Appending the delta to the physical cache sidesteps that.
-let kvCache: DynamicCache | null = null
+// ── cross-turn cache bookkeeping ───────────────────────────────────────────────
+// The engine owns the physical KV cache (generate(delta, {reuseCache}) / resetCache). We track the
+// committed conversation it represents so the next clean append can extend it. `invalidateCache` is
+// set on abort: the partial cache no longer matches a clean prefix and must be reset.
 let cachedMessages: ChatMessage[] | null = null
-let invalidateCache = false // set on abort: the partial cache is unusable
+let invalidateCache = false
 
-function disposeCache(): void {
-  if (kvCache) void kvCache.dispose()
-  kvCache = null
+function dropCache(): void {
+  engine?.resetCache()
   cachedMessages = null
 }
 
@@ -172,13 +136,13 @@ ctx.onmessage = (ev: MessageEvent<LlmIn>) => {
 async function handle(msg: LlmIn): Promise<void> {
   try {
     if (msg.kind === 'init') {
-      await init(msg.model, msg.dtype ?? 'q1', msg.device ?? 'webgpu', msg.eosTokenId ?? 151645)
+      await init(msg)
     } else if (msg.kind === 'generate') {
       await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false)
     } else if (msg.kind === 'abort') {
       if (msg.id === currentId) {
-        invalidateCache = true // partial generation → cache no longer matches a clean prefix
-        stopper?.interrupt()
+        invalidateCache = true // partial generation -> cache no longer matches a clean prefix
+        abortController?.abort()
       }
     }
   } catch (err) {
@@ -186,90 +150,68 @@ async function handle(msg: LlmIn): Promise<void> {
   }
 }
 
-async function init(id: string, dtype: string, device: string, eos: number): Promise<void> {
-  eosTokenId = eos
-  disposeCache() // a fresh model means any prior KV cache is meaningless
-  const onProgress = (p: { status?: string; file?: string; progress?: number; loaded?: number; total?: number }): void => {
-    if (p.loaded != null && p.total) {
-      post({ kind: 'load', label: 'LLM', file: p.file, detail: `${p.file ?? 'model'} · ${Math.round(p.progress ?? 0)}%`, loaded: p.loaded, total: p.total })
-    } else if (p.status) {
-      post({ kind: 'load', label: 'LLM', file: p.file, detail: `${p.status} ${p.file ?? ''}`.trim(), loaded: 0, total: 0 })
-    }
-  }
-  // Retry transient CDN resets / rate limits while downloading the weights.
-  const onRetry = (n: number, _e: unknown, ms: number): void =>
-    console.warn(`[aidekin] LLM load failed (transient); retry ${n} in ${ms}ms`)
-  tokenizer = await withRetry(
-    () => AutoTokenizer.from_pretrained(id, { progress_callback: onProgress as never }),
-    { onRetry },
-  )
-  // Derive the ChatML wrappers now so cross-turn cache-append can extend the KV cache with
-  // just the new turn. null (non-ChatML template) → cache-append disabled, full-prefill each turn.
+async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
+  eosTokenId = msg.eosTokenId ?? 151645
+  dropCache()
+  const onRetry = (n: number, _e: unknown, ms: number): void => console.warn(`[aidekin] LLM load failed (transient); retry ${n} in ${ms}ms`)
+
+  // Tokenizer (standalone, byte-exact with transformers.js). The ~7MB tokenizer.json is fetched once.
+  tokenizer = await withRetry(() => LlmTokenizer.load({ modelId: msg.tokenizerModelId }), { onRetry })
   chatWrap = deriveChatWrap(tokenizer)
-  if (!chatWrap) console.warn('[aidekin] LLM: non-ChatML template - cross-turn KV cache disabled')
-  model = await withRetry(
+  if (!chatWrap) console.warn('[aidekin] LLM: non-ChatML template - cross-turn KV reuse disabled')
+
+  // Engine: OPFS-cache the ~290MB data file (so it never re-downloads); manifest + aux are tiny.
+  const fetchArrayBuffer = async (url: string): Promise<ArrayBuffer> => {
+    if (url === msg.dataUrl) {
+      return getModelAsset('llm-bonsai-1.7b-q1', url, (p) =>
+        post({ kind: 'load', label: 'LLM', file: 'weights', detail: `weights ${Math.round((100 * p.loaded) / (p.total || 1))}%`, loaded: p.loaded, total: p.total || 0 }),
+      )
+    }
+    return (await fetch(url)).arrayBuffer()
+  }
+  engine = await withRetry(
     () =>
-      AutoModelForCausalLM.from_pretrained(id, {
-        dtype: dtype as never,
-        device: device as never,
-        progress_callback: onProgress as never,
+      createEngine({
+        manifestUrl: msg.manifestUrl,
+        dataUrl: msg.dataUrl,
+        auxUrl: msg.auxUrl,
+        maxSeqLen: msg.maxSeqLen ?? 2048,
+        fetchArrayBuffer,
+        onProgress: (p) => post({ kind: 'load', label: 'LLM', detail: p.phase, loaded: 0, total: 0 }),
       }),
     { onRetry },
   )
+
   await warmup()
-  post({ kind: 'ready', info: `transformers.js ${id} (${dtype}·${device})` })
+  const cap = engine.capabilities
+  post({ kind: 'ready', info: `aidekin-webgpu-llm (${cap.useSubgroups ? 'subgroups SG=' + cap.subgroupSize : 'workgroup fallback'})` })
 }
 
-/** Compile the WebGPU prefill/decode shaders at load time so the user's FIRST message isn't a
- *  ~10s cold start (the ASR/TTS workers warm up for the same reason). Throwaway: a SEPARATE
- *  cache, one token, and NO module state written - kvCache/cachedMessages stay null, so the
- *  first real turn still does a clean prefill and nothing from the warmup leaks into the
- *  conversation. Mirrors the real sampling params so the whole generation path is compiled.
- *  Best-effort: a warmup hiccup never blocks readiness. */
+/** Warm the decode path once so the user's FIRST message isn't a cold start. Best-effort; resets the
+ *  cache afterward so nothing leaks into the conversation. */
 async function warmup(): Promise<void> {
-  if (!model || !tokenizer) return
-  const throwaway = new DynamicCache()
+  if (!engine || !tokenizer) return
   try {
     const t0 = performance.now()
-    const inputs = tokenizer.apply_chat_template(
-      [{ role: 'user', content: 'Hi' }],
-      { add_generation_prompt: true, return_dict: true, enable_thinking: false } as never,
-    ) as Record<string, unknown>
-    await model.generate({
-      ...inputs,
-      past_key_values: throwaway,
-      max_new_tokens: 1,
-      do_sample: true,
-      temperature: 0.5,
-      top_k: 20,
-      top_p: 0.85,
-      repetition_penalty: 1.15,
-      no_repeat_ngram_size: 3,
-      eos_token_id: eosTokenId,
-    } as never)
+    const ids = tokenizer.encode(tokenizer.applyChatTemplate([{ role: 'user', content: 'Hi' }], { addGenerationPrompt: true, enableThinking: false }), false)
+    await engine.generate(ids, { maxTokens: 1, ...SAMPLING, stopTokens: [eosTokenId] })
+    engine.resetCache()
     console.info(`[aidekin] LLM warmup ${(performance.now() - t0).toFixed(0)}ms`)
   } catch (e) {
     console.warn('[aidekin] LLM warmup skipped:', (e as Error).message)
-  } finally {
-    void throwaway.dispose()
   }
 }
 
-/** Coordinator: enqueue this turn as the latest, interrupt anything running, and drain
- *  the queue ONE generation at a time (see the single-flight note above). */
-async function generate(
-  id: number,
-  messages: readonly ChatMessage[],
-  allowThink: boolean,
-  resetCache: boolean,
-): Promise<void> {
+// Sampling params (match the prior transformers.js config exactly; top_p is a no-op there and here).
+const SAMPLING = { temperature: 0.5, topK: 20, topP: 0.85, repetitionPenalty: 1.15, noRepeatNgramSize: 3 } as const
+
+/** Coordinator: enqueue this turn as the latest, abort anything running, and drain the queue ONE
+ *  generation at a time. */
+async function generate(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean): Promise<void> {
   queued = { id, messages, allowThink, resetCache } // latest-wins
-  // Stop whatever is mid-flight so the loop can advance to this newest request. A prefill
-  // can't be interrupted (the stopper is only checked between decode steps), so the current
-  // run may take a moment to unwind - but it will, and no two runs overlap on the GPU.
   if (currentId !== null && currentId >= 0) {
     invalidateCache = true
-    stopper?.interrupt()
+    abortController?.abort()
   }
   if (running) return
   running = true
@@ -288,146 +230,75 @@ async function generate(
   }
 }
 
-async function runGeneration(
-  id: number,
-  messages: readonly ChatMessage[],
-  allowThink: boolean,
-  resetCache: boolean,
-): Promise<void> {
-  if (!model || !tokenizer) throw new Error('LLM not initialized')
+async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean): Promise<void> {
+  if (!engine || !tokenizer) throw new Error('LLM not initialized')
   currentId = id
   invalidateCache = false
+  abortController = new AbortController()
 
-  // Reuse the cache only on a clean append (committed conversation + one new user turn),
-  // and only in non-thinking mode (a stripped <think> block wouldn't be reflected in the
-  // cached tokens) with the ChatML wrappers available. Then feed ONLY the new turn's delta;
-  // otherwise rebuild the whole prompt.
-  const canReuse =
-    !resetCache && !allowThink && chatWrap !== null && kvCache !== null && isCleanAppend(cachedMessages, messages)
+  // Reuse the engine's cache only on a clean append (committed conversation + one new user turn), in
+  // non-thinking mode (a stripped <think> block isn't reflected in the cached tokens), with ChatML
+  // wrappers available. Then feed ONLY the new turn's delta; otherwise rebuild the whole prompt.
+  const canReuse = !resetCache && !allowThink && chatWrap !== null && cachedMessages !== null && isCleanAppend(cachedMessages, messages)
 
-  // Diagnostic: when we HAVE a cache but fall back to a full prefill (the slow ~13s path),
-  // log WHY. Cross-turn reuse is what keeps ttft low (prefill only the new turn's delta, not
-  // the whole transcript), so a silent fallback to full-prefill is the latency bug to hunt.
-  if (kvCache !== null && !canReuse) {
-    let why: string
-    if (resetCache) why = 'resetCache flag'
-    else if (allowThink) why = 'thinking mode'
-    else if (chatWrap === null) why = 'no ChatML wrap'
-    else {
-      why = 'prefix changed'
-      const c = cachedMessages
-      if (c && messages.length !== c.length + 1) why += ` (length cached=${c.length} next=${messages.length})`
-      else if (c) {
-        for (let i = 0; i < c.length; i++) {
-          if (c[i].role !== messages[i].role || c[i].content !== messages[i].content) {
-            why += ` @${i} ${c[i].role}: cached="${c[i].content.slice(0, 30)}" next="${messages[i].content.slice(0, 30)}"`
-            break
-          }
-        }
-      }
-    }
-    console.warn(`[aidekin] LLM full-prefill, cache not reused: ${why}`)
-  }
-
-  let modelInputs: Record<string, unknown>
+  let inputIds: number[]
   if (canReuse) {
-    // Append the new user turn + generation prompt directly to the live cache. We build the
-    // delta from the new turn alone (not by re-tokenizing the history), so the empty-<think>
-    // mismatch never matters - the physical cache stays a self-consistent ChatML transcript.
     const userText = messages[messages.length - 1].content
     const w = chatWrap as NonNullable<typeof chatWrap>
     const deltaStr = `\n${w.userPrefix}${userText}${w.userSuffix}${w.genPrompt}`
-    const deltaIds = (tokenizer.encode(deltaStr, { add_special_tokens: false } as never) as number[]).map(Number)
-    const input_ids = new Tensor('int64', BigInt64Array.from(deltaIds.map((x) => BigInt(x))), [1, deltaIds.length])
-    modelInputs = { input_ids, past_key_values: kvCache } // no attention_mask → ones(past+delta)
+    inputIds = tokenizer.encode(deltaStr, false)
   } else {
-    disposeCache()
-    kvCache = new DynamicCache()
-    // Toggle reasoning via the template's `enable_thinking` flag (a structural switch the
-    // template understands), NOT by appending "/no_think" to the user text - a small model
-    // can quote that literal string back in its reply (the visible-"/no_think" bug).
-    const tplOpts = { add_generation_prompt: true, return_dict: true, enable_thinking: allowThink }
-    const inputs = tokenizer.apply_chat_template(
-      messages as unknown as Array<{ role: string; content: string }>,
-      tplOpts as never,
-    ) as { input_ids: Tensor } & Record<string, unknown>
-    modelInputs = { ...inputs, past_key_values: kvCache }
+    dropCache() // engine.resetCache() so the full prefill starts a fresh sequence
+    inputIds = tokenizer.encode(tokenizer.applyChatTemplate(messages as ChatMessage[], { addGenerationPrompt: true, enableThinking: allowThink }), false)
   }
 
   const think = new ThinkFilter()
+  const stream = tokenizer.createDecoderStream(true)
   let full = ''
   let nTokens = 0
-  const t0 = performance.now()
-  let tFirst = 0
-  stopper = new InterruptableStoppingCriteria()
+  const onToken = (tokenId: number): void => {
+    if (currentId !== id) return
+    nTokens++
+    const text = stream.push(tokenId)
+    if (!text) return
+    const clean = think.push(text)
+    if (clean) {
+      full += clean
+      post({ kind: 'token', id, text: clean })
+    }
+  }
 
-  const streamer = new TextStreamer(tokenizer, {
-    skip_prompt: true,
-    skip_special_tokens: true,
-    token_callback_function: (() => {
-      if (!tFirst) tFirst = performance.now()
-      nTokens++
-    }) as never,
-    callback_function: ((text: string) => {
-      if (currentId !== id) return
-      const clean = think.push(text)
-      if (clean) {
-        full += clean
-        post({ kind: 'token', id, text: clean })
-      }
-    }) as never,
+  const result = await engine.generate(inputIds, {
+    maxTokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
+    ...SAMPLING,
+    stopTokens: [eosTokenId],
+    reuseCache: canReuse,
+    onToken,
+    signal: abortController.signal,
   })
 
-  // We pass past_key_values, so generate() leaves the cache alive (extended by this turn's
-  // tokens) for the next turn. The returned sequence isn't needed - we track the committed
-  // MESSAGES, not token ids (see the cache note above).
-  await model.generate({
-    ...modelInputs,
-    max_new_tokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
-    do_sample: true,
-    temperature: 0.5,
-    top_k: 20,
-    top_p: 0.85,
-    // Small ternary models degenerate into phrase loops on out-of-distribution input. 1.05 was
-    // too weak; bump the penalty and hard-block any repeated 3-gram so a loop is impossible.
-    repetition_penalty: 1.15,
-    no_repeat_ngram_size: 3,
-    eos_token_id: eosTokenId,
-    streamer,
-    stopping_criteria: stopper,
-  } as never)
-
-  const tail = think.flush()
-  if (tail) {
+  // flush any buffered decode + think tail
+  let tail = think.push(stream.flush())
+  tail += think.flush()
+  if (tail && currentId === id) {
     full += tail
     post({ kind: 'token', id, text: tail })
   }
 
   // ── cache bookkeeping ──
-  if (invalidateCache) {
+  if (invalidateCache || abortController.signal.aborted) {
     invalidateCache = false
-    disposeCache() // barge-in interrupted mid-generation → cache is unreliable
+    dropCache() // barge-in mid-generation -> cache unreliable
   } else if (allowThink) {
-    // think turns emit reasoning the stored (stripped) reply won't reproduce - drop the cache.
-    disposeCache()
+    dropCache() // think turns emit reasoning the stored (stripped) reply won't reproduce
   } else if (full.trim()) {
-    // The KV cache now physically holds [prompt(this turn) + reply]. Record the committed
-    // conversation it represents so the NEXT clean append can extend it.
-    cachedMessages = [...messages, { role: 'assistant', content: full }]
+    cachedMessages = [...messages, { role: 'assistant', content: full }] // engine cache now holds [prompt + reply]
   } else {
-    disposeCache() // empty reply → nothing committed; don't risk a stale reuse
+    dropCache() // empty reply -> nothing committed; don't risk a stale reuse
   }
 
-  const tps = tps_(nTokens, tFirst, t0)
-  console.info(
-    `[aidekin] LLM(bonsai) done id=${id} ${canReuse ? 'cache-reuse' : 'full-prefill'} tokens=${nTokens} ${tps.toFixed(1)} tok/s (ttft ${(tFirst - t0).toFixed(0)}ms, visible=${full.length})`,
-  )
+  const tps = result.tokensPerSecond
+  console.info(`[aidekin] LLM(bonsai) done id=${id} ${canReuse ? 'cache-reuse' : 'full-prefill'} tokens=${nTokens} ${tps.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms, visible=${full.length})`)
   post({ kind: 'done', id, text: full, tps })
   if (currentId === id) currentId = null
-}
-
-/** tokens / decode-seconds (decode excludes the time-to-first-token / prefill). */
-function tps_(nTokens: number, tFirst: number, t0: number): number {
-  const decodeMs = performance.now() - (tFirst || t0)
-  return nTokens > 1 && decodeMs > 0 ? (nTokens - 1) / (decodeMs / 1000) : 0
 }

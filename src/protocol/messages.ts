@@ -56,7 +56,7 @@ export type AsrOut =
   | { readonly kind: 'partial'; readonly id?: number; readonly text: string } // running transcript fragment
   | { readonly kind: 'final'; readonly id?: number; readonly text: string }
 
-// ── LLM worker (Bonsai via transformers.js) ──────────────────────────────────
+// ── LLM worker (Bonsai via @aidekin/webgpu-llm) ──────────────────────────────
 export interface ChatMessage {
   readonly role: 'system' | 'user' | 'assistant'
   readonly content: string
@@ -64,10 +64,12 @@ export interface ChatMessage {
 export type LlmIn =
   | {
       readonly kind: 'init'
-      readonly model: string //       transformers.js HF repo id
-      readonly dtype?: string //      transformers.js dtype (e.g. 'q1')
-      readonly device?: Device //     transformers.js device
-      readonly eosTokenId?: number // transformers.js stop token
+      readonly manifestUrl: string //     engine manifest.json (manifest-format model)
+      readonly dataUrl: string //         the ~290MB weights data file (e.g. HF onnx_data)
+      readonly auxUrl: string //          the small aux file (LUTs)
+      readonly tokenizerModelId: string // HF repo for tokenizer.json + tokenizer_config.json
+      readonly eosTokenId?: number //     stop token (default 151645)
+      readonly maxSeqLen?: number //      KV-cache length cap (default 2048)
     }
   | {
       readonly kind: 'generate'

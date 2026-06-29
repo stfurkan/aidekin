@@ -13,7 +13,7 @@
 // In adopted mode the orchestrator stays in charge of load/ready/error lifecycle,
 // so its existing load UI + error handling are byte-identical.
 
-import { LLM } from '../models/registry'
+import { LLM, llmModelUrls } from '../models/registry'
 import type { ChatMessage, Device, LlmIn, LlmOut } from '../protocol/messages'
 import { SentenceChunker } from '../pipeline/sentenceChunker'
 
@@ -108,7 +108,6 @@ const toModel = (m: Turn): ChatMessage => ({ role: m.role, content: m.model ?? m
 
 export class ConversationEngine {
   private readonly cb: EngineCallbacks
-  private readonly device: Device
   private retriever: Retriever | null
   private readonly ragTopK: number
   private readonly ragCharBudget: number
@@ -156,7 +155,6 @@ export class ConversationEngine {
 
   constructor(opts: EngineOptions) {
     this.cb = opts.callbacks ?? {}
-    this.device = opts.device ?? 'webgpu'
     this.retriever = opts.retriever ?? null
     this.ragTopK = opts.ragTopK ?? 3
     this.ragCharBudget = opts.ragCharBudget ?? 1500
@@ -191,12 +189,15 @@ export class ConversationEngine {
       this.ready?.reject(new Error(e.message || 'LLM worker crashed'))
       this.ready = null
     }
+    const u = llmModelUrls()
     const init: LlmIn = {
       kind: 'init',
-      model: LLM.hfModelId,
-      dtype: LLM.dtype,
-      device: this.device,
+      manifestUrl: u.manifestUrl,
+      dataUrl: u.dataUrl,
+      auxUrl: u.auxUrl,
+      tokenizerModelId: LLM.tokenizerModelId,
       eosTokenId: LLM.eosTokenId,
+      maxSeqLen: LLM.maxSeqLen,
     }
     try {
       await new Promise<void>((resolve, reject) => {

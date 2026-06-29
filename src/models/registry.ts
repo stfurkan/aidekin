@@ -35,11 +35,10 @@ const vadVersion = typeof __VAD_VERSION__ === 'string' ? __VAD_VERSION__ : 'late
 // that fits with the speech stack, and is the proven demo size. Measure tokens/sec in
 // the console.
 export const LLM = {
-  runtime: 'transformers.js' satisfies Runtime,
-  hfModelId: 'onnx-community/Bonsai-1.7B-ONNX', // ↔ '…Bonsai-4B-ONNX' only if VRAM allows
-  dtype: 'q1', //                                  matches the proven webml-community/bonsai-webgpu demo
-  device: 'webgpu' as const,
-  eosTokenId: 151645, //                           <|im_end|>
+  // Run on our own @aidekin/webgpu-llm engine (no transformers.js / onnxruntime for the brain).
+  tokenizerModelId: 'onnx-community/Bonsai-1.7B-ONNX', // HF repo for tokenizer.json + tokenizer_config.json
+  eosTokenId: 151645, //                                  <|im_end|>
+  maxSeqLen: 2048, //                                     KV-cache length cap (~448MB VRAM)
 } as const
 
 // ── ASR (Nemotron 3.5 streaming, FP16 → WebGPU - the ONE AND ONLY engine) ─────
@@ -183,6 +182,19 @@ export const ORT_WASM_CDN = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortV
  *   • override  → set `VITE_MODEL_CDN` to your own bucket / a local `/models` mirror
  *                 (e.g. `VITE_MODEL_CDN=/models npm run dev` after `npm run fetch-models`)
  */
+/** URLs for the LLM (manifest-format) model. The ~290MB data file streams from the HF Hub (free,
+ *  CORS-clean, cached to OPFS); the tiny manifest + aux are served same-origin from /models/llm. Set
+ *  VITE_MODEL_CDN=/models (and put all three under public/models/llm) to mirror everything locally. */
+export function llmModelUrls(): { manifestUrl: string; dataUrl: string; auxUrl: string } {
+  const cdn = (import.meta.env.VITE_MODEL_CDN as string | undefined)?.replace(/\/$/, '')
+  const base = cdn ?? ASSET_PATHS.models
+  return {
+    manifestUrl: `${base}/llm/manifest.json`,
+    auxUrl: `${base}/llm/bonsai.aux.bin`,
+    dataUrl: cdn ? `${cdn}/llm/model_q1.onnx_data` : `${HF_RESOLVE(LLM.tokenizerModelId)}/onnx/model_q1.onnx_data`,
+  }
+}
+
 export function modelSource(role: 'asr' | 'tts' | 'vad'): string {
   const cdn = (import.meta.env.VITE_MODEL_CDN as string | undefined)?.replace(/\/$/, '')
   if (cdn) return `${cdn}/${role}`

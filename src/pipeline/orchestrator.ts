@@ -13,7 +13,7 @@ import { MicCapture } from '../audio/micCapture'
 import { PlaybackQueue } from '../audio/playbackQueue'
 import { pruneIncompleteAssets } from '../core/modelStore'
 import { ConversationEngine } from '../engine/conversationEngine'
-import { LLM, modelSource } from '../models/registry'
+import { LLM, llmModelUrls, modelSource } from '../models/registry'
 import type {
   AsrIn, AsrOut, Device, LlmIn, LlmOut, LoadProgress,
   TtsIn, TtsOut, TurnIn, TurnOut, VadIn, VadOut,
@@ -270,11 +270,12 @@ export class Orchestrator {
     // is required (as it is for the LLM). Reads from the OPFS cache warmed in phase 1.
     await this.initWorker(this.asr, { kind: 'init', modelBase: modelSource('asr'), device: 'webgpu' }, 'ASR', false)
     await this.initWorker(this.tts, { kind: 'init', modelBase: modelSource('tts'), device: this.device }, 'TTS', false)
-    // Brain: Bonsai on transformers.js / WebGPU (streams from the HF Hub, caches to
-    // Cache Storage).
+    // Brain: Bonsai on our @aidekin/webgpu-llm engine / WebGPU (data streams from the HF Hub, caches
+    // to OPFS; manifest + aux served same-origin).
     // Brain: only in standalone mode. Shared mode reuses the widget engine's LLM.
     if (this.llm) {
-      const llmInit: LlmIn = { kind: 'init', model: LLM.hfModelId, dtype: LLM.dtype, device: LLM.device, eosTokenId: LLM.eosTokenId }
+      const u = llmModelUrls()
+      const llmInit: LlmIn = { kind: 'init', manifestUrl: u.manifestUrl, dataUrl: u.dataUrl, auxUrl: u.auxUrl, tokenizerModelId: LLM.tokenizerModelId, eosTokenId: LLM.eosTokenId, maxSeqLen: LLM.maxSeqLen }
       await this.initWorker(this.llm, llmInit, 'LLM', false)
       // Worker is loaded + initialized - hand it to the engine, which now drives
       // generation. onLlm forwards token/done events to engine.handleLlmMessage().
