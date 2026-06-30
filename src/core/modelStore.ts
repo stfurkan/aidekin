@@ -68,18 +68,43 @@ async function readMarker(dir: FileSystemDirectoryHandle, key: string): Promise<
   }
 }
 
+/** Write `bytes` to OPFS file `name`. Uses the worker-only sync access handle when available (fast,
+ *  no extra copies); otherwise the async createWritable() stream, which ALSO works on the MAIN
+ *  THREAD - where the RAG embedder runs. Without the main-thread path the embedder could never
+ *  persist (createSyncAccessHandle is worker-only), so it re-downloaded every session and left a
+ *  0-byte marker-less file the pruner deleted each load. Returns false if no OPFS write API exists. */
+async function opfsWrite(dir: FileSystemDirectoryHandle, name: string, bytes: Uint8Array<ArrayBuffer>): Promise<boolean> {
+  const h = (await dir.getFileHandle(name, { create: true })) as SyncCapableFileHandle
+  if (h.createSyncAccessHandle) {
+    const a = await h.createSyncAccessHandle()
+    try {
+      a.truncate(0)
+      const CHUNK = 8 * 1024 * 1024 // write in 8 MB slices, not one giant call
+      for (let off = 0; off < bytes.length; off += CHUNK) a.write(bytes.subarray(off, Math.min(off + CHUNK, bytes.length)), { at: off })
+      a.flush()
+    } finally {
+      a.close()
+    }
+    return true
+  }
+  if (typeof h.createWritable === 'function') {
+    const w = await h.createWritable()
+    try {
+      await w.write(bytes)
+    } finally {
+      await w.close()
+    }
+    return true
+  }
+  return false
+}
+
 /** Record that `key` is fully downloaded (size bytes). Written ONLY after success. */
 async function writeMarker(dir: FileSystemDirectoryHandle, key: string, size: number): Promise<void> {
-  const h = (await dir.getFileHandle(sanitize(key) + MARKER_SUFFIX, { create: true })) as SyncCapableFileHandle
-  if (!h.createSyncAccessHandle) return
-  const a = await h.createSyncAccessHandle()
-  try {
-    a.truncate(0)
-    a.write(new TextEncoder().encode(String(size)), { at: 0 })
-    a.flush()
-  } finally {
-    a.close()
-  }
+  const text = String(size) // ASCII digits → one byte each; keep the buffer ArrayBuffer-backed
+  const bytes = new Uint8Array(text.length)
+  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i)
+  await opfsWrite(dir, sanitize(key) + MARKER_SUFFIX, bytes)
 }
 
 async function removeMarker(dir: FileSystemDirectoryHandle, key: string): Promise<void> {
@@ -161,7 +186,13 @@ async function streamToOpfs(
   onProgress?: ProgressFn,
 ): Promise<ArrayBuffer | null> {
   const handle = (await dir.getFileHandle(sanitize(key), { create: true })) as SyncCapableFileHandle
-  if (!handle.createSyncAccessHandle) return null
+  if (!handle.createSyncAccessHandle) {
+    // Main thread (no sync access handle - e.g. the RAG embedder): drop the just-created 0-byte file
+    // so the pruner doesn't treat it as an incomplete download. getModelAsset's in-memory fallback
+    // (writeBufferToOpfs -> createWritable) persists it instead.
+    await dir.removeEntry(sanitize(key)).catch(() => undefined)
+    return null
+  }
 
   // Drop any stale marker first, so a crash mid-write can't be mistaken for complete.
   await removeMarker(dir, key)
@@ -273,22 +304,8 @@ async function fetchToBuffer(url: string, onProgress?: ProgressFn): Promise<Arra
  * Best-effort; callers ignore failures (the model still works from the buffer).
  */
 async function writeBufferToOpfs(dir: FileSystemDirectoryHandle, key: string, buf: ArrayBuffer): Promise<void> {
-  const handle = (await dir.getFileHandle(sanitize(key), { create: true })) as SyncCapableFileHandle
-  if (!handle.createSyncAccessHandle) return
-  await removeMarker(dir, key)
-  const access = await handle.createSyncAccessHandle()
-  try {
-    access.truncate(0)
-    const bytes = new Uint8Array(buf)
-    const CHUNK = 8 * 1024 * 1024 // write in 8 MB slices, not one giant call
-    for (let off = 0; off < bytes.length; off += CHUNK) {
-      access.write(bytes.subarray(off, Math.min(off + CHUNK, bytes.length)), { at: off })
-    }
-    access.flush()
-  } finally {
-    access.close()
-  }
-  await writeMarker(dir, key, buf.byteLength)
+  await removeMarker(dir, key) // a crash mid-write must not leave a complete marker behind
+  if (await opfsWrite(dir, sanitize(key), new Uint8Array(buf))) await writeMarker(dir, key, buf.byteLength)
 }
 
 export async function hasModelAsset(key: string): Promise<boolean> {
