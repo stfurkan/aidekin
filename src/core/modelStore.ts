@@ -269,7 +269,7 @@ async function fetchToBuffer(url: string, onProgress?: ProgressFn): Promise<Arra
 /**
  * Persist an ALREADY-in-memory buffer to OPFS, then mark it complete. Unlike streamToOpfs
  * this never holds the sync access handle across network I/O (the bytes are already in hand),
- * so it is the safe way to cache the in-memory fallback below - mirrors opfsModelCache.put().
+ * so it is the safe way to cache the in-memory fallback below.
  * Best-effort; callers ignore failures (the model still works from the buffer).
  */
 async function writeBufferToOpfs(dir: FileSystemDirectoryHandle, key: string, buf: ArrayBuffer): Promise<void> {
