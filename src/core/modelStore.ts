@@ -8,9 +8,15 @@
 // COMPLETENESS: a download is only considered "cached" once it has fully arrived
 // AND its byte length matches Content-Length. We record that by writing a tiny
 // `<key>.done` marker (holding the verified size) ONLY after a successful stream.
-// A file with no marker - or whose size no longer matches - is treated as absent
-// and re-downloaded. Without this, a partially-written .onnx.data from an
-// interrupted run is silently handed to ORT and fails with "Out of bounds".
+// A file with no marker - or whose size no longer matches - is treated as absent.
+// Without this, a partially-written .onnx.data from an interrupted run is silently
+// handed to ORT and fails with "Out of bounds".
+//
+// RESUMABLE: an interrupted download keeps its partial bytes plus a `<key>.part`
+// sidecar holding the remote ETag. The next attempt sends `Range: bytes=<have>-`
+// with `If-Range: <etag>`, so the server resumes (206) when the file is unchanged
+// and otherwise restarts (200). A dropped ~1.9 GB first-load picks up where it left
+// off instead of re-downloading from zero.
 
 import { withRetry } from './retry'
 
@@ -22,6 +28,8 @@ export type ProgressFn = (p: FetchProgress) => void
 
 const OPFS_DIR = 'aidekin-models'
 const MARKER_SUFFIX = '.done'
+const PART_SUFFIX = '.part' // resume sidecar for an in-progress download: holds the remote ETag
+const FLUSH_EVERY = 32 * 1024 * 1024 // flush to disk every 32 MB so a crash loses at most that much
 const sanitize = (key: string): string => key.replace(/[^a-zA-Z0-9._-]/g, '_')
 
 type SyncAccessHandle = {
@@ -82,6 +90,39 @@ async function removeMarker(dir: FileSystemDirectoryHandle, key: string): Promis
   }
 }
 
+/** Read the resume sidecar → the remote ETag of the in-progress download for `key`, or null. */
+async function readPart(dir: FileSystemDirectoryHandle, key: string): Promise<string | null> {
+  try {
+    const h = await dir.getFileHandle(sanitize(key) + PART_SUFFIX)
+    const s = (await (await h.getFile()).text()).trim()
+    return s || null
+  } catch {
+    return null
+  }
+}
+
+/** Record the remote ETag so an interrupted download can be resumed against the SAME bytes. */
+async function writePart(dir: FileSystemDirectoryHandle, key: string, etag: string): Promise<void> {
+  const h = (await dir.getFileHandle(sanitize(key) + PART_SUFFIX, { create: true })) as SyncCapableFileHandle
+  if (!h.createSyncAccessHandle) return
+  const a = await h.createSyncAccessHandle()
+  try {
+    a.truncate(0)
+    a.write(new TextEncoder().encode(etag), { at: 0 })
+    a.flush()
+  } finally {
+    a.close()
+  }
+}
+
+async function removePart(dir: FileSystemDirectoryHandle, key: string): Promise<void> {
+  try {
+    await dir.removeEntry(sanitize(key) + PART_SUFFIX)
+  } catch {
+    /* not present */
+  }
+}
+
 /**
  * Read a cached asset via a sync access handle (no extra heap copies). Returns null
  * unless the file is present, marked complete, and its size matches the marker.
@@ -129,50 +170,70 @@ async function streamToOpfs(
   let buf: ArrayBuffer
   let size: number
   try {
-    access.truncate(0)
-    const res = await fetch(url)
+    // RESUME instead of restart: if partial bytes already exist AND we stored the remote ETag, ask
+    // for just the remaining range with If-Range, so the server resumes only when the file is
+    // unchanged (else it returns the full 200 and we start over). HF serves Accept-Ranges + stable
+    // ETags, so a dropped 1.9 GB first-load picks up where it left off instead of re-downloading.
+    const have = access.getSize()
+    const priorEtag = have > 0 ? await readPart(dir, key) : null
+    const headers: Record<string, string> = {}
+    if (have > 0 && priorEtag) {
+      headers.Range = `bytes=${have}-`
+      headers['If-Range'] = priorEtag
+    }
+    const res = await fetch(url, Object.keys(headers).length ? { headers } : undefined)
     if (!res.ok || !res.body) throw new Error(`fetch ${url} → HTTP ${res.status}`)
-    // When the response is compressed (jsDelivr gzips .onnx), Content-Length is the
-    // COMPRESSED size while the stream yields decompressed bytes - so it can't be
-    // used to verify the final size. HF's .onnx.data is uncompressed (identity), so
-    // the truncation guard still applies there, which is where it matters most.
+    const resumed = res.status === 206 // server honored the range → keep what we have, append the rest
+    let offset = resumed ? have : 0
+    if (!resumed) access.truncate(0) // fresh, changed, or no-range server (200): start over
+    // Persist the ETag so a LATER interruption can resume against these same bytes.
+    const etag = res.headers.get('etag')
+    if (etag) await writePart(dir, key, etag)
+    // When the response is compressed (jsDelivr gzips .onnx), Content-Length is the COMPRESSED size
+    // and can't verify the final bytes. HF's .onnx.data is identity, so the guard applies where it
+    // matters most. Total = the WHOLE file: Content-Range's "/total" on a 206, else Content-Length.
     const compressed = !!res.headers.get('content-encoding')
-    const total = Number(res.headers.get('content-length')) || 0
-    const reportedTotal = compressed ? 0 : total
+    const cr = res.headers.get('content-range')
+    const total = compressed ? 0 : cr ? Number(cr.split('/')[1]) || 0 : Number(res.headers.get('content-length')) || 0
     const reader = res.body.getReader()
-    let offset = 0
+    let sinceFlush = 0
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
       access.write(value, { at: offset })
       offset += value.byteLength
-      onProgress?.({ loaded: offset, total: reportedTotal })
+      sinceFlush += value.byteLength
+      if (sinceFlush >= FLUSH_EVERY) {
+        access.flush() // bound how much a crash can lose; getSize() stays a safe resume point
+        sinceFlush = 0
+      }
+      onProgress?.({ loaded: offset, total })
     }
     access.flush()
     size = access.getSize()
     // Guard against a server/connection that ended the stream early (identity only).
-    if (!compressed && total > 0 && size !== total) {
+    if (total > 0 && size !== total) {
       throw new Error(`incomplete download for ${key}: ${size}/${total} bytes`)
     }
     buf = new ArrayBuffer(size)
     access.read(new Uint8Array(buf), { at: 0 })
   } catch (err) {
-    // Interrupted or failed mid-write: close the handle and DELETE the partial data
-    // file so it can't linger as orphaned OPFS bytes. (The marker was already removed
-    // above, so it would be re-fetched anyway - but we drop the bytes eagerly.) A worker
-    // TERMINATED mid-write can't run this; pruneIncompleteAssets() sweeps those on next load.
+    // Interrupted or failed mid-write: KEEP the partial bytes + the .part ETag sidecar so the NEXT
+    // call resumes from here instead of re-downloading the whole (multi-hundred-MB) file. A worker
+    // TERMINATED mid-write can't run this, but the bytes + sidecar persist and resume on next load.
     try {
       access.close()
     } catch {
       /* handle already closing */
     }
-    await dir.removeEntry(sanitize(key)).catch(() => undefined)
     throw err
   }
   access.close()
 
-  // Mark complete only after the data file is fully written and size-verified.
+  // Mark complete only after the data file is fully written and size-verified; the resume sidecar
+  // is no longer needed.
   await writeMarker(dir, key, size)
+  await removePart(dir, key)
   return buf
 }
 
@@ -268,16 +329,16 @@ async function pruneIncompleteAssetsImpl(): Promise<number> {
   const present = new Set(names)
   let pruned = 0
   for (const name of names) {
-    if (name.endsWith(MARKER_SUFFIX)) continue // markers are tiny; keep them
-    // A data file is "complete" only if its `<name>.done` marker exists. No marker → it
-    // was never finished → drop it (a fresh download recreates it).
-    if (!present.has(name + MARKER_SUFFIX)) {
-      try {
-        await dir.removeEntry(name)
-        pruned++
-      } catch {
-        /* locked by a live worker, or already gone - skip */
-      }
+    if (name.endsWith(MARKER_SUFFIX) || name.endsWith(PART_SUFFIX)) continue // sidecars are tiny; keep them
+    // Keep a data file that is either COMPLETE (`.done` marker) or RESUMABLE (`.part` ETag sidecar -
+    // a later getModelAsset resumes it). Drop only the truly orphaned: no marker AND no sidecar (e.g.
+    // a partial from before resumable downloads existed, which can't be resumed without an ETag).
+    if (present.has(name + MARKER_SUFFIX) || present.has(name + PART_SUFFIX)) continue
+    try {
+      await dir.removeEntry(name)
+      pruned++
+    } catch {
+      /* locked by a live worker, or already gone - skip */
     }
   }
   return pruned
