@@ -19,7 +19,7 @@ import type {
   TtsIn, TtsOut, TurnIn, TurnOut, VadIn, VadOut,
 } from '../protocol/messages'
 
-export type AgentState = 'cold' | 'loading' | 'ready' | 'idle' | 'listening' | 'thinking' | 'speaking'
+export type AgentState = 'cold' | 'loading' | 'ready' | 'requesting-mic' | 'idle' | 'listening' | 'thinking' | 'speaking'
 
 export type LoadStatus = 'pending' | 'loading' | 'ready' | 'error'
 export interface ComponentLoad {
@@ -308,6 +308,10 @@ export class Orchestrator {
       onFrame: (f) => this.onMicFrame(f.samples),
       onLevel: (rms) => this.cb.onLevel?.(rms),
     })
+    // getUserMedia may block on the browser's mic-permission prompt - we are NOT listening yet, so
+    // surface a distinct state instead of "Listening". When permission was already granted it
+    // resolves in a blink and this is invisible; on a fresh ask it stays until the user allows.
+    this.setState('requesting-mic')
     await this.mic.start()
     this.setState('idle')
   }

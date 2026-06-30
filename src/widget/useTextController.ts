@@ -80,12 +80,13 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const [trimmed, setTrimmed] = useState(false)
   const [muted, setMuted] = useState(false)
 
-  // Has the LLM been downloaded before? It caches to OPFS (see opfsModelCache.ts), so check
-  // there - NOT Cache Storage, which only holds the optional Smart-Turn/embedder configs and
-  // is absent for a plain text widget (which would make repeat visits always say "Downloading").
+  // Has the LLM been downloaded before? Check the SAME OPFS cache + key the worker writes
+  // (modelStore.getModelAsset('llm-bonsai-1.7b-q1')). The old opfsModelCache.hasLlmCache() looked in
+  // a different dir (aidekin-llm-cache) that nothing writes to, so it always returned false - which
+  // made repeat visits say "Downloading" and disabled "Remove downloaded model" before a mode pick.
   useEffect(() => {
-    void import('@/core/opfsModelCache')
-      .then(({ hasLlmCache }) => hasLlmCache())
+    void import('@/core/modelStore')
+      .then(({ hasModelAsset }) => hasModelAsset('llm-bonsai-1.7b-q1'))
       .then(setCached)
       .catch(() => undefined)
   }, [])

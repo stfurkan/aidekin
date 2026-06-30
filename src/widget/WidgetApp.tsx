@@ -335,13 +335,15 @@ function VoiceView({
 
   const status = loadingVoice
     ? { text: 'Loading voice', busy: true }
-    : voiceState === 'thinking'
-      ? { text: 'Thinking', busy: true }
-      : voiceState === 'speaking'
-        ? { text: 'Speaking', busy: true }
-        : muted
-          ? { text: 'Muted', busy: false }
-          : { text: 'Listening, just speak', busy: false }
+    : voiceState === 'requesting-mic'
+      ? { text: 'Allow microphone access to talk', busy: true }
+      : voiceState === 'thinking'
+        ? { text: 'Thinking', busy: true }
+        : voiceState === 'speaking'
+          ? { text: 'Speaking', busy: true }
+          : muted
+            ? { text: 'Muted', busy: false }
+            : { text: 'Listening, just speak', busy: false }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
