@@ -491,6 +491,10 @@ export class ConversationEngine {
   }
 
   setSystemPrompt(prompt: string): void {
+    // No-op when unchanged. The widget re-applies the configured prompt on mount (after the
+    // constructor already set it), and an unconditional dirty there would invalidate the load-time
+    // prewarm and force the FIRST turn into a cold full prefill. Same prompt → keep the warm cache.
+    if (prompt === this.systemPrompt && this.messages[0]?.role === 'system') return
     this.systemPrompt = prompt
     if (this.messages.length && this.messages[0].role === 'system') {
       this.messages[0] = { role: 'system', content: this.composedSystem() }
