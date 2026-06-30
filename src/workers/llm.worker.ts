@@ -276,6 +276,17 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
   // wrappers available. Then feed ONLY the new turn's delta; otherwise rebuild the whole prompt.
   const canReuse = !resetCache && !allowThink && chatWrap !== null && cachedMessages !== null && isCleanAppend(cachedMessages, messages)
 
+  // Diagnostic: when a turn does NOT reuse the cache, log which condition blocked it. Pinpoints why a
+  // first turn pays a full prefill despite the load-time prewarm (e.g. resetCache set, a longer-than
+  // -expected message list from resumed history, or a system-content mismatch).
+  if (!canReuse) {
+    console.info(
+      `[aidekin] LLM full-prefill (no reuse) · resetCache=${resetCache} think=${allowThink} ` +
+        `chatWrap=${chatWrap !== null} cached=${cachedMessages ? cachedMessages.length : 'null'} msgs=${messages.length} ` +
+        `cleanAppend=${cachedMessages ? isCleanAppend(cachedMessages, messages) : 'n/a'}`,
+    )
+  }
+
   let inputIds: number[]
   if (canReuse) {
     const userText = messages[messages.length - 1].content
