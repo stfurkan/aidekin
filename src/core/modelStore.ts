@@ -327,7 +327,7 @@ async function pruneIncompleteAssetsImpl(): Promise<number> {
     return 0
   }
   const present = new Set(names)
-  let pruned = 0
+  const dropped: string[] = []
   for (const name of names) {
     if (name.endsWith(MARKER_SUFFIX) || name.endsWith(PART_SUFFIX)) continue // sidecars are tiny; keep them
     // Keep a data file that is either COMPLETE (`.done` marker) or RESUMABLE (`.part` ETag sidecar -
@@ -336,12 +336,15 @@ async function pruneIncompleteAssetsImpl(): Promise<number> {
     if (present.has(name + MARKER_SUFFIX) || present.has(name + PART_SUFFIX)) continue
     try {
       await dir.removeEntry(name)
-      pruned++
+      dropped.push(name)
     } catch {
       /* locked by a live worker, or already gone - skip */
     }
   }
-  return pruned
+  // Name the casualties: a file pruned on EVERY load means a download keeps finishing without its
+  // `.done` marker (it re-downloads each session), which this surfaces for diagnosis.
+  if (dropped.length) console.info(`[aidekin] pruned incomplete cache file(s): ${dropped.join(', ')}`)
+  return dropped.length
 }
 
 /**
