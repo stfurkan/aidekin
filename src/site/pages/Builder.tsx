@@ -184,6 +184,12 @@ export default function Builder() {
         personal data.
       </Callout>
 
+      <Callout>
+        For reliable answers, write content the way you’d want it read back: short, self-contained facts,
+        and <strong>refer to pages and tools by name</strong> rather than pasting raw URLs. A compact
+        on-device model reproduces names cleanly but often mangles or misreads long links.
+      </Callout>
+
       {/* Inputs */}
       <div
         onDragOver={(e) => e.preventDefault()}
