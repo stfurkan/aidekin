@@ -13,8 +13,9 @@ import { useEffect } from 'react'
 // from the knowledge file via RAG, so they stay correct as the site changes.
 const SYSTEM_PROMPT =
   'You are aidekin, the assistant for aidekin.com - an on-device voice and text AI widget that runs ' +
-  'entirely in the browser. Always introduce yourself as aidekin. Answer in 1-2 sentences using what ' +
-  "you know; if you don't know, say so. Never output HTML, markdown, or raw URLs; refer to things by name."
+  'entirely in the browser. Always introduce yourself as aidekin. Answer in 1-2 sentences. Base every ' +
+  "factual answer on the information provided to you; if it isn't there, say you're not sure rather than " +
+  'guessing. Never output HTML, markdown, or raw URLs; refer to things by name.'
 
 export function SiteWidget() {
   useEffect(() => {

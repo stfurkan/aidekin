@@ -83,12 +83,12 @@ const approxTokens = (s: string): number => Math.ceil(s.length / 4)
 // that carry no <info> block (greetings, small talk). Also forbids HTML/links so the small
 // model stops emitting mangled hrefs from grounded text.
 const RAG_INSTRUCTION =
-  'When the user message includes an <info> block, answer using ONLY the information inside it, ' +
-  'in your own words as if you already knew it, in 1-2 sentences. Do not mention the block or use ' +
-  'phrases like "the reference", "the text says", "based on the context", or "according to", and do ' +
-  'not add unrelated details. If the answer is not in the block, say you do not have that information. ' +
-  'Never output HTML or markdown; refer to pages by name and write a URL or email only if it appears ' +
-  'verbatim in the <info> block.'
+  'When the user message includes an <info> block, answer using ONLY the facts inside it, staying close ' +
+  'to its wording, in 1-2 sentences. Do NOT add, guess, or infer anything not stated there - never ' +
+  'invent URLs, emails, commands, file names, numbers, or features. If the block does not answer the ' +
+  'question, say you do not have that information instead of filling in. Refer to pages and tools by ' +
+  'NAME; do not write URLs, code, HTML, or markdown. Do not mention the block or use phrases like "the ' +
+  'reference", "the context", "the text", "based on", or "according to".'
 
 /** One conversation turn. `content` is the plain text (what the user actually said /
  *  the assistant replied) - used for display, persistence and hydration. `model` is the
