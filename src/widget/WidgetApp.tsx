@@ -669,12 +669,14 @@ function ThemeToggle() {
 // this row (label + Cancel + a colored confirm), so nothing fires on the first click.
 function ConfirmRow({
   label,
+  description,
   confirmLabel,
   onConfirm,
   onCancel,
   destructive,
 }: {
   label: string
+  description?: string
   confirmLabel: string
   onConfirm: () => void
   onCancel: () => void
@@ -683,25 +685,28 @@ function ConfirmRow({
   const confirmCls = destructive
     ? 'bg-destructive/15 text-destructive hover:bg-destructive/25'
     : 'bg-primary/15 text-primary hover:bg-primary/25'
+  // Stacked, not a single cramped row: the question wraps in full and a one-line consequence sits
+  // under it, so the user can actually read what they're confirming inside the narrow menu.
   return (
-    <div className="flex items-center justify-between gap-2 rounded-lg bg-secondary/50 px-2 py-1.5">
-      <span className="min-w-0 truncate text-sm">{label}</span>
-      <span className="flex shrink-0 gap-1">
+    <div className="rounded-lg bg-secondary/50 p-2.5">
+      <p className="text-sm font-medium leading-snug">{label}</p>
+      {description && <p className="mt-1 text-xs leading-snug text-muted-foreground">{description}</p>}
+      <div className="mt-2.5 flex justify-end gap-1.5">
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary"
+          className="rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary"
         >
           Cancel
         </button>
         <button
           type="button"
           onClick={onConfirm}
-          className={`rounded-md px-2 py-1 text-xs font-medium transition-colors ${confirmCls}`}
+          className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${confirmCls}`}
         >
           {confirmLabel}
         </button>
-      </span>
+      </div>
     </div>
   )
 }
@@ -785,7 +790,8 @@ function SettingsMenu({
             </p>
             {confirming === 'clear' ? (
               <ConfirmRow
-                label="Clear this chat?"
+                label="Clear this conversation?"
+                description="Removes the chat history saved on this device. This can’t be undone."
                 confirmLabel="Clear"
                 destructive
                 onCancel={() => setConfirming(null)}
@@ -801,7 +807,8 @@ function SettingsMenu({
             )}
             {confirming === 'remove' ? (
               <ConfirmRow
-                label="Remove the model?"
+                label="Remove the downloaded model?"
+                description="Frees the cached model storage. It re-downloads the next time you open the assistant."
                 confirmLabel="Remove"
                 destructive
                 onCancel={() => setConfirming(null)}
