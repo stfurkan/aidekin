@@ -6,8 +6,8 @@ struct Params { R: u32, D: u32, eps: f32, _pad: u32 };
 @group(0) @binding(3) var<storage, read_write> y: array<f32>; // [R, D]
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let r = gid.x;
+fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let r = (wid.y * nwg.x + wid.x) * 64u + lid.x;
   if (r >= p.R) { return; }
   let base = r * p.D;
   var ss = 0.0;

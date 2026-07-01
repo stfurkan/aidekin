@@ -477,9 +477,19 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       pass.setBindGroup(0, device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0), entries }))
     }
   }
+  // Split a 1D workgroup count into a 2D grid so no dimension exceeds WebGPU's 65535 cap (a long
+  // prefill can need >65535 workgroups, e.g. the swiglu kernel does ceil(S*6144/64) = S*96). The flat
+  // kernels reconstruct the linear index as (wid.y*num_workgroups.x + wid.x)*64 + lid.x, which equals
+  // global_invocation_id.x when the grid is 1D (y=1) - so it stays correct for the common small case.
+  const grid2d = (wg: number): [number, number] => {
+    const y = Math.ceil(wg / 65535)
+    return [Math.ceil(wg / y), y]
+  }
   function runIO(pass: GPUComputePassEncoder, name: string, fields: Field[], ins: GPUBuffer[], outs: GPUBuffer[], threads: number): void {
     setup(pass, name, fields, ins, outs)
-    pass.dispatchWorkgroups(isFull(name) ? Math.ceil(threads / 64) : 1)
+    if (!isFull(name)) return void pass.dispatchWorkgroups(1)
+    const [x, y] = grid2d(Math.ceil(threads / 64))
+    pass.dispatchWorkgroups(x, y, 1)
   }
   const run = (pass: GPUComputePassEncoder, name: string, fields: Field[], ins: GPUBuffer[], out: GPUBuffer, threads: number): void =>
     runIO(pass, name, fields, ins, [out], threads)

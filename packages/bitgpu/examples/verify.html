@@ -84,10 +84,15 @@
         log(`  ${name.padEnd(10)} = ${Math.max(0, pr.gpuMs - none.gpuMs).toFixed(1)} ms/token`);
       }
 
-      // 4) long-prompt prefill (tiled GEMM path)
-      const long = []; while (long.length < 192) long.push(...ids);
-      const lp = await engine.generate(long.slice(0, 192), { maxTokens: 1 });
-      log(`\nlong-prompt prefill (192 tokens) = ${lp.prefillMs.toFixed(0)} ms`);
+      // 4) long-prompt prefill (tiled GEMM path). 800 tokens deliberately exceeds the point where a
+      // per-element prefill kernel needs >65535 workgroups (swiglu = ceil(800*6144/64) = 76800), which
+      // used to throw "Dispatch workgroup count exceeds max ... per dimension" - so this also proves
+      // the 2D-grid dispatch fix.
+      const long = []; while (long.length < 800) long.push(...ids);
+      const lp = await engine.generate(long.slice(0, 800), { maxTokens: 2 });
+      const lpOk = lp.tokens.length === 2;
+      ok = ok && lpOk;
+      log(`\nlong-prompt prefill (800 tokens) = ${lp.prefillMs.toFixed(0)} ms  ${lpOk ? '[PASS] no dispatch overflow' : '[FAIL] generation broke'}`);
 
       // 5) sampler (Phase 2): kernel diff vs CPU math, determinism, sampled tok/s
       log('\nsampler (do_sample) checks...');

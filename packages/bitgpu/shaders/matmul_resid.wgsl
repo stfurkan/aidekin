@@ -10,8 +10,8 @@ struct Params { M: u32, N: u32, K: u32, nb: u32, block: u32, _pad: u32 };
 @group(0) @binding(5) var<storage, read_write> y: array<f32>;   // [M, N]
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x;
+fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let idx = (wid.y * nwg.x + wid.x) * 64u + lid.x;
   if (idx >= p.M * p.N) { return; }
   let n = idx % p.N;
   let xRow = (idx / p.N) * (p.K / 4u);
