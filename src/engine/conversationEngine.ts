@@ -90,6 +90,26 @@ const RAG_INSTRUCTION =
   'NAME; do not write URLs, code, HTML, or markdown. Do not mention the block or use phrases like "the ' +
   'reference", "the context", "the text", "based on", or "according to".'
 
+// A URL or email in an answer. Used by the fabrication guard below.
+const URL_OR_EMAIL = /(?:https?:\/\/|www\.)[^\s)<>"']+|[^\s@<>"']+@[^\s@<>"']+\.[^\s)<>"']+/gi
+
+/** Deterministic anti-fabrication guard for GROUNDED answers. A small model sometimes emits a URL or
+ *  email that is not in the retrieved context - either invented, or a real one it mangled
+ *  ("https:\/\/aide kin. com"). Remove any URL/email from the answer that does NOT appear verbatim in
+ *  `context`. While the answer is still streaming, also hold back a trailing in-progress URL/email so a
+ *  bad one never flashes into view; once it is complete (or at finish) it is kept only if it matches
+ *  the context. Pure string ops, no model, runs once per streamed update - so it stays generic and
+ *  cheap for every embed, not just ours. */
+function guardFabrications(text: string, context: string, streaming: boolean): string {
+  let out = text.replace(/\\(?=[/_*`~])/g, '') // drop stray JSON-escape backslashes ("https:\/\/" -> "https://")
+  if (streaming) {
+    const tail = /\S*(?:https?:\/\/|www\.|@)\S*$/i.exec(out) // a link/email still being typed at the end
+    if (tail && tail.index >= 0) out = out.slice(0, tail.index)
+  }
+  out = out.replace(URL_OR_EMAIL, (m) => (context.includes(m) ? m : ''))
+  return out.replace(/[^\S\n]{2,}/g, ' ').replace(/[^\S\n]+([.,!?;:])/g, '$1')
+}
+
 /** One conversation turn. `content` is the plain text (what the user actually said /
  *  the assistant replied) - used for display, persistence and hydration. `model` is the
  *  OPTIONAL augmented form sent to the LLM: a grounded (RAG) user turn carries its
@@ -150,6 +170,10 @@ export class ConversationEngine {
   // rebuild it. Set here, sent once, then cleared.
   private cacheDirty = false
   private assistant = ''
+  // The retrieved chunk text backing the CURRENT turn (empty when the turn wasn't grounded). The
+  // fabrication guard checks the answer's URLs/emails against this, so nothing not in the context
+  // reaches the screen. Set in applyContext, reset at the start of each user message.
+  private turnContext = ''
   private pending: { id: number; resolve: (text: string) => void } | null = null
   private ready: { resolve: () => void; reject: (e: Error) => void } | null = null
   private prewarmTimer: ReturnType<typeof setTimeout> | null = null
@@ -272,6 +296,7 @@ export class ConversationEngine {
   sendUserMessage(text: string): Promise<string> {
     const clean = text.trim()
     if (!clean) return Promise.resolve('')
+    this.turnContext = '' // reset per turn; applyContext refills it if this turn is grounded
     this.pushUser(clean)
     // No retriever → build the request synchronously so voice timing is unchanged.
     if (!this.retriever) return this.generate(this.modelView(), this.alwaysThink)
@@ -314,6 +339,7 @@ export class ConversationEngine {
       if (next.length > this.ragCharBudget) break
       used = next
     }
+    this.turnContext = used // the fabrication guard keeps only URLs/emails that appear verbatim here
     // The static answering rules now live in the system prompt (RAG_INSTRUCTION), cached once.
     // Only the per-turn context + question go here, so the KV-cache delta stays small.
     const augmented = `<info>\n${used}\n</info>\n\nQuestion: ${userText}`
@@ -354,7 +380,8 @@ export class ConversationEngine {
     if (m.kind === 'token') {
       if (m.id !== this.currentId) return
       this.assistant += m.text
-      this.cb.onAssistantText?.(this.assistant, false)
+      const shown = this.retriever ? guardFabrications(this.assistant, this.turnContext, true) : this.assistant
+      this.cb.onAssistantText?.(shown, false)
       if (this.chunkClauses) {
         const sink = this.clauseSink ?? this.cb.onAssistantClause
         for (const clause of this.chunker.push(m.text)) {
@@ -386,7 +413,10 @@ export class ConversationEngine {
   private finish(doneText?: string): void {
     // Prefer the streamed text; fall back to the final 'done' payload if streaming
     // produced nothing - the reply still shows even if token messages were missed.
-    const text = this.assistant.trim() ? this.assistant : (doneText ?? '').trim()
+    const raw = this.assistant.trim() ? this.assistant : (doneText ?? '').trim()
+    // Grounded turns: strip any URL/email the model invented or mangled (not verbatim in the
+    // retrieved context) from the STORED + displayed answer, so it can't resurface on reload either.
+    const text = this.retriever ? guardFabrications(raw, this.turnContext, false) : raw
     if (this.chunkClauses) {
       const sink = this.clauseSink ?? this.cb.onAssistantClause
       const rest = this.chunker.flush()
