@@ -15,7 +15,7 @@
 
 import { LLM, llmModelUrls } from '../models/registry'
 import type { ChatMessage, Device, LlmIn, LlmOut } from '../protocol/messages'
-import { SentenceChunker } from '../pipeline/sentenceChunker'
+import { SentenceChunker, speakable } from '../pipeline/sentenceChunker'
 
 /** One retrieved chunk of grounding context returned by the RAG retriever. */
 export interface RetrievedChunk {
@@ -357,7 +357,10 @@ export class ConversationEngine {
       this.cb.onAssistantText?.(this.assistant, false)
       if (this.chunkClauses) {
         const sink = this.clauseSink ?? this.cb.onAssistantClause
-        for (const clause of this.chunker.push(m.text)) sink?.(clause)
+        for (const clause of this.chunker.push(m.text)) {
+          const spoken = speakable(clause)
+          if (spoken) sink?.(spoken)
+        }
       }
     } else if (m.kind === 'done') {
       if (m.id !== this.currentId) return // stale generation (superseded/aborted)
@@ -387,7 +390,10 @@ export class ConversationEngine {
     if (this.chunkClauses) {
       const sink = this.clauseSink ?? this.cb.onAssistantClause
       const rest = this.chunker.flush()
-      if (rest) sink?.(rest)
+      if (rest) {
+        const spoken = speakable(rest)
+        if (spoken) sink?.(spoken)
+      }
     }
     // Skip an empty reply (e.g. all tokens spent in a <think> block) - don't record it.
     if (text) {

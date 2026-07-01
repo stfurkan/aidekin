@@ -2,10 +2,26 @@
 // completed clause can be sent to TTS immediately (the key to low first-audio
 // latency via streaming overlap). A minimum length avoids flushing tiny fragments.
 
-// Break at sentence enders (. ! ? … ; : newline) AND at a comma that's followed by
-// whitespace - the comma break lets the FIRST clause reach TTS sooner (lower time-to-
-// first-audio) without splitting numbers like "1,000" (the lookahead requires a space).
-const BOUNDARY = /.*?(?:[.!?…;:\n]+|,(?=\s))["'”’)\]]*\s*/gs
+// Break at sentence enders. `! ? … ; newline` always break. `.` `:` and `,` break ONLY when
+// followed (past any closing quote/bracket) by whitespace - so we never split inside a URL
+// ("https://aidekin.com/x"), a decimal ("1.5"), a time ("9:30") or "1,000". Requiring the trailing
+// whitespace also holds a boundary back mid-stream until the next token confirms it, so a URL that
+// arrives across tokens stays in one clause (then `speakable()` rewrites it for TTS). flush() emits
+// the final clause, which has no trailing whitespace.
+const BOUNDARY = /.*?(?:[!?…;\n]+|[.:,](?=["'”’)\]]*\s))["'”’)\]]*\s*/gs
+
+/** Prepare a clause for text-to-speech. A small model sometimes emits raw URLs (echoed from RAG
+ *  context) despite the system prompt; without this, TTS reads "h-t-t-p-s colon slash slash aide-kin
+ *  dot com" aloud. Rewrite URLs to a spoken phrase and drop stray markdown markers. The visible
+ *  transcript keeps the original text - this only changes what is spoken. */
+export function speakable(clause: string): string {
+  return clause
+    .replace(/<\/?[a-zA-Z][^>\n]*>/g, '') // drop stray tag leakage (e.g. the RAG "<info>" wrapper)
+    .replace(/\b(?:https?:\/\/|www\.)[^\s)]+/gi, 'the link')
+    .replace(/[*_`#]+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
 
 export class SentenceChunker {
   private buffer = ''
