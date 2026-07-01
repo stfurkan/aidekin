@@ -2,19 +2,19 @@
 
 ## How do I get started?
 
-Go to https://aidekin.com/configure, set your options, copy the one-line snippet, and paste it into your site just before the closing body tag.
+Go to the Configure page, set your options, copy the one-line snippet, and paste it into your site just before the closing body tag.
 
 ## Where do I configure aidekin?
 
-At https://aidekin.com/configure. Set the name, greeting, colors, position, and mode, preview it live, and copy the snippet.
+At the Configure page. Set the name, greeting, colors, position, and mode, preview it live, and copy the snippet.
 
 ## Where do I build a knowledge file?
 
-At https://aidekin.com/knowledge. Add files (PDF, Word, text, Markdown, HTML, CSV, JSON) or URLs, build, and download knowledge.bin. Then host it and set data-knowledge-url.
+At the Knowledge page. Add files (PDF, Word, text, Markdown, HTML, CSV, JSON) or URLs, build, and download knowledge.bin. Then host it and set data-knowledge-url.
 
 ## Where are the docs?
 
-At https://aidekin.com/docs.
+At the Docs page.
 
 ## Is aidekin really free?
 

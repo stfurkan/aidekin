@@ -12,13 +12,13 @@ Cloud chat widgets charge per message and send your visitors' data to a vendor's
 
 ## The pages on aidekin.com
 
-- Configure your widget and copy the snippet: https://aidekin.com/configure
-- Build a knowledge file from your own content: https://aidekin.com/knowledge
-- Read the full documentation: https://aidekin.com/docs
-- Try the live demo: https://aidekin.com/demo
+- Configure your widget and copy the snippet: the Configure page
+- Build a knowledge file from your own content: the Knowledge page
+- Read the full documentation: the Docs page
+- Try the live demo: the Demo page
 
 ## Where to start
 
-1. Go to https://aidekin.com/configure, set the name, colors, and mode, then copy the one-line snippet.
+1. Go to the Configure page, set the name, colors, and mode, then copy the one-line snippet.
 2. Paste it into your site, just before the closing body tag.
-3. Optionally, build a knowledge file at https://aidekin.com/knowledge so aidekin answers from your own content.
+3. Optionally, build a knowledge file at the Knowledge page so aidekin answers from your own content.

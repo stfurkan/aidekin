@@ -1,6 +1,6 @@
 # Embedding aidekin
 
-The easiest way to get your snippet is the configurator at https://aidekin.com/configure: set your options, watch the live preview, and copy the one-line tag. Paste it into your site just before the closing body tag:
+The easiest way to get your snippet is the configurator at the Configure page: set your options, watch the live preview, and copy the one-line tag. Paste it into your site just before the closing body tag:
 
     <script src="https://cdn.aidekin.com/loader.js" data-title="Acme" defer></script>
 

@@ -1,6 +1,6 @@
 # Voice and text
 
-aidekin supports both text and voice. Choose the mode in the configurator at https://aidekin.com/configure, or set data-mode on the script tag: "both" for text with a voice toggle, or "voice" for a voice-first experience. Text works on any WebGPU browser with no special setup.
+aidekin supports both text and voice. Choose the mode in the configurator at the Configure page, or set data-mode on the script tag: "both" for text with a voice toggle, or "voice" for a voice-first experience. Text works on any WebGPU browser with no special setup.
 
 Voice uses the same language model as text, plus on-device speech recognition and speech synthesis. The same brain answers in both modes, so the conversation context carries over.
 
