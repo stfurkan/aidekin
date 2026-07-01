@@ -27,8 +27,11 @@ export function chunkText(text: string, options: ChunkOptions = {}): string[] {
   const clean = text.replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ').trim()
   if (!clean) return []
 
-  // Sentence-ish units (sentence terminators or a line of text).
-  const units = clean.match(/\s*\S[^.!?…\n]*[.!?…]*/g)?.map((u) => u.trim()).filter(Boolean) ?? [clean]
+  // Sentence-ish units. Split ONLY at a terminator followed by whitespace, or at a line break - so
+  // "aidekin.com", "1.5" and "e.g." are never broken mid-token. The old split-on-every-terminator +
+  // rejoin-with-a-space corrupted URLs, decimals and abbreviations right in the stored chunk
+  // ("aidekin.com" -> "aidekin. com"), which the model then reproduced and mangled further.
+  const units = clean.split(/(?<=[.!?…])\s+|\n+/).map((u) => u.trim()).filter(Boolean)
 
   const chunks: string[] = []
   let buf = ''
