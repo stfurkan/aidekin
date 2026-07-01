@@ -230,9 +230,11 @@ async function prewarm(system: ChatMessage): Promise<void> {
   await job
 }
 
-// Sampling params. Temperature is 0.3 (not the transformers.js default 0.5): this is a knowledge
-// assistant, so we bias toward the highest-probability, context-faithful continuation and away from
-// the "creative" tail that invents details. top_p is a no-op (both here and in transformers.js v4.2.0).
+// Sampling params for the bitgpu engine's do_sample. Temperature is 0.3 (down from 0.5): this is a
+// knowledge assistant, so we bias toward the highest-probability, context-faithful continuation and
+// away from the "creative" tail that invents details. topP is accepted but not applied (a no-op) -
+// bitgpu's sampler is bit-exact with the transformers.js v4.2.0 reference we validate against, where
+// top_p is also disabled.
 const SAMPLING = { temperature: 0.3, topK: 20, topP: 0.85, repetitionPenalty: 1.15, noRepeatNgramSize: 3 } as const
 
 /** Coordinator: enqueue this turn as the latest, abort anything running, and drain the queue ONE

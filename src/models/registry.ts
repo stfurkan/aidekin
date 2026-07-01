@@ -7,10 +7,7 @@
 // one-liner everywhere else.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type Runtime =
-  | 'transformers.js'
-  | 'onnxruntime-web'
-  | 'vad-web'
+export type Runtime = 'onnxruntime-web' | 'vad-web'
 
 // Versions of the two runtimes whose wasm/assets load from a versioned jsDelivr URL at RUNTIME
 // (onnxruntime-web wasm; @ricky0123/vad-web model + worklet). They are injected from the EXACT
@@ -22,18 +19,14 @@ declare const __VAD_VERSION__: string | undefined
 const ortVersion = typeof __ORT_VERSION__ === 'string' ? __ORT_VERSION__ : 'latest'
 const vadVersion = typeof __VAD_VERSION__ === 'string' ? __VAD_VERSION__ : 'latest'
 
-// ── LLM (the "brain"): PrismML Bonsai via transformers.js ─────────────────────
-// Bonsai is a Qwen3-architecture model compressed to ternary weights, exported to
-// ONNX by onnx-community and run on WebGPU by @huggingface/transformers (verified
-// API; the live demo webml-community/bonsai-webgpu works). It keeps the Qwen3 chat
-// template + <think> behaviour, so the worker's prompt handling is unchanged. The
-// `q1` ONNX is actually 2-bit MatMulNBits (ternary packed) - a real ~290 MB download.
-//
-// CAVEAT (verified): ort-web has no 2-bit MatMulNBits WebGPU kernel on Apple GPUs, so
-// the weights dequantize to fp16 in VRAM - a 4B → ~8 GB, which OOMs (std::bad_alloc)
-// alongside the resident ASR+TTS. The 1.7B (~3.4 GB dequantized) is the largest Bonsai
-// that fits with the speech stack, and is the proven demo size. Measure tokens/sec in
-// the console.
+// ── LLM (the "brain"): PrismML Bonsai on our bitgpu engine ────────────────────
+// Bonsai is a Qwen3-architecture model with 1-bit (binary, sign-packed) linear weights,
+// exported to ONNX by onnx-community. It runs on our own raw-WebGPU engine (bitgpu), NOT
+// transformers.js / ort-web: those dequantize the packed weights to fp16 in VRAM (~3.4 GB
+// for the 1.7B) and have no fast low-bit WebGPU kernel on Apple GPUs - which is exactly why
+// we built bitgpu. It keeps the weights packed (~0.5 GB VRAM) and decodes them in-shader.
+// The shipped `model_q1.onnx_data` is the LUT-compressed 1-bit data, a ~290 MB download.
+// Bonsai keeps the Qwen3 chat template + <think> behaviour, so prompt handling is standard ChatML.
 export const LLM = {
   // Run on our own bitgpu engine (no transformers.js / onnxruntime for the brain).
   tokenizerModelId: 'onnx-community/Bonsai-1.7B-ONNX', // HF repo for tokenizer.json + tokenizer_config.json
@@ -142,7 +135,7 @@ export const TTS = {
   },
 } as const
 
-// ── Embeddings (local RAG): bge-small-en-v1.5 via transformers.js ─────────────
+// ── Embeddings (local RAG): bge-small-en-v1.5 via onnxruntime-web ─────────────
 // 384-dim, q8 ONNX ≈34 MB (single file). Chosen over all-MiniLM-L6-v2 after a 2026
 // review: same 384 dims (drop-in for the int8 store) but a large retrieval-quality jump
 // (~42 → ~52 nDCG@10 on MTEB/BEIR), which is exactly what matters when grounding a small

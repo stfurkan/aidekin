@@ -99,7 +99,7 @@ export async function probeCapabilities(): Promise<CapabilityReport> {
 }
 
 export interface DegradationPlan {
-  /** The on-device LLM (transformers.js) needs WebGPU; without it it cannot run. */
+  /** The on-device LLM (bitgpu) needs WebGPU; without it it cannot run. */
   readonly canRunLlm: boolean
   /** Streaming ASR (onnxruntime-web) wants WASM threads for usable latency. */
   readonly asrThreaded: boolean
