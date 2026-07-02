@@ -13,3 +13,6 @@ public/models/
 
 # LLM weights data file: the 277MB streams from the HF Hub in prod; only the local dev mirror is ignored.
 public/llm/model_q1.onnx_data
+
+# headless eval Chrome profile (OPFS model cache)
+.cache/

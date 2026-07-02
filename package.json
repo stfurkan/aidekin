@@ -25,7 +25,8 @@
     "verify-knowledge": "tsx scripts/verify-knowledge.ts",
     "verify-tokenizer": "tsx scripts/verify-tokenizer.ts",
     "verify-embedder": "tsx scripts/verify-embedder.ts",
-    "verify-turn": "tsx scripts/verify-turn.ts"
+    "verify-turn": "tsx scripts/verify-turn.ts",
+    "eval:chat": "node scripts/eval-chat.mjs"
   },
   "dependencies": {
     "bitgpu": "*",

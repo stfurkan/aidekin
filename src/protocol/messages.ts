@@ -22,6 +22,9 @@ export interface ReadyEvent {
 export interface WorkerErrorEvent {
   readonly kind: 'error'
   readonly message: string
+  /** Generation id when the error belongs to a specific turn - a superseded turn's error
+   *  must not settle the CURRENT turn. Absent for load/lifecycle errors. */
+  readonly id?: number
 }
 type Lifecycle = LoadProgress | ReadyEvent | WorkerErrorEvent
 
@@ -78,6 +81,9 @@ export type LlmIn =
       /** Let the model reason internally (skip the /no_think soft-switch). The <think>
        *  block is still stripped from the visible output. Used for RAG-grounded turns. */
       readonly think?: boolean
+      /** Fixed sampler seed for DETERMINISTIC replies (the behavioral eval). Unset in
+       *  production: the worker seeds from entropy. */
+      readonly seed?: number
       /** Force the worker to discard its cross-turn KV cache and re-prefill the whole
        *  transcript - set when the history prefix changed non-append (new session,
        *  cleared chat, system-prompt change, or a sliding-window trim). */

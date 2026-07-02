@@ -70,6 +70,8 @@ export interface EngineOptions {
   persistKey?: string
   /** Approximate token budget for retained history (system prompt is never dropped). */
   maxHistoryTokens?: number
+  /** Fixed sampler seed for deterministic replies. Eval-only; leave unset in production. */
+  samplerSeed?: number
   callbacks?: EngineCallbacks
 }
 
@@ -101,6 +103,12 @@ const CHAT_INSTRUCTION =
   'When the user greets you or makes small talk, reply with one short, friendly sentence and offer ' +
   'to help; never explain, define, or analyze what the user said. If an earlier question in the ' +
   'conversation was never answered, address it in your reply.'
+
+// The product promises plain text. A model that emits markup under pressure ("write me the
+// exact html embed code") gets it stripped deterministically - enforcement in code, not one
+// more prompt rule. Partial tags at a streaming edge ("<scr") are stripped too and the full
+// tag is caught on the next update.
+const stripHtmlTags = (s: string): string => s.replace(/<\/?[a-z][^<>]*>?/gi, '')
 
 // A URL or email in an answer. Used by the fabrication guard below.
 const URL_OR_EMAIL = /(?:https?:\/\/|www\.)[^\s)<>"']+|[^\s@<>"']+@[^\s@<>"']+\.[^\s)<>"']+/gi
@@ -156,6 +164,7 @@ export class ConversationEngine {
   private supersededSink: (() => void) | null = null
   private readonly persistKey?: string
   private readonly maxHistoryTokens: number
+  private readonly samplerSeed?: number
 
   private systemPrompt: string
   private messages: Turn[]
@@ -216,6 +225,7 @@ export class ConversationEngine {
     this.alwaysThink = opts.reasoning ?? false
     this.persistKey = opts.persistKey
     this.maxHistoryTokens = opts.maxHistoryTokens ?? DEFAULT_MAX_HISTORY_TOKENS
+    this.samplerSeed = opts.samplerSeed
     this.systemPrompt = opts.systemPrompt
     this.messages = this.hydrate()
   }
@@ -304,8 +314,9 @@ export class ConversationEngine {
         this.cb.onError?.('LLM', m.message)
         this.ready.reject(new Error(m.message))
         this.ready = null
-      } else {
+      } else if (m.id === undefined || m.id === this.currentId) {
         // Generation-phase error → settle the in-flight turn so it doesn't hang on "thinking".
+        // A SUPERSEDED turn's error (its unwind after an abort) must not settle its replacement.
         this.settleGenerationError(m.message)
       }
       return
@@ -320,7 +331,7 @@ export class ConversationEngine {
    *  reality. Commit the partial as the reply, in order, before the new user turn is recorded. */
   private commitPartialReply(): void {
     if (this.currentId < 0) return
-    const partial = (this.retriever ? guardFabrications(this.assistant, this.turnContext, false) : this.assistant).trim()
+    const partial = stripHtmlTags(this.retriever ? guardFabrications(this.assistant, this.turnContext, false) : this.assistant).trim()
     if (!partial) return
     this.assistant = partial
     this.pushAssistant(partial)
@@ -410,7 +421,7 @@ export class ConversationEngine {
     this.chunker.reset()
     this.assistant = ''
     this.cb.onGenerationStart?.()
-    const msg: LlmIn = { kind: 'generate', id, messages: request, think, resetCache: this.cacheDirty }
+    const msg: LlmIn = { kind: 'generate', id, messages: request, think, resetCache: this.cacheDirty, seed: this.samplerSeed }
     this.cacheDirty = false
     this.llm.postMessage(msg)
     return new Promise<string>((resolve) => {
@@ -422,7 +433,7 @@ export class ConversationEngine {
     if (m.kind === 'token') {
       if (m.id !== this.currentId) return
       this.assistant += m.text
-      const shown = this.retriever ? guardFabrications(this.assistant, this.turnContext, true) : this.assistant
+      const shown = stripHtmlTags(this.retriever ? guardFabrications(this.assistant, this.turnContext, true) : this.assistant)
       this.cb.onAssistantText?.(shown, false)
       if (this.chunkClauses) {
         const sink = this.clauseSink ?? this.cb.onAssistantClause
@@ -435,6 +446,9 @@ export class ConversationEngine {
       if (m.id !== this.currentId) return // stale generation (superseded/aborted)
       this.finish(m.text)
     } else if (m.kind === 'error') {
+      // A superseded turn's error (e.g. its unwind after an abort) must not settle the turn
+      // that replaced it; only errors for the CURRENT generation (or turnless ones) count.
+      if (m.id !== undefined && m.id !== this.currentId) return
       // Generation error reaching the adopted (voice) path - settle so it doesn't hang.
       this.settleGenerationError(m.message)
     }
@@ -458,7 +472,7 @@ export class ConversationEngine {
     const raw = this.assistant.trim() ? this.assistant : (doneText ?? '').trim()
     // Grounded turns: strip any URL/email the model invented or mangled (not verbatim in the
     // retrieved context) from the STORED + displayed answer, so it can't resurface on reload either.
-    const text = this.retriever ? guardFabrications(raw, this.turnContext, false) : raw
+    const text = stripHtmlTags(this.retriever ? guardFabrications(raw, this.turnContext, false) : raw)
     if (this.chunkClauses) {
       const sink = this.clauseSink ?? this.cb.onAssistantClause
       const rest = this.chunker.flush()

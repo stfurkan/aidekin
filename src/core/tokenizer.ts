@@ -72,6 +72,7 @@ export class LlmTokenizer {
         return out
       },
       flush: (): string => {
+        if (ids.length === 0) return '' // decode([]) throws in @huggingface/tokenizers (an aborted turn can flush before its first token)
         const text = decodeAll()
         const out = text.slice(emitted)
         emitted = text.length

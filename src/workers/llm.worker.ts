@@ -129,6 +129,7 @@ interface GenJob {
   messages: readonly ChatMessage[]
   allowThink: boolean
   resetCache: boolean
+  seed?: number
 }
 let running = false
 let queued: GenJob | null = null
@@ -157,7 +158,7 @@ async function handle(msg: LlmIn): Promise<void> {
     if (msg.kind === 'init') {
       await init(msg)
     } else if (msg.kind === 'generate') {
-      await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false)
+      await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false, msg.seed)
     } else if (msg.kind === 'abort') {
       if (queued && msg.id === queued.id) queued = null // cancel a queued turn before it ever starts
       if (msg.id === currentId) {
@@ -270,8 +271,8 @@ const SAMPLING = { temperature: 0.3, topK: 20, topP: 0.85, repetitionPenalty: 1.
 
 /** Coordinator: enqueue this turn as the latest, abort anything running, and drain the queue ONE
  *  generation at a time. */
-async function generate(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean): Promise<void> {
-  queued = { id, messages, allowThink, resetCache } // latest-wins
+async function generate(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number): Promise<void> {
+  queued = { id, messages, allowThink, resetCache, seed } // latest-wins
   if (currentId !== null && currentId >= 0) {
     invalidateCache = true
     abortController?.abort()
@@ -283,9 +284,9 @@ async function generate(id: number, messages: readonly ChatMessage[], allowThink
       const job = queued
       queued = null
       try {
-        await runGeneration(job.id, job.messages, job.allowThink, job.resetCache)
+        await runGeneration(job.id, job.messages, job.allowThink, job.resetCache, job.seed)
       } catch (err) {
-        post({ kind: 'error', message: `LLM: ${(err as Error).message}` })
+        post({ kind: 'error', id: job.id, message: `LLM: ${(err as Error).message}` })
       }
     }
   } finally {
@@ -293,7 +294,7 @@ async function generate(id: number, messages: readonly ChatMessage[], allowThink
   }
 }
 
-async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean): Promise<void> {
+async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number): Promise<void> {
   if (!engine || !tokenizer) throw new Error('LLM not initialized')
   currentId = id
   invalidateCache = false
@@ -352,6 +353,7 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
   const genOpts = {
     maxTokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
     ...SAMPLING,
+    seed, // undefined in production (entropy); fixed by the behavioral eval for determinism
     stopTokens: [eosTokenId],
     reuseCache: canReuse,
     onToken,
