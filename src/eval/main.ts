@@ -90,6 +90,26 @@ async function run(): Promise<void> {
     for (const p of problems) log(`   !! ${p}`)
   }
 
+  // INFO-ONLY: prompt-lookup speculative decoding on the REAL workload it targets (grounded
+  // RAG turns quoting context). Never affects pass/fail; the numbers drive the enable decision.
+  log('\nprompt-lookup measurement (info only, grounded turns):')
+  const PLD_PROBES = ['do you have documentation?', 'how do I add this widget to my own website?', 'what does a visitor download and how big is it?']
+  for (const on of [false, true]) {
+    engine.setPromptLookup(on)
+    let tpsSum = 0
+    let acc = 0
+    let drafted = 0
+    for (const q of PLD_PROBES) {
+      engine.clearHistory()
+      await engine.sendUserMessage(q)
+      tpsSum += engine.lastGenStats?.tps ?? 0
+      acc += engine.lastGenStats?.speculation?.accepted ?? 0
+      drafted += engine.lastGenStats?.speculation?.drafted ?? 0
+    }
+    log(`  pld=${on ? 'on ' : 'off'}  avg ${(tpsSum / PLD_PROBES.length).toFixed(1)} tok/s${on ? `  (${acc}/${drafted} drafts accepted)` : ''}`)
+  }
+  engine.setPromptLookup(false)
+
   const ok = passed === SCENARIOS.length
   log(`\n${ok ? 'EVAL OK' : 'EVAL FAIL'} - ${passed}/${SCENARIOS.length} scenarios passed${ok ? '' : `\nfailed: ${failures.join(' | ')}`}`)
 }

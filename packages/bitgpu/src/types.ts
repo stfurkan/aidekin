@@ -86,10 +86,10 @@ export interface GenerateOptions {
    *  match in the sequence so far and verify every draft in ONE batched forward. Output is
    *  identical to normal decoding, greedy AND sampled (each emitted token still comes from its
    *  true penalized distribution, and the RNG advances one draw per emitted token, in order).
-   *  Currently SLOWER than normal decoding on most content: the verify pass runs on the scalar
-   *  prefill matmuls, which do not amortize weight reads across the drafted rows; it becomes
-   *  profitable once the engine gains small-batch subgroup matmul kernels. No draft model, no
-   *  extra VRAM. `true` = `{ ngramSize: 3, maxDraft: 8 }`. Default `false`. */
+   *  INCOMPATIBLE with `noRepeatNgramSize`: a prompt-lookup draft is the continuation of a
+   *  repeated n-gram, which is exactly what the ngram ban forbids, so acceptance is ~zero when
+   *  both are on (measured 0/320). Use with greedy decoding or ngram-ban-free sampling. No
+   *  draft model, no extra VRAM. `true` = `{ ngramSize: 3, maxDraft: 8 }`. Default `false`. */
   promptLookup?: boolean | { ngramSize?: number; maxDraft?: number }
 }
 

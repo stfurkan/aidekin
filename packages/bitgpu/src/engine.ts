@@ -291,17 +291,28 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   // the scratch + uniform buffers across batches (createBuffer is the dominant per-token record cost).
   // Counters increment per call and reset per batch, so within a batch every dispatch still gets its
   // own buffer (no aliasing of in-flight work); reuse happens only across batches (after the sync).
-  let pooling = false
-  const bufPool: GPUBuffer[] = []
-  let bufIdx = 0
   interface DispSlot {
     uni: GPUBuffer
     bg: GPUBindGroup | null
     last: Uint8Array | null
   }
-  const dispPool: DispSlot[] = []
+  // NAMED pools: each distinct dispatch sequence gets its own slot array ('decode' = the fused
+  // token loop, 'pld1' / 'pldm' = speculative single-token and verify steps). Selecting a pool
+  // also resets the slot indices (the old per-batch poolReset).
+  interface Pool { buf: GPUBuffer[]; disp: DispSlot[] }
+  const pools: Record<string, Pool> = {}
+  let pool: Pool | null = null
+  let bufIdx = 0
   let dispIdx = 0
-  const poolReset = (): void => {
+  // Verify-step rounding: buffer sizes are S x per-row elements, so rounding S up to a fixed row
+  // count gives every draft length identical buffer sizes - and therefore stable buffer
+  // identities, which the cached bind groups depend on. n / from * to is exact by construction.
+  let poolRoundFrom = 0
+  let poolRoundTo = 0
+  const poolUse = (name: string | null, roundFrom = 0, roundTo = 0): void => {
+    pool = name ? (pools[name] ??= { buf: [], disp: [] }) : null
+    poolRoundFrom = roundFrom
+    poolRoundTo = roundTo
     bufIdx = 0
     dispIdx = 0
   }
@@ -310,21 +321,24 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   // would bind the previous call's (dead) buffers - or, across greedy<->sampled, a different pipeline's
   // auto-layout bind group (a validation error). Buffers are stable within a call, so one rebuild suffices.
   const poolInvalidate = (): void => {
-    for (const s of dispPool) {
-      s.bg = null
-      s.last = null
+    for (const p of Object.values(pools)) {
+      for (const s of p.disp) {
+        s.bg = null
+        s.last = null
+      }
     }
   }
   const actBuf = (n: number): GPUBuffer => {
-    if (!pooling) {
+    if (!pool) {
       const b = device.createBuffer({ size: n * 4, usage: S_ | CS | CD })
       transients?.push(b)
       return b
     }
-    let b = bufPool[bufIdx]
-    if (!b || b.size !== n * 4) {
-      b = device.createBuffer({ size: n * 4, usage: S_ | CS | CD })
-      bufPool[bufIdx] = b
+    const alloc = poolRoundFrom > 0 ? (n / poolRoundFrom) * poolRoundTo : n
+    let b = pool.buf[bufIdx]
+    if (!b || b.size !== alloc * 4) {
+      b = device.createBuffer({ size: alloc * 4, usage: S_ | CS | CD })
+      pool.buf[bufIdx] = b
     }
     bufIdx++
     return b
@@ -566,11 +580,11 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   // bind group are cached per dispatch slot, so only writeBuffer of the changed params runs per token.
   function setup(pass: GPUComputePassEncoder, name: string, fields: Field[], ins: GPUBuffer[], outs: GPUBuffer[]): void {
     pass.setPipeline(pipelines[name])
-    if (pooling) {
-      let slot = dispPool[dispIdx]
+    if (pool) {
+      let slot = pool.disp[dispIdx]
       if (!slot) {
         slot = { uni: device.createBuffer({ size: 64, usage: U | CD }), bg: null, last: null }
-        dispPool[dispIdx] = slot
+        pool.disp[dispIdx] = slot
       }
       const data2 = makeParams(fields) // reused view; only writeBuffer when the params changed
       if (!slot.last || !eqBytes(slot.last, data2)) {
@@ -870,12 +884,11 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
         gen.push(firstTok) // a stop token is never emitted, even at position 0
         ctl?.onToken?.(firstTok)
       }
-      pooling = true // reuse decode scratch + uniform buffers across batches
       poolInvalidate() // rebuild cached bind groups against this call's buffers
       while (total < nTokens && !stopped) {
         if (ctl?.signal?.aborted) break
         const batch = Math.min(syncN, nTokens - total)
-        poolReset()
+        poolUse('decode') // reuse decode scratch + uniforms across batches; resets the slot indices
         let t = performance.now()
         const enc = device.createCommandEncoder()
         for (let j = 0; j < batch; j++) {
@@ -912,9 +925,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
         nd = Math.max(1, gen.length - 1)
       return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: firstTok, recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd }
     } finally {
-      // Restore the shared flags even when a step throws (a stuck pooling=true would corrupt every
+      // Restore the shared flags even when a step throws (a stuck active pool would corrupt every
       // later call), and release this call's GPU scratch instead of waiting on GC.
-      pooling = false
+      poolUse(null)
       FULL = null
       flushTransients()
       transients = null
@@ -1015,11 +1028,10 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       let recMs = 0, gpuMs = 0, rbMs = 0
       const t1 = performance.now()
       let total = 1
-      pooling = true
       poolInvalidate() // rebuild cached bind groups against this call's buffers
       while (total < nTokens && !stopped) {
         if (signal?.aborted) break
-        poolReset()
+        poolUse('decode')
         const idxOut = total, pos = posBase + ids.length + idxOut - 1
         let t = performance.now()
         const { affLen, banLen } = writeAffBan(history)
@@ -1057,7 +1069,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: firstTok, recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd }
     } finally {
       // Restore the shared flags even when a step throws, and release this call's GPU buffers.
-      pooling = false
+      poolUse(null)
       flushTransients()
       transients = null
       for (const b of [tokBuf, lg, candIds, candVals, affBuf, banBuf, rbBuf, embG]) b.destroy()
@@ -1099,6 +1111,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     const affBuf = device.createBuffer({ size: (maxSeqLen + maxDraft + 1) * 4, usage: S_ | CD })
     const banBuf = device.createBuffer({ size: (maxSeqLen + maxDraft + 1) * 4, usage: S_ | CD })
     const rbAll = device.createBuffer({ size: (maxDraft + 1) * K * 8, usage: GPUBufferUsage.MAP_READ | CD })
+    // Step input embeddings, written per step (never re-created: the pooled bind groups cache
+    // buffer identities, so a per-step upload would go stale the moment it was destroyed).
+    const embIn = device.createBuffer({ size: (maxDraft + 1) * Hd * 4, usage: S_ | CD })
 
     const writeAffBan = (h: number[]): { affLen: number; banLen: number } => {
       const aff = penalty !== 1 ? affectedIds(h) : new Uint32Array(0)
@@ -1159,6 +1174,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
         history.push(firstTok)
         onToken?.(firstTok)
       }
+      poolInvalidate() // rebuild cached bind groups against THIS call's persistent buffers
       let total = 1
       let tLast = firstTok
       let pos = posBase + ids.length // where tLast's K/V lands on the next step
@@ -1176,12 +1192,19 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
         const S = drafts.length + 1
         await ensureKvCapacity(pos + S)
         let t = performance.now()
+        // Pools: 'pld1' = the fused single-token sequence, 'pldm' = the verify sequence (identical
+        // dispatch order for every S in 2..9; buffers rounded to 9 rows so sizes are S-invariant).
+        // S > 9 (a raised maxDraft) falls back to unpooled scalar kernels - correct, just slower.
+        if (S === 1) poolUse('pld1')
+        else if (useSG && S <= 9) poolUse('pldm', S, 9)
+        else poolUse(null)
+        device.queue.writeBuffer(embIn, 0, embedDequant([tLast, ...drafts]))
         // shared forward: [tLast, ...drafts] at pos -> K/V for pos..pos+S-1 + logits for every row.
         // Routed through the small-batch kernels (weights read once for all S rows); S=1 keeps
         // the fused decode path via the S===1 branches.
         SMALLM = useSG && S >= 2 && S <= 9 ? S : 0
         const enc = device.createCommandEncoder()
-        const r = stack(enc, upload(embedDequant([tLast, ...drafts]), S_ | CD), S, pos)
+        const r = stack(enc, embIn, S, pos)
         pass = enc.beginComputePass()
         lmHead(pass, r.fn, S, lgAll)
         pass.end()
@@ -1268,9 +1291,10 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       }
     } finally {
       SMALLM = 0 // encode-time flag; a throw mid-encode must not leak it into other paths
+      poolUse(null)
       flushTransients()
       transients = null
-      for (const b of [lg, lgAll, idsOut, candIds, candVals, affBuf, banBuf, rbAll]) b.destroy()
+      for (const b of [lg, lgAll, idsOut, candIds, candVals, affBuf, banBuf, rbAll, embIn]) b.destroy()
     }
   }
 

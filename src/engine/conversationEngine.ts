@@ -72,6 +72,9 @@ export interface EngineOptions {
   maxHistoryTokens?: number
   /** Fixed sampler seed for deterministic replies. Eval-only; leave unset in production. */
   samplerSeed?: number
+  /** Prompt-lookup speculative decoding (bitgpu experimental; identical output, speed varies
+   *  by workload). Default off; measure with the eval before enabling anywhere. */
+  promptLookup?: boolean
   callbacks?: EngineCallbacks
 }
 
@@ -165,6 +168,9 @@ export class ConversationEngine {
   private readonly persistKey?: string
   private readonly maxHistoryTokens: number
   private readonly samplerSeed?: number
+  private promptLookup: boolean
+  /** tok/s + speculation stats of the last completed generation (measurement/eval). */
+  lastGenStats: { tps?: number; speculation?: { steps: number; drafted: number; accepted: number } } | null = null
 
   private systemPrompt: string
   private messages: Turn[]
@@ -226,6 +232,7 @@ export class ConversationEngine {
     this.persistKey = opts.persistKey
     this.maxHistoryTokens = opts.maxHistoryTokens ?? DEFAULT_MAX_HISTORY_TOKENS
     this.samplerSeed = opts.samplerSeed
+    this.promptLookup = opts.promptLookup ?? false
     this.systemPrompt = opts.systemPrompt
     this.messages = this.hydrate()
   }
@@ -421,7 +428,7 @@ export class ConversationEngine {
     this.chunker.reset()
     this.assistant = ''
     this.cb.onGenerationStart?.()
-    const msg: LlmIn = { kind: 'generate', id, messages: request, think, resetCache: this.cacheDirty, seed: this.samplerSeed }
+    const msg: LlmIn = { kind: 'generate', id, messages: request, think, resetCache: this.cacheDirty, seed: this.samplerSeed, promptLookup: this.promptLookup }
     this.cacheDirty = false
     this.llm.postMessage(msg)
     return new Promise<string>((resolve) => {
@@ -444,6 +451,7 @@ export class ConversationEngine {
       }
     } else if (m.kind === 'done') {
       if (m.id !== this.currentId) return // stale generation (superseded/aborted)
+      this.lastGenStats = { tps: m.tps, speculation: m.speculation }
       this.finish(m.text)
     } else if (m.kind === 'error') {
       // A superseded turn's error (e.g. its unwind after an abort) must not settle the turn
@@ -581,6 +589,11 @@ export class ConversationEngine {
       this.markDirty('retriever toggled')
       this.schedulePrewarm() // re-warm the cache with the new (RAG) system view, off the first turn
     }
+  }
+
+  /** Toggle prompt-lookup speculative decoding at runtime (measurement/eval). */
+  setPromptLookup(on: boolean): void {
+    this.promptLookup = on
   }
 
   /** Toggle internal reasoning on plain (non-RAG) turns. */

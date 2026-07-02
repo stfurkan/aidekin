@@ -84,6 +84,8 @@ export type LlmIn =
       /** Fixed sampler seed for DETERMINISTIC replies (the behavioral eval). Unset in
        *  production: the worker seeds from entropy. */
       readonly seed?: number
+      /** Enable prompt-lookup speculative decoding for this turn (bitgpu experimental). */
+      readonly promptLookup?: boolean
       /** Force the worker to discard its cross-turn KV cache and re-prefill the whole
        *  transcript - set when the history prefix changed non-append (new session,
        *  cleared chat, system-prompt change, or a sliding-window trim). */
@@ -96,7 +98,14 @@ export type LlmIn =
 export type LlmOut =
   | Lifecycle
   | { readonly kind: 'token'; readonly id: number; readonly text: string }
-  | { readonly kind: 'done'; readonly id: number; readonly text: string; readonly tps?: number }
+  | {
+      readonly kind: 'done'
+      readonly id: number
+      readonly text: string
+      readonly tps?: number
+      /** Present when prompt-lookup decoding ran: verify steps, drafted and accepted counts. */
+      readonly speculation?: { steps: number; drafted: number; accepted: number }
+    }
 
 // ── TTS worker (Supertonic) ──────────────────────────────────────────────────
 export type TtsIn =

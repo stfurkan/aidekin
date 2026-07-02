@@ -130,6 +130,7 @@ interface GenJob {
   allowThink: boolean
   resetCache: boolean
   seed?: number
+  promptLookup?: boolean
 }
 let running = false
 let queued: GenJob | null = null
@@ -158,7 +159,7 @@ async function handle(msg: LlmIn): Promise<void> {
     if (msg.kind === 'init') {
       await init(msg)
     } else if (msg.kind === 'generate') {
-      await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false, msg.seed)
+      await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false, msg.seed, msg.promptLookup)
     } else if (msg.kind === 'abort') {
       if (queued && msg.id === queued.id) queued = null // cancel a queued turn before it ever starts
       if (msg.id === currentId) {
@@ -271,8 +272,8 @@ const SAMPLING = { temperature: 0.3, topK: 20, topP: 0.85, repetitionPenalty: 1.
 
 /** Coordinator: enqueue this turn as the latest, abort anything running, and drain the queue ONE
  *  generation at a time. */
-async function generate(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number): Promise<void> {
-  queued = { id, messages, allowThink, resetCache, seed } // latest-wins
+async function generate(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean): Promise<void> {
+  queued = { id, messages, allowThink, resetCache, seed, promptLookup } // latest-wins
   if (currentId !== null && currentId >= 0) {
     invalidateCache = true
     abortController?.abort()
@@ -284,7 +285,7 @@ async function generate(id: number, messages: readonly ChatMessage[], allowThink
       const job = queued
       queued = null
       try {
-        await runGeneration(job.id, job.messages, job.allowThink, job.resetCache, job.seed)
+        await runGeneration(job.id, job.messages, job.allowThink, job.resetCache, job.seed, job.promptLookup)
       } catch (err) {
         post({ kind: 'error', id: job.id, message: `LLM: ${(err as Error).message}` })
       }
@@ -294,7 +295,7 @@ async function generate(id: number, messages: readonly ChatMessage[], allowThink
   }
 }
 
-async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number): Promise<void> {
+async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean): Promise<void> {
   if (!engine || !tokenizer) throw new Error('LLM not initialized')
   currentId = id
   invalidateCache = false
@@ -354,6 +355,7 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
     maxTokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
     ...SAMPLING,
     seed, // undefined in production (entropy); fixed by the behavioral eval for determinism
+    promptLookup: promptLookup ?? false,
     stopTokens: [eosTokenId],
     reuseCache: canReuse,
     onToken,
@@ -401,8 +403,9 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
   const tm = result.timing
   const other = Math.max(0, per - tm.gpuMs - tm.recordMs - tm.readbackMs) // CPU sample + onToken decode/stream + writeBuffer
   console.info(
-    `[aidekin] LLM(bonsai) done id=${id} ${canReuse ? 'cache-reuse' : 'full-prefill'} tokens=${nTokens} ${tps.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms) | per-token ${per.toFixed(1)}ms = gpu ${tm.gpuMs.toFixed(1)} + record ${tm.recordMs.toFixed(1)} + readback ${tm.readbackMs.toFixed(1)} + other ${other.toFixed(1)}`,
+    `[aidekin] LLM(bonsai) done id=${id} ${canReuse ? 'cache-reuse' : 'full-prefill'} tokens=${nTokens} ${tps.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms) | per-token ${per.toFixed(1)}ms = gpu ${tm.gpuMs.toFixed(1)} + record ${tm.recordMs.toFixed(1)} + readback ${tm.readbackMs.toFixed(1)} + other ${other.toFixed(1)}` +
+      (result.speculation ? ` | pld ${result.speculation.accepted}/${result.speculation.drafted} accepted in ${result.speculation.steps} steps` : ''),
   )
-  post({ kind: 'done', id, text: full, tps })
+  post({ kind: 'done', id, text: full, tps, speculation: result.speculation })
   if (currentId === id) currentId = null
 }
