@@ -268,7 +268,7 @@ async function prewarm(system: ChatMessage): Promise<void> {
 // away from the "creative" tail that invents details. topP is accepted but not applied (a no-op) -
 // bitgpu's sampler is bit-exact with the transformers.js v4.2.0 reference we validate against, where
 // top_p is also disabled.
-const SAMPLING = { temperature: 0.3, topK: 20, topP: 0.85, repetitionPenalty: 1.15, noRepeatNgramSize: 3 } as const
+const SAMPLING = { temperature: 0.3, topK: 20, topP: 0.85, repetitionPenalty: 1.15, noRepeatNgramSize: 0 } as const
 
 /** Coordinator: enqueue this turn as the latest, abort anything running, and drain the queue ONE
  *  generation at a time. */
