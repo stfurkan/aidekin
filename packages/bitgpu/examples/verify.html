@@ -203,6 +203,32 @@
       log(`  ${growOk ? '[PASS]' : '[FAIL]'} reuse-across-growth == cold full-prefill (bit-exact, ${bigT1.length}->${bigT1.length + gT1.tokens.length + bigDelta.length} tok)`);
       engine.resetCache();
 
+      // 6e) prompt-lookup speculative decoding: output must be IDENTICAL to normal decoding
+      // (greedy AND sampled with the same seed); it may only be faster.
+      log('\nprompt-lookup speculative decoding checks...');
+      engine.resetCache();
+      const pg = await engine.generate(ids, { maxTokens: 32, promptLookup: true });
+      const pgOk = pg.tokens.length === g.tokens.length && pg.tokens.every((t, i) => t === g.tokens[i]);
+      ok = ok && pgOk;
+      const pgs = pg.speculation ?? { steps: 0, drafted: 0, accepted: 0 };
+      log(`  ${pgOk ? '[PASS]' : '[FAIL]'} pld greedy == greedy  (${pg.tokensPerSecond.toFixed(2)} vs ${g.tokensPerSecond.toFixed(2)} tok/s; ${pgs.steps} steps, ${pgs.accepted}/${pgs.drafted} drafts accepted)`);
+      engine.resetCache();
+      const ps = await engine.generate(ids, { ...SOPT, maxTokens: 24, seed: 42, promptLookup: true });
+      const psOk = ps.tokens.length === s1.tokens.length && ps.tokens.every((t, i) => t === s1.tokens[i]);
+      ok = ok && psOk;
+      const pss = ps.speculation ?? { steps: 0, drafted: 0, accepted: 0 };
+      log(`  ${psOk ? '[PASS]' : '[FAIL]'} pld sampled (seed 42) == sampled  (${ps.tokensPerSecond.toFixed(2)} vs ${s1.tokensPerSecond.toFixed(2)} tok/s; ${pss.steps} steps, ${pss.accepted}/${pss.drafted} accepted)`);
+      engine.resetCache();
+      const pldT1 = await engine.generate(ids, { maxTokens: 8, promptLookup: true });
+      const pldDelta = ids.slice(0, 5);
+      const pldT2 = await engine.generate(pldDelta, { maxTokens: 8, reuseCache: true, promptLookup: true });
+      engine.resetCache();
+      const pldCold = await engine.generate([...ids, ...pldT1.tokens, ...pldDelta], { maxTokens: 8 });
+      const prOk = pldT2.tokens.length === pldCold.tokens.length && pldT2.tokens.every((t, i) => t === pldCold.tokens[i]);
+      ok = ok && prOk;
+      log(`  ${prOk ? '[PASS]' : '[FAIL]'} pld reuse turn-2 == cold full-prefill turn-2 (greedy, bit-exact)`);
+      engine.resetCache();
+
       // An oversized maxTokens CLAMPS to the window (no throw); only a prompt that itself
       // exceeds maxSeqLen throws, and it must throw BEFORE touching the reuse state.
       let guardOk = false;

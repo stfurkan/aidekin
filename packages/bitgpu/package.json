@@ -41,6 +41,7 @@
     "dev": "npm run gen:shaders && tsdown --watch",
     "typecheck": "npm run gen:shaders && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test:sampler": "tsx scripts/verify-sampler.ts",
+    "test:pld": "tsx scripts/verify-pld.ts",
     "verify:headless": "node scripts/headless-verify.mjs",
     "check:publish": "publint --strict && attw --pack . --profile esm-only",
     "prepare": "npm run build",

@@ -24,6 +24,7 @@ try {
   await page.click('#run')
   await page.waitForFunction(
     () => /PACKAGE OK|REGRESSION|^ERROR:|\nERROR:/.test(document.getElementById('out').textContent),
+    undefined,
     { timeout: 900000, polling: 1000 },
   )
   console.log(await page.evaluate(() => document.getElementById('out').textContent))

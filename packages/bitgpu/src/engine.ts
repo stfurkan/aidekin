@@ -9,6 +9,7 @@
 // (now typed options, not URL params), and the public surface differ.
 import { SHADERS } from './shaders.generated'
 import { GpuOutOfMemoryError, WebGPUUnavailableError } from './errors'
+import { draftNgram } from './pld'
 import { MT19937, affectedIds, ngramBans, sampleFromCandidates } from './sampler'
 import type {
   DeviceLostInfo,
@@ -85,6 +86,7 @@ interface RawGenResult {
   recMs: number
   gpuMs: number
   rbMs: number
+  spec?: { steps: number; drafted: number; accepted: number }
 }
 
 /** Internal engine handle: the public {@link Engine} surface plus diagnostics used by the
@@ -1014,6 +1016,210 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     }
   }
 
+  // Prompt-lookup speculative decoding, greedy AND sampled. Each step drafts the continuation
+  // from an n-gram match in the sequence so far (draftNgram; no draft model), then verifies all
+  // drafts in ONE batched forward through the prefill path: it writes K/V for every drafted
+  // position and yields logits for every row, so the accepted prefix plus one model-chosen token
+  // are emitted for the cost of a single pass. K/V written for rejected positions is overwritten
+  // by later steps before anything ever attends to it (attention at position p reads only 0..p).
+  // Exactness: row j is only consumed when drafts 0..j-1 were accepted, so its logits (and, when
+  // sampling, its penalty/ban lists, computed assuming those drafts) describe the true sequence;
+  // the sampler draws sequentially on the CPU, so the MT19937 stream advances exactly one draw
+  // per EMITTED token, in order - the output equals non-speculative decoding for the same seed.
+  // With no match the step degenerates to a normal single-token pass (S=1 keeps the fused path).
+  async function generatePldImpl(ids: number[], posBase: number, nTokens: number, genOpts: GenerateOptions, history: number[]): Promise<RawGenResult> {
+    await ensureKvCapacity(posBase + ids.length + nTokens)
+    const sampled = genOpts.temperature != null && genOpts.temperature > 0 && genOpts.temperature !== 1
+    const vocab = W.lm_head.N!
+    const K = Math.max(1, Math.min(genOpts.topK ?? 20, vocab))
+    const temperature = genOpts.temperature ?? 1
+    const penalty = genOpts.repetitionPenalty ?? 1
+    const ngramN = genOpts.noRepeatNgramSize ?? 0
+    const pl = typeof genOpts.promptLookup === 'object' && genOpts.promptLookup !== null ? genOpts.promptLookup : {}
+    const ngramSize = Math.max(2, pl.ngramSize ?? 3)
+    const maxDraft = Math.max(1, pl.maxDraft ?? 8)
+    const stopSet = genOpts.stopTokens ? new Set(genOpts.stopTokens) : null
+    const onToken = genOpts.onToken
+    const signal = genOpts.signal
+    const rng = new MT19937(genOpts.seed)
+
+    const lg = device.createBuffer({ size: vocab * 4, usage: S_ | CS | CD }) // one row, target of the per-row copy
+    const lgAll = device.createBuffer({ size: (maxDraft + 1) * vocab * 4, usage: S_ | CS }) // lm_head over all rows
+    const idsOut = device.createBuffer({ size: (maxDraft + 1) * 4, usage: S_ | CS }) // greedy: argmax per row
+    const candIds = device.createBuffer({ size: K * 4, usage: S_ | CS })
+    const candVals = device.createBuffer({ size: K * 4, usage: S_ | CS })
+    const affBuf = device.createBuffer({ size: (maxSeqLen + maxDraft + 1) * 4, usage: S_ | CD })
+    const banBuf = device.createBuffer({ size: (maxSeqLen + maxDraft + 1) * 4, usage: S_ | CD })
+    const rbAll = device.createBuffer({ size: (maxDraft + 1) * K * 8, usage: GPUBufferUsage.MAP_READ | CD })
+
+    const writeAffBan = (h: number[]): { affLen: number; banLen: number } => {
+      const aff = penalty !== 1 ? affectedIds(h) : new Uint32Array(0)
+      if (aff.length) device.queue.writeBuffer(affBuf, 0, aff)
+      const ban = ngramN > 0 ? ngramBans(h, ngramN) : []
+      if (ban.length) device.queue.writeBuffer(banBuf, 0, Uint32Array.from(ban))
+      return { affLen: aff.length, banLen: ban.length }
+    }
+    const samplerChain = (pass: GPUComputePassEncoder, affLen: number, banLen: number): void => {
+      setup(pass, 'sampler_penalty', [['u', affLen], ['u', banLen], ['f', penalty], ['u', 0xff800000]], [affBuf, banBuf], [lg])
+      pass.dispatchWorkgroups(1)
+      for (let r = 0; r < K; r++) {
+        setup(pass, 'argmax_masked', [['u', vocab], ['u', r], ['u', 0], ['u', 0]], [lg], [candIds, candVals])
+        pass.dispatchWorkgroups(1)
+      }
+    }
+    // draw the row-j candidates from a mapped copy of rbAll
+    const rowDraw = (m: ArrayBuffer, j: number): number =>
+      sampleFromCandidates(new Uint32Array(m, j * K * 8, K), new Float32Array(m, j * K * 8 + K * 4, K), temperature, rng)
+
+    transients = []
+    try {
+      const t0 = performance.now()
+      // prefill -> last hidden -> lm_head -> argmax (greedy) or sampler chain (sampled)
+      const encP = device.createCommandEncoder()
+      const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
+      const lastP = actBuf(Hd)
+      encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
+      const pf = sampled ? writeAffBan(history) : null
+      let pass = encP.beginComputePass()
+      lmHead(pass, lastP, 1, lg)
+      if (pf) samplerChain(pass, pf.affLen, pf.banLen)
+      else runN(pass, 'argmax', [['u', vocab], ['u', 0], ['u', 0], ['u', 0]], [lg], idsOut, 1)
+      pass.end()
+      if (pf) {
+        encP.copyBufferToBuffer(candIds, 0, rbAll, 0, K * 4)
+        encP.copyBufferToBuffer(candVals, 0, rbAll, K * 4, K * 4)
+      }
+      device.queue.submit([encP.finish()])
+      await device.queue.onSubmittedWorkDone()
+      let firstTok: number
+      if (pf) {
+        await rbAll.mapAsync(GPUMapMode.READ)
+        const m = rbAll.getMappedRange().slice(0)
+        rbAll.unmap()
+        firstTok = rowDraw(m, 0)
+      } else {
+        firstTok = (await readbackU32(idsOut, 1))[0]
+      }
+      flushTransients()
+      const prefillMs = performance.now() - t0
+
+      const gen: number[] = []
+      let stopped = stopSet?.has(firstTok) ?? false
+      if (!stopped) {
+        gen.push(firstTok)
+        history.push(firstTok)
+        onToken?.(firstTok)
+      }
+      let total = 1
+      let tLast = firstTok
+      let pos = posBase + ids.length // where tLast's K/V lands on the next step
+      let specSteps = 0,
+        drafted = 0,
+        accepted = 0
+      let recMs = 0,
+        gpuMs = 0,
+        rbMs = 0
+      const t1 = performance.now()
+      while (total < nTokens && !stopped) {
+        if (signal?.aborted) break
+        const kMax = Math.min(maxDraft, nTokens - total - 1, maxSeqLen - 1 - pos)
+        const drafts = kMax > 0 ? draftNgram(history, ngramSize, kMax) : []
+        const S = drafts.length + 1
+        await ensureKvCapacity(pos + S)
+        let t = performance.now()
+        // shared forward: [tLast, ...drafts] at pos -> K/V for pos..pos+S-1 + logits for every row
+        const enc = device.createCommandEncoder()
+        const r = stack(enc, upload(embedDequant([tLast, ...drafts]), S_ | CD), S, pos)
+        pass = enc.beginComputePass()
+        lmHead(pass, r.fn, S, lgAll)
+        pass.end()
+        if (!sampled) {
+          for (let j = 0; j < S; j++) {
+            enc.copyBufferToBuffer(lgAll, j * vocab * 4, lg, 0, vocab * 4)
+            const p = enc.beginComputePass()
+            runN(p, 'argmax', [['u', vocab], ['u', j], ['u', 0], ['u', 0]], [lg], idsOut, 1)
+            p.end()
+          }
+          device.queue.submit([enc.finish()])
+        } else {
+          device.queue.submit([enc.finish()])
+          // per row: upload that row's penalty state (queue order puts it before the row's
+          // dispatches), copy the row into lg, run the chain, stash the K candidates in rbAll
+          for (let j = 0; j < S; j++) {
+            const rowHist = j === 0 ? history : [...history, ...drafts.slice(0, j)]
+            const { affLen, banLen } = writeAffBan(rowHist)
+            const e2 = device.createCommandEncoder()
+            e2.copyBufferToBuffer(lgAll, j * vocab * 4, lg, 0, vocab * 4)
+            const p = e2.beginComputePass()
+            samplerChain(p, affLen, banLen)
+            p.end()
+            e2.copyBufferToBuffer(candIds, 0, rbAll, j * K * 8, K * 4)
+            e2.copyBufferToBuffer(candVals, 0, rbAll, j * K * 8 + K * 4, K * 4)
+            device.queue.submit([e2.finish()])
+          }
+        }
+        recMs += performance.now() - t
+        t = performance.now()
+        await device.queue.onSubmittedWorkDone()
+        gpuMs += performance.now() - t
+        t = performance.now()
+        // acceptance: emit row draws in order while they agree with the drafts; the first
+        // disagreement is itself a valid emission (it came from the true distribution)
+        const emitted: number[] = []
+        if (!sampled) {
+          const outs = await readbackU32(idsOut, S)
+          for (let j = 0; j < S; j++) {
+            const tk = outs[j]
+            if (stopSet?.has(tk)) { stopped = true; break }
+            emitted.push(tk)
+            if (j < drafts.length && tk !== drafts[j]) break
+          }
+        } else {
+          await rbAll.mapAsync(GPUMapMode.READ)
+          const m = rbAll.getMappedRange().slice(0)
+          rbAll.unmap()
+          for (let j = 0; j < S; j++) {
+            const tk = rowDraw(m, j) // draws only for rows actually reached: one per emitted token
+            if (stopSet?.has(tk)) { stopped = true; break }
+            emitted.push(tk)
+            if (j < drafts.length && tk !== drafts[j]) break
+          }
+        }
+        rbMs += performance.now() - t
+        specSteps++
+        drafted += drafts.length
+        accepted += Math.max(0, emitted.length - 1)
+        for (const tk of emitted) {
+          gen.push(tk)
+          history.push(tk)
+          onToken?.(tk)
+        }
+        total += emitted.length
+        flushTransients()
+        if (emitted.length === 0) break // stop token at row 0
+        pos += emitted.length
+        tLast = emitted[emitted.length - 1]
+      }
+      const decodeMs = performance.now() - t1
+      const nd = Math.max(1, gen.length - 1)
+      return {
+        prefillMs,
+        decodeMs,
+        tokPerSec: nd / (decodeMs / 1000),
+        tokens: gen,
+        firstArgmax: firstTok,
+        recMs: recMs / nd,
+        gpuMs: gpuMs / nd,
+        rbMs: rbMs / nd,
+        spec: { steps: specSteps, drafted, accepted },
+      }
+    } finally {
+      flushTransients()
+      transients = null
+      for (const b of [lg, lgAll, idsOut, candIds, candVals, affBuf, banBuf, rbAll]) b.destroy()
+    }
+  }
+
   // Run ONE decode step at the same position through the fused path and the slow (known-good) path
   // and return layer-0 checkpoints + final norm + logits for each, so a divergence pinpoints the
   // first fused kernel that differs.
@@ -1129,7 +1335,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     else fullHistory = [...promptTokenIds]
 
     let r: RawGenResult
-    if (sampled) {
+    if (genOpts.promptLookup) {
+      r = await generatePldImpl(prefillTokens, posBase, maxTokens, genOpts, fullHistory) // pushes generated tokens onto fullHistory
+    } else if (sampled) {
       r = await generateSampledImpl(prefillTokens, posBase, maxTokens, genOpts, fullHistory) // pushes generated tokens onto fullHistory
     } else {
       r = await generateImpl(prefillTokens, posBase, maxTokens, null, SYNC_N, { stopTokens: genOpts.stopTokens, onToken: genOpts.onToken, signal: genOpts.signal })
@@ -1141,6 +1349,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       decodeMs: r.decodeMs,
       tokensPerSecond: r.tokPerSec,
       timing: { recordMs: r.recMs, gpuMs: r.gpuMs, readbackMs: r.rbMs },
+      ...(r.spec ? { speculation: r.spec } : {}),
     }
   }
 

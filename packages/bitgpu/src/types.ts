@@ -82,6 +82,15 @@ export interface GenerateOptions {
   noRepeatNgramSize?: number
   /** Seed for the sampler RNG. Omit to seed from entropy (non-deterministic, like production). */
   seed?: number
+  /** EXPERIMENTAL. Prompt-lookup speculative decoding: draft the continuation from an n-gram
+   *  match in the sequence so far and verify every draft in ONE batched forward. Output is
+   *  identical to normal decoding, greedy AND sampled (each emitted token still comes from its
+   *  true penalized distribution, and the RNG advances one draw per emitted token, in order).
+   *  Currently SLOWER than normal decoding on most content: the verify pass runs on the scalar
+   *  prefill matmuls, which do not amortize weight reads across the drafted rows; it becomes
+   *  profitable once the engine gains small-batch subgroup matmul kernels. No draft model, no
+   *  extra VRAM. `true` = `{ ngramSize: 3, maxDraft: 8 }`. Default `false`. */
+  promptLookup?: boolean | { ngramSize?: number; maxDraft?: number }
 }
 
 /** Result of a {@link Engine.generate} call. */
@@ -96,6 +105,8 @@ export interface GenerateResult {
   tokensPerSecond: number
   /** Per-token decode timing breakdown, in milliseconds. */
   timing: { recordMs: number; gpuMs: number; readbackMs: number }
+  /** Present when prompt-lookup decoding ran: verify steps taken, tokens drafted, drafts accepted. */
+  speculation?: { steps: number; drafted: number; accepted: number }
 }
 
 /** Diagnostic result of {@link Engine.forward}: hidden states + logits for a single forward pass. */
