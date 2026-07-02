@@ -70,6 +70,26 @@ with any tokenizer.
 Errors: `WebGPUUnavailableError` (no WebGPU / no adapter) and `GpuOutOfMemoryError` (weight upload or
 KV growth failed) are exported so you can branch on them.
 
+## Browser support
+
+WebGPU with compute is required (a clear `WebGPUUnavailableError` is thrown otherwise).
+
+| Browser | Path | Notes |
+| --- | --- | --- |
+| Chrome / Edge (desktop) | subgroups when uniform 32/64, else workgroup fallback | fastest path |
+| Safari 26+ (macOS/iOS) | subgroups on Apple GPUs | Metal; low dispatch overhead |
+| Firefox | workgroup fallback | WebGPU shipped, but per-dispatch overhead is high; expect low throughput |
+| Android Chrome | device-dependent | works where WebGPU is exposed; VRAM limits apply |
+
+## CDN usage
+
+```html
+<script type="module">
+  import { createEngine } from 'https://esm.sh/bitgpu'
+  // or: https://cdn.jsdelivr.net/npm/bitgpu/+esm
+</script>
+```
+
 ## Development
 
 ```sh

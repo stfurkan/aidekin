@@ -180,9 +180,11 @@ async function opfsRead(key: string): Promise<ArrayBuffer | null> {
 
 /** Error for a definitive HTTP answer. A 4xx (other than 408/429) cannot be fixed by retrying,
  *  so it is marked `permanent` and withRetry rethrows it immediately instead of backing off. */
-function httpError(url: string, status: number): Error {
-  const err = new Error(`fetch ${url} → HTTP ${status}`) as Error & { permanent?: boolean }
+function httpError(url: string, status: number, res?: Response): Error {
+  const err = new Error(`fetch ${url} → HTTP ${status}`) as Error & { permanent?: boolean; retryAfterMs?: number }
   if (status >= 400 && status < 500 && status !== 408 && status !== 429) err.permanent = true
+  const ra = Number(res?.headers.get('retry-after'))
+  if (Number.isFinite(ra) && ra > 0) err.retryAfterMs = Math.min(ra * 1000, 30_000) // honor the server's wait (HF rate limits)
   return err
 }
 
@@ -229,7 +231,7 @@ async function streamToOpfs(
       await removePart(dir, key)
       res = await fetch(url)
     }
-    if (!res.ok || !res.body) throw httpError(url, res.status)
+    if (!res.ok || !res.body) throw httpError(url, res.status, res)
     const resumed = res.status === 206 // server honored the range → keep what we have, append the rest
     let offset = resumed ? have : 0
     if (!resumed) access.truncate(0) // fresh, changed, or no-range server (200): start over
@@ -287,7 +289,7 @@ async function streamToOpfs(
 // In-memory fallback for browsers without OPFS sync access (kept minimal).
 async function fetchToBuffer(url: string, onProgress?: ProgressFn): Promise<ArrayBuffer> {
   const res = await fetch(url)
-  if (!res.ok || !res.body) throw httpError(url, res.status)
+  if (!res.ok || !res.body) throw httpError(url, res.status, res)
   const compressed = !!res.headers.get('content-encoding')
   const total = Number(res.headers.get('content-length')) || 0
   const reportedTotal = compressed ? 0 : total

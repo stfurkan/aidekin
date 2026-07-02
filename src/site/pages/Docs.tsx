@@ -116,7 +116,7 @@ export default function Docs() {
             </P>
             <List
               items={[
-                ['Page load', 'just the ~2 KB loader + a launcher button. Zero impact on your page.'],
+                ['Page load', 'just the ~3 KB loader + a launcher button. Zero impact on your page.'],
                 ['First open', 'the iframe + widget load; the model downloads once (with a progress bar and an estimate).'],
                 ['First mic tap', 'the speech models load (voice is opt-in, never before).'],
               ]}

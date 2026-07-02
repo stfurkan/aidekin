@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck -w bitgpu
+      - run: npm run test:sampler -w bitgpu
+      - run: npm run check:publish -w bitgpu
+      # Root build = engine build + product typecheck + site/widget + loader bundles.
+      - run: npm run build

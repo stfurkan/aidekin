@@ -34,7 +34,9 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       const permanent = (err as { permanent?: unknown } | null)?.permanent === true
       if (attempt === retries || permanent || !shouldRetry(err)) break
       const ceiling = Math.min(maxMs, baseMs * 2 ** attempt)
-      const delay = Math.floor(Math.random() * ceiling)
+      // A server-stated wait (Retry-After on a 429/503) beats guessing; jittered backoff otherwise.
+      const hinted = (err as { retryAfterMs?: unknown } | null)?.retryAfterMs
+      const delay = typeof hinted === 'number' && hinted > 0 ? hinted : Math.floor(Math.random() * ceiling)
       opts.onRetry?.(attempt + 1, err, delay)
       await sleep(delay)
     }

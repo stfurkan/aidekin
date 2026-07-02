@@ -4,7 +4,7 @@ The easiest way to get your snippet is the configurator at the Configure page: s
 
     <script src="https://cdn.aidekin.com/loader.js" data-title="Acme" defer></script>
 
-On page load the loader (about 2 KB) only draws a floating launcher button. The widget and the model load on the first open, so there is zero impact on your page load. The model downloads once and is cached for repeat visits.
+On page load the loader (about 3 KB gzipped) only draws a floating launcher button. The widget and the model load on the first open, so there is zero impact on your page load. The model downloads once and is cached for repeat visits.
 
 ## Configuration options
 
@@ -29,6 +29,10 @@ Once loaded, window.Aidekin exposes:
 - open(), close(), and toggle() to control the panel from your own buttons.
 - setTheme('light' or 'dark') to match your site's own light/dark toggle.
 - on(event, callback) for the open, close, ready, and message events. The message event fires for each user and assistant turn with its role and text.
+
+## Content Security Policy
+
+If your site sends a Content-Security-Policy header, allow the aidekin origins in two directives. Add `https://cdn.aidekin.com` to script-src for the loader, and add `https://aidekin.com` to frame-src for the widget iframe. Nothing else is needed: all model downloads and AI processing happen inside the iframe under the widget's own policy, not your page's.
 
 ## Theme
 
