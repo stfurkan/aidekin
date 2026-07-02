@@ -73,7 +73,10 @@ export interface EngineOptions {
   callbacks?: EngineCallbacks
 }
 
-const DEFAULT_MAX_HISTORY_TOKENS = 6000
+// Must fit the model's KV window: 2048 tokens minus up to 512 generated minus template overhead.
+// The 4-chars/token estimate runs optimistic for chat text, so stay well under that ceiling; the
+// worker additionally trims and retries if a transcript still outgrows the window.
+const DEFAULT_MAX_HISTORY_TOKENS = 1100
 // Rough token estimate (about 4 chars/token), good enough for a sliding-window trim.
 const approxTokens = (s: string): number => Math.ceil(s.length / 4)
 
@@ -339,6 +342,9 @@ export class ConversationEngine {
       if (next.length > this.ragCharBudget) break
       used = next
     }
+    // A single hit larger than the whole budget would otherwise inject an EMPTY <info> block and
+    // force a wrong "I don't have that information"; truncate the top hit instead.
+    if (!used && hits.length > 0) used = hits[0].text.slice(0, this.ragCharBudget)
     this.turnContext = used // the fabrication guard keeps only URLs/emails that appear verbatim here
     // The static answering rules now live in the system prompt (RAG_INSTRUCTION), cached once.
     // Only the per-turn context + question go here, so the KV-cache delta stays small.

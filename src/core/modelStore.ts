@@ -309,7 +309,19 @@ async function writeBufferToOpfs(dir: FileSystemDirectoryHandle, key: string, bu
 }
 
 export async function hasModelAsset(key: string): Promise<boolean> {
-  return (await opfsRead(key)) !== null
+  // Metadata-only check (marker + file size). Never read the content here: answering a boolean by
+  // materializing a ~290 MB weight file in memory was a real main-thread memory spike per mount.
+  const dir = await opfsDir()
+  if (!dir) return false
+  const expected = await readMarker(dir, key)
+  if (expected === null) return false
+  try {
+    const handle = await dir.getFileHandle(sanitize(key))
+    const file = await handle.getFile()
+    return file.size === expected
+  } catch {
+    return false
+  }
 }
 
 /**

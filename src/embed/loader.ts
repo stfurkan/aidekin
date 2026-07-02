@@ -243,7 +243,10 @@ function init(): void {
   launcher.addEventListener('click', doOpen)
 
   window.addEventListener('message', (e: MessageEvent) => {
-    if (iframe && e.source !== iframe.contentWindow) return
+    // Accept messages ONLY from our own iframe at the expected origin. Before the iframe exists
+    // there is nothing legitimate to receive, so drop everything (any frame on the host page can
+    // post spoofed 'aidekin:*' messages otherwise).
+    if (!iframe || e.source !== iframe.contentWindow || e.origin !== widgetOrigin) return
     const data = e.data as { kind?: string } | null
     if (!data || typeof data.kind !== 'string' || !data.kind.startsWith('aidekin:')) return
     if (data.kind === 'aidekin:ready') {

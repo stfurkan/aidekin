@@ -4,7 +4,7 @@
 // standalone LlmTokenizer (@huggingface/tokenizers + @huggingface/jinja, byte-exact with HF). Streams
 // tokens, strips Qwen3 <think> blocks, toggles reasoning via the chat template's enable_thinking flag,
 // reuses the engine's cross-turn KV cache (prefill only the new turn), and logs tokens/sec.
-import { createEngine, type Engine } from 'bitgpu'
+import { createEngine, type Engine, type GenerateResult } from 'bitgpu'
 import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
 import { LlmTokenizer } from '../core/tokenizer'
 import { getModelAsset } from '../core/modelStore'
@@ -103,7 +103,23 @@ let currentId: number | null = null
 let engine: Engine | null = null
 let tokenizer: LlmTokenizer | null = null
 let eosTokenId = 151645
+let maxSeqLen = 2048
 let abortController: AbortController | null = null
+
+/** Keep the system prompt plus as many of the most recent messages as plausibly fit the model's
+ *  KV window (rough 4 chars/token, generous slack for the template + generation room). Recovery
+ *  path for transcripts that outgrow maxSeqLen (e.g. persisted history restored on reload). */
+function fitToWindow(messages: readonly ChatMessage[]): ChatMessage[] {
+  const budgetChars = Math.max(512, maxSeqLen - 700) * 4
+  const out = [...messages]
+  const head = out[0]?.role === 'system' ? 1 : 0
+  let chars = out.reduce((n, m) => n + m.content.length, 0)
+  while (chars > budgetChars && out.length - head > 1) {
+    chars -= out[head].content.length
+    out.splice(head, 1) // drop the oldest non-system message; the latest user turn is always kept
+  }
+  return out
+}
 
 // ── single-flight generation queue (latest-wins) ──────────────────────────────
 // Only one generation may run on the GPU at a time; a new request aborts the running one and is
@@ -157,7 +173,10 @@ async function handle(msg: LlmIn): Promise<void> {
 
 async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
   eosTokenId = msg.eosTokenId ?? 151645
+  maxSeqLen = msg.maxSeqLen ?? 2048
   dropCache()
+  engine?.dispose() // re-init must not leak the previous GPUDevice (~300 MB VRAM)
+  engine = null
   const onRetry = (n: number, _e: unknown, ms: number): void => console.warn(`[aidekin] LLM load failed (transient); retry ${n} in ${ms}ms`)
 
   // Tokenizer (standalone, byte-exact with transformers.js). The ~7MB tokenizer.json is fetched once.
@@ -318,14 +337,29 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
     }
   }
 
-  const result = await engine.generate(inputIds, {
+  const genOpts = {
     maxTokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
     ...SAMPLING,
     stopTokens: [eosTokenId],
     reuseCache: canReuse,
     onToken,
     signal: abortController.signal,
-  })
+  }
+  let msgsUsed = messages
+  let result: GenerateResult
+  try {
+    result = await engine.generate(inputIds, genOpts)
+  } catch (err) {
+    if (!/maxSeqLen/.test((err as Error).message)) throw err
+    // The transcript outgrew the model's KV window (the engine clamps maxTokens, so this only
+    // happens when the PROMPT alone no longer fits). Recover instead of bricking the chat: drop
+    // the cache, keep the system prompt + the most recent turns, and full-prefill once.
+    dropCache()
+    msgsUsed = fitToWindow(messages)
+    console.warn(`[aidekin] LLM transcript exceeded the ${maxSeqLen}-token window; trimmed ${messages.length - msgsUsed.length} old message(s) and retried`)
+    inputIds = tokenizer.encode(tokenizer.applyChatTemplate(msgsUsed as ChatMessage[], { addGenerationPrompt: true, enableThinking: allowThink }), false)
+    result = await engine.generate(inputIds, { ...genOpts, reuseCache: false })
+  }
 
   // flush any buffered decode + think tail
   let tail = think.push(stream.flush())
@@ -342,7 +376,7 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
   } else if (allowThink) {
     dropCache() // think turns emit reasoning the stored (stripped) reply won't reproduce
   } else if (full.trim()) {
-    cachedMessages = [...messages, { role: 'assistant', content: full }] // engine cache now holds [prompt + reply]
+    cachedMessages = [...msgsUsed, { role: 'assistant', content: full }] // engine cache now holds [prompt + reply] (msgsUsed may be a trimmed transcript)
   } else {
     dropCache() // empty reply -> nothing committed; don't risk a stale reuse
   }
