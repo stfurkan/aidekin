@@ -93,6 +93,15 @@ const RAG_INSTRUCTION =
   'NAME; do not write URLs, code, HTML, or markdown. Do not mention the block or use phrases like "the ' +
   'reference", "the context", "the text", "based on", or "according to".'
 
+// Conversational mechanics, appended to EVERY system prompt (custom or default). A small model
+// primed by info-answering instructions treats any input as a query to answer, so a bare
+// "hello again" gets a dictionary-style definition of the phrase instead of a greeting back.
+// Kept separate from the persona (the owner's prompt) and from RAG grounding rules.
+const CHAT_INSTRUCTION =
+  'When the user greets you or makes small talk, reply with one short, friendly sentence and offer ' +
+  'to help; never explain, define, or analyze what the user said. If an earlier question in the ' +
+  'conversation was never answered, address it in your reply.'
+
 // A URL or email in an answer. Used by the fabrication guard below.
 const URL_OR_EMAIL = /(?:https?:\/\/|www\.)[^\s)<>"']+|[^\s@<>"']+@[^\s@<>"']+\.[^\s)<>"']+/gi
 
@@ -163,7 +172,9 @@ export class ConversationEngine {
    *  user turn) means they are prefilled once, so each grounded turn's delta is just the
    *  retrieved context + the question. */
   private composedSystem(): string {
-    return this.retriever ? `${this.systemPrompt}\n\n${RAG_INSTRUCTION}` : this.systemPrompt
+    const parts = [this.systemPrompt, CHAT_INSTRUCTION]
+    if (this.retriever) parts.push(RAG_INSTRUCTION)
+    return parts.join('\n\n')
   }
 
   private llm: Worker | null = null
