@@ -12,9 +12,13 @@ At the Configure page. Set the name, greeting, colors, position, and mode, previ
 
 At the Knowledge page. Add files (PDF, Word, text, Markdown, HTML, CSV, JSON) or URLs, build, and download knowledge.bin. Then host it and set data-knowledge-url.
 
-## Where are the docs?
+## Where are the docs? Do you have documentation?
 
-At the Docs page.
+Yes, aidekin has full documentation on the Docs page of the website. It covers embedding the widget, every configuration option, the JavaScript API, building knowledge files, voice mode, and self-hosting.
+
+## Where is the demo? Can I try aidekin first?
+
+Yes. The live demo is on the Demo page; the home page also has a Live demo button. The Configure page additionally shows a live preview of your own widget while you edit its settings.
 
 ## Is aidekin really free?
 

@@ -25,6 +25,25 @@ import { SonarPing } from './SonarPing'
 import { Markdown } from './Markdown'
 import type { WidgetConfig } from './protocol'
 
+/** Keep a conversation log pinned to its newest entry unless the user has scrolled up to read
+ *  history (re-sticks when they return to the bottom). A distance-only check on append breaks
+ *  as soon as one update grows the log past the threshold (a multi-line ASR bubble, a whole
+ *  spoken clause), after which auto-scroll never recovers - the voice view hit this constantly. */
+function useStickyAutoScroll(...deps: unknown[]) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const stick = useRef(true)
+  const onScroll = () => {
+    const el = scrollRef.current
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+  }
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && stick.current) el.scrollTop = el.scrollHeight
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps)
+  return { scrollRef, onScroll }
+}
+
 interface Props {
   config: WidgetConfig
   /** Inside the iframe → show a close button that asks the host to hide us. */
@@ -208,15 +227,9 @@ function TextView({
 }) {
   const { turns, status, loadPct, cached, error, send, stop, retry, trimmed } = controller
   const [draft, setDraft] = useState('')
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const { scrollRef, onScroll } = useStickyAutoScroll(turns, status)
   const loading = status === 'loading'
   const thinking = status === 'thinking'
-
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight
-  }, [turns, status])
 
   const submit = () => {
     const text = draft.trim()
@@ -235,6 +248,7 @@ function TextView({
     <>
       <div
         ref={scrollRef}
+        onScroll={onScroll}
         role="log"
         aria-live="polite"
         aria-relevant="additions"
@@ -322,16 +336,8 @@ function VoiceView({
   onType: () => void
 }) {
   const { turns, voiceState, voiceLoadPct, voiceCached, levelRef, error, retry, muted, toggleMute } = controller
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const { scrollRef, onScroll } = useStickyAutoScroll(turns, voiceState)
   const loadingVoice = voiceState === 'loading' || voiceState === 'cold'
-
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    // Only auto-scroll if already near the bottom, so a user reading earlier messages
-    // (incl. screen-reader users) isn't yanked down on each new message.
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight
-  }, [turns, voiceState])
 
   const status = loadingVoice
     ? { text: 'Loading voice', busy: true }
@@ -374,6 +380,7 @@ function VoiceView({
 
       <div
         ref={scrollRef}
+        onScroll={onScroll}
         role="log"
         aria-live="polite"
         aria-relevant="additions"

@@ -197,6 +197,8 @@ export class ConversationEngine {
     // ~0.65), so 0.55 sits in the gap. Absolute cosine cutoffs are not portable across models
     // or corpora, so treat this as a tunable DEFAULT, not a universal truth; the retrieval log
     // prints each query's score so a deployment can recalibrate.
+    // Calibrated against the section-scoped chunker: honest matches score ~0.68-0.78, while
+    // greetings/small talk peak ~0.51 on their best (irrelevant) chunk - 0.55 separates them.
     this.ragMinScore = opts.ragMinScore ?? 0.55
     this.chunkClauses = opts.chunkClauses ?? false
     this.alwaysThink = opts.reasoning ?? false
@@ -475,11 +477,20 @@ export class ConversationEngine {
     return this.messages.map((m) => ({ role: m.role, content: m.content }))
   }
 
+  /** Invalidate the worker's KV-cache prefix, with a logged reason: a spurious dirty here is
+   *  exactly what turns a warm first turn into a multi-second cold prefill, so make each
+   *  occurrence attributable from the console. */
+  private markDirty(reason: string): void {
+    this.cacheDirty = true
+    console.info(`[aidekin] LLM cache dirtied (${reason})`)
+  }
+
   /** New session: clear back to just the system prompt (keeps it in storage). */
   reset(): void {
     this.abort()
     this.messages = [{ role: 'system', content: this.composedSystem() }]
-    this.cacheDirty = true
+    this.markDirty('chat reset')
+    this.schedulePrewarm() // re-warm the system prefix so the first turn of the NEW chat is a cache-append
     this.persist()
   }
 
@@ -520,7 +531,7 @@ export class ConversationEngine {
     // changes the cached prefix, so refresh the system message and invalidate the cache once.
     if (had !== !!retriever && this.messages[0]?.role === 'system') {
       this.messages[0] = { role: 'system', content: this.composedSystem() }
-      this.cacheDirty = true
+      this.markDirty('retriever toggled')
       this.schedulePrewarm() // re-warm the cache with the new (RAG) system view, off the first turn
     }
   }
@@ -551,7 +562,7 @@ export class ConversationEngine {
     } else {
       this.messages.unshift({ role: 'system', content: this.composedSystem() })
     }
-    this.cacheDirty = true // the cached prefix starts with the old system prompt
+    this.markDirty('system prompt changed') // the cached prefix starts with the old system prompt
     this.schedulePrewarm() // re-warm with the new system prompt so the next turn still reuses the cache
     this.persist()
   }
@@ -600,10 +611,14 @@ export class ConversationEngine {
     const tok = (m: Turn): number => approxTokens(m.model ?? m.content)
     let total = this.messages.reduce((n, m) => n + tok(m), 0)
     if (total <= budget) return
+    // Hysteresis: trim well BELOW the budget in one bite. Every trim invalidates the worker's
+    // clean-append chain and forces a full prefill (~10s on an 8 GB machine), so trimming
+    // minimally would re-trim and full-prefill on EVERY turn once the budget is first crossed.
+    const target = Math.floor(budget * 0.6)
     const head = Math.min(3, this.messages.length) // system + first exchange
     const keepTail = 4 // always keep the last couple of exchanges verbatim
     let dropped = 0
-    while (total > budget && this.messages.length - dropped > head + keepTail + 1) {
+    while (total > target && this.messages.length - dropped > head + keepTail + 1) {
       // Drop the oldest middle pair (user+assistant) to keep history coherent.
       const a = this.messages[head]
       const b = this.messages[head + 1]
@@ -613,7 +628,7 @@ export class ConversationEngine {
       dropped += b ? 2 : 1
     }
     if (dropped > 0) {
-      this.cacheDirty = true // the prefix changed → worker must re-prefill
+      this.markDirty('history trimmed') // the prefix changed → worker must re-prefill
       this.cb.onHistoryTrimmed?.({ dropped })
     }
   }
