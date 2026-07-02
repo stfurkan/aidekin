@@ -98,6 +98,10 @@ npm run build         # tsdown -> dist (ESM + .d.ts)
 npm run typecheck
 npm run test:sampler  # sampler parity vs transformers.js v4.2.0
 npm run check:publish # publint + are-the-types-wrong
+
+# Full GPU bit-exactness + tok/s gate, headless (drives system Chrome with WebGPU/Metal).
+# Serve the repo root first: python3 -m http.server 8000
+npm run verify:headless
 ```
 
 The WGSL kernels live in `shaders/` and are inlined into the bundle at build time (no runtime

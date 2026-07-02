@@ -41,6 +41,7 @@
     "dev": "npm run gen:shaders && tsdown --watch",
     "typecheck": "npm run gen:shaders && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test:sampler": "tsx scripts/verify-sampler.ts",
+    "verify:headless": "node scripts/headless-verify.mjs",
     "check:publish": "publint --strict && attw --pack . --profile esm-only",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run check:publish"
@@ -50,6 +51,7 @@
     "@huggingface/transformers": "4.2.0",
     "@types/node": "26.0.0",
     "@webgpu/types": "0.1.70",
+    "playwright-core": "1.61.1",
     "publint": "0.3.21",
     "tsdown": "0.22.3",
     "tsx": "4.22.4",

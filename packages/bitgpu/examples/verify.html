@@ -203,10 +203,13 @@
       log(`  ${growOk ? '[PASS]' : '[FAIL]'} reuse-across-growth == cold full-prefill (bit-exact, ${bigT1.length}->${bigT1.length + gT1.tokens.length + bigDelta.length} tok)`);
       engine.resetCache();
 
+      // An oversized maxTokens CLAMPS to the window (no throw); only a prompt that itself
+      // exceeds maxSeqLen throws, and it must throw BEFORE touching the reuse state.
       let guardOk = false;
-      try { await engine.generate(ids, { maxTokens: 9_999_999 }); } catch (e) { guardOk = /maxSeqLen/.test(e.message); }
+      const huge = []; while (huge.length <= 2048) huge.push(...ids);
+      try { await engine.generate(huge, { maxTokens: 4 }); } catch (e) { guardOk = /maxSeqLen/.test(e.message); }
       ok = ok && guardOk;
-      log(`  ${guardOk ? '[PASS]' : '[FAIL]'} length guard throws past maxSeqLen`);
+      log(`  ${guardOk ? '[PASS]' : '[FAIL]'} length guard throws when the prompt exceeds maxSeqLen (oversized maxTokens clamps)`);
       engine.resetCache();
 
       out.insertAdjacentHTML('beforeend', `\n<span class="${ok ? 'pass' : 'fail'}">${ok ? 'PACKAGE OK' : 'REGRESSION'} - greedy ${g.tokensPerSecond.toFixed(2)} / sampled ${s1.tokensPerSecond.toFixed(2)} tok/s</span>`);
