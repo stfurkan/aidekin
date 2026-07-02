@@ -315,6 +315,7 @@ export class Orchestrator {
       this.engine.setChunkClauses(true)
       this.engine.setClauseSink((clause) => this.speak(clause))
     }
+    this.engine.setSupersededSink(() => this.flushSpeech())
     this.mic = new MicCapture({
       frameSize: 512,
       noiseSuppression: true,
@@ -344,7 +345,18 @@ export class Orchestrator {
       this.engine.setChunkClauses(false)
       this.engine.setClauseSink(null)
     }
+    this.engine.setSupersededSink(null)
     this.setState('ready')
+  }
+
+  /** A new turn superseded the reply being SPOKEN: stop its audio and queued synths so the
+   *  voice moves on with the conversation (its text stays in the transcript - the engine
+   *  commits the streamed partial). NOT a barge-in: the mic path and the new generation are
+   *  untouched, only the stale reply's sound is flushed. */
+  private flushSpeech(): void {
+    this.playback.stop()
+    for (const id of this.liveTtsIds) this.post(this.tts, { kind: 'abort', id })
+    this.liveTtsIds.clear()
   }
 
   /** Mute/unmute the mic without ending the session. Muted = mic frames are dropped (no VAD /
@@ -390,6 +402,7 @@ export class Orchestrator {
       this.engine.setChunkClauses(false)
       this.engine.setClauseSink(null)
     }
+    this.engine.setSupersededSink(null)
     // Terminating the workers aborts any in-flight model download - so abandoning voice
     // mid-load stops the ~1.6 GB transfer immediately instead of draining in the background.
     for (const w of [this.vad, this.asr, this.llm, this.tts, this.turn]) w?.terminate()

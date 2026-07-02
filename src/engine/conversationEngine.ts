@@ -144,6 +144,7 @@ export class ConversationEngine {
   private chunkClauses: boolean
   private alwaysThink: boolean
   private clauseSink: ((clause: string) => void) | null = null
+  private supersededSink: (() => void) | null = null
   private readonly persistKey?: string
   private readonly maxHistoryTokens: number
 
@@ -303,10 +304,23 @@ export class ConversationEngine {
 
   // ── conversation turn ───────────────────────────────────────────────────────
 
+  /** A new turn is superseding a reply that is still streaming. Whatever already streamed was
+   *  SEEN - and in voice mode already HEARD - so vanishing it desyncs the transcript from
+   *  reality. Commit the partial as the reply, in order, before the new user turn is recorded. */
+  private commitPartialReply(): void {
+    if (this.currentId < 0) return
+    const partial = (this.retriever ? guardFabrications(this.assistant, this.turnContext, false) : this.assistant).trim()
+    if (!partial) return
+    this.assistant = partial
+    this.pushAssistant(partial)
+    this.cb.onAssistantText?.(partial, true)
+  }
+
   /** Run one user turn: record it, (optionally) retrieve context, stream a reply. */
   sendUserMessage(text: string): Promise<string> {
     const clean = text.trim()
     if (!clean) return Promise.resolve('')
+    this.commitPartialReply() // must precede pushUser (order) and the turnContext reset (guarding)
     this.turnContext = '' // reset per turn; applyContext refills it if this turn is grounded
     this.pushUser(clean)
     // No retriever → build the request synchronously so voice timing is unchanged.
@@ -369,12 +383,15 @@ export class ConversationEngine {
     }
     // Latest-response-wins: if a generation is still in flight (a newer user turn arrived
     // before the previous reply finished), abort it on the worker and settle its promise so
-    // turns don't queue and balloon ttft. No transcript is lost - only the superseded reply.
+    // turns don't queue and balloon ttft. Text already streamed was committed by
+    // commitPartialReply; the supersededSink lets voice stop SPEAKING the stale reply too
+    // (its clauses were already queued to TTS and would otherwise play out to the end).
     if (this.currentId >= 0) {
       const abortMsg: LlmIn = { kind: 'abort', id: this.currentId }
       this.llm.postMessage(abortMsg)
       this.pending?.resolve(this.assistant)
       this.pending = null
+      this.supersededSink?.()
     }
     this.genId++
     const id = this.genId
@@ -551,6 +568,12 @@ export class ConversationEngine {
     this.clauseSink = sink
   }
 
+  /** Voice attaches here: called when a new turn supersedes an in-flight reply, so the
+   *  orchestrator can stop the stale reply's audio (playback + queued TTS synths). */
+  setSupersededSink(sink: (() => void) | null): void {
+    this.supersededSink = sink
+  }
+
   setSystemPrompt(prompt: string): void {
     // No-op when unchanged. The widget re-applies the configured prompt on mount (after the
     // constructor already set it), and an unconditional dirty there would invalidate the load-time
@@ -618,6 +641,19 @@ export class ConversationEngine {
     const head = Math.min(3, this.messages.length) // system + first exchange
     const keepTail = 4 // always keep the last couple of exchanges verbatim
     let dropped = 0
+    let slimmed = 0
+    // Slim BEFORE dropping: the frozen <info> blocks on older grounded user turns are the bulk
+    // of the window (up to ~375 tokens each) and only mattered for their own turn's answer.
+    // Stripping them keeps the actual conversation; both paths dirty the cache prefix anyway.
+    // (Assistant turns' model field is the raw reply that keeps KV reuse alive - never strip it.)
+    for (let i = head; i < this.messages.length - keepTail && total > target; i++) {
+      const m = this.messages[i]
+      if (m.role === 'user' && m.model) {
+        total -= tok(m) - approxTokens(m.content)
+        delete m.model
+        slimmed++
+      }
+    }
     while (total > target && this.messages.length - dropped > head + keepTail + 1) {
       // Drop the oldest middle pair (user+assistant) to keep history coherent.
       const a = this.messages[head]
@@ -627,10 +663,10 @@ export class ConversationEngine {
       this.messages.splice(head, b ? 2 : 1)
       dropped += b ? 2 : 1
     }
-    if (dropped > 0) {
-      this.markDirty('history trimmed') // the prefix changed → worker must re-prefill
-      this.cb.onHistoryTrimmed?.({ dropped })
+    if (dropped > 0 || slimmed > 0) {
+      this.markDirty(`history trimmed (${dropped} dropped, ${slimmed} slimmed)`) // the prefix changed → worker must re-prefill
     }
+    if (dropped > 0) this.cb.onHistoryTrimmed?.({ dropped })
   }
 
   private hydrate(): Turn[] {

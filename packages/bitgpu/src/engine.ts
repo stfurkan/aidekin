@@ -782,6 +782,37 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     }
   }
 
+  // Long prefills run in SEGMENTS. One submission holding all layers' scratch for S tokens keeps
+  // ~S x 4.3 MB of VRAM in flight (a 1000-token prompt ~4 GB): on unified-memory devices that
+  // stalls the whole system, especially with other models resident. Segments cap the spike at one
+  // segment's scratch (flushed between them), stay bit-exact by the same composition the
+  // reuse-prefill gates prove (each segment writes K/V at its offset and attends to everything
+  // before it), and give an abort a place to land mid-prompt, so a superseded turn no longer
+  // blocks the GPU for whole seconds. Returns the LAST segment's final-norm buffer + the final
+  // token's row within it, or null when aborted (fullHistory is cleared: K/V is only partially
+  // written, so nothing may reuse the sequence).
+  const PREFILL_SEG = 256
+  async function runPrefill(ids: number[], posBase: number, signal?: AbortSignal): Promise<{ fn: GPUBuffer; lastRow: number } | null> {
+    let fn: GPUBuffer | null = null
+    let lastRow = 0
+    for (let off = 0; off < ids.length; off += PREFILL_SEG) {
+      if (off > 0 && signal?.aborted) {
+        fullHistory = []
+        return null
+      }
+      const seg = ids.slice(off, off + PREFILL_SEG)
+      const enc = device.createCommandEncoder()
+      fn = stack(enc, upload(embedDequant(seg), S_ | CD), seg.length, posBase + off).fn
+      lastRow = seg.length - 1
+      device.queue.submit([enc.finish()])
+      if (off + PREFILL_SEG < ids.length) {
+        await device.queue.onSubmittedWorkDone()
+        flushTransients() // this segment's scratch is dead; the peak stays at one segment
+      }
+    }
+    return { fn: fn!, lastRow }
+  }
+
   // GPU-resident decode: argmax + embedding gather run on the GPU so the token id never leaves it;
   // chain syncN steps per CPU sync (deferred readback). Bit-exact: only the readback timing changes.
   async function generateImpl(ids: number[], posBase: number, nTokens: number, full: Set<string> | null = null, syncN: number = SYNC_N, ctl?: { stopTokens?: number[]; onToken?: (id: number) => void; signal?: AbortSignal }): Promise<RawGenResult> {
@@ -794,11 +825,12 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     transients = [] // track prefill scratch so it can be destroyed once the prefill completes
     try {
       const t0 = performance.now()
-      // prefill (CPU embed of the known prompt) -> last hidden -> lm_head -> GPU argmax -> tokBuf[0]
+      // prefill (CPU embed of the known prompt, segmented) -> last hidden -> lm_head -> GPU argmax
+      const pfx = await runPrefill(ids, posBase, ctl?.signal)
+      if (!pfx) return { prefillMs: performance.now() - t0, decodeMs: 0, tokPerSec: 0, tokens: [], firstArgmax: -1, recMs: 0, gpuMs: 0, rbMs: 0 }
       const encP = device.createCommandEncoder()
-      const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
       const lastP = actBuf(Hd)
-      encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
+      encP.copyBufferToBuffer(pfx.fn, pfx.lastRow * Hd * 4, lastP, 0, Hd * 4)
       let pp = encP.beginComputePass()
       lmHead(pp, lastP, 1, lg)
       pp.end()
@@ -808,7 +840,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       device.queue.submit([encP.finish()])
       await device.queue.onSubmittedWorkDone()
       const firstTok = (await readbackU32(tokBuf, 1))[0]
-      flushTransients() // prefill scratch (~S x 4.3 MB across the 28 layers) is dead now
+      flushTransients() // the last segment's scratch is dead now
       const prefillMs = performance.now() - t0
 
       const gen: number[] = []
@@ -936,11 +968,12 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     transients = [] // track prefill scratch so it can be destroyed once the prefill completes
     try {
       const t0 = performance.now()
-      // prefill -> last hidden -> lm_head -> sampler chain (non-pooling), CPU samples the first token
+      // prefill (segmented) -> last hidden -> lm_head -> sampler chain, CPU samples the first token
+      const pfx = await runPrefill(ids, posBase, signal)
+      if (!pfx) return { prefillMs: performance.now() - t0, decodeMs: 0, tokPerSec: 0, tokens: [], firstArgmax: -1, recMs: 0, gpuMs: 0, rbMs: 0 }
       const encP = device.createCommandEncoder()
-      const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
       const lastP = actBuf(Hd)
-      encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
+      encP.copyBufferToBuffer(pfx.fn, pfx.lastRow * Hd * 4, lastP, 0, Hd * 4)
       const pf = writeAffBan(history)
       let pass = encP.beginComputePass()
       lmHead(pass, lastP, 1, lg)
@@ -952,7 +985,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       await device.queue.onSubmittedWorkDone()
       const first = await readCands()
       const firstTok = sampleFromCandidates(first.ci, first.cv, temperature, rng)
-      flushTransients() // prefill scratch is dead now
+      flushTransients() // the last segment's scratch is dead now
       const prefillMs = performance.now() - t0
 
       const gen: number[] = []
@@ -1074,11 +1107,12 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     transients = []
     try {
       const t0 = performance.now()
-      // prefill -> last hidden -> lm_head -> argmax (greedy) or sampler chain (sampled)
+      // prefill (segmented) -> last hidden -> lm_head -> argmax (greedy) or sampler chain (sampled)
+      const pfx = await runPrefill(ids, posBase, signal)
+      if (!pfx) return { prefillMs: performance.now() - t0, decodeMs: 0, tokPerSec: 0, tokens: [], firstArgmax: -1, recMs: 0, gpuMs: 0, rbMs: 0, spec: { steps: 0, drafted: 0, accepted: 0 } }
       const encP = device.createCommandEncoder()
-      const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
       const lastP = actBuf(Hd)
-      encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
+      encP.copyBufferToBuffer(pfx.fn, pfx.lastRow * Hd * 4, lastP, 0, Hd * 4)
       const pf = sampled ? writeAffBan(history) : null
       let pass = encP.beginComputePass()
       lmHead(pass, lastP, 1, lg)
@@ -1366,9 +1400,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     transients = []
     try {
       const t0 = performance.now()
-      const enc = device.createCommandEncoder()
-      stack(enc, upload(embedDequant(ids), S_ | CD), ids.length, 0) // posBase 0: fresh prefix; writes K/V for every position
-      device.queue.submit([enc.finish()])
+      await runPrefill(ids, 0) // posBase 0: fresh prefix; writes K/V for every position (segmented)
       await device.queue.onSubmittedWorkDone()
       fullHistory = [...ids]
       return { prefillMs: performance.now() - t0 }
