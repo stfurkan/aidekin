@@ -153,7 +153,13 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
             }
           },
           onGenerationStart: () => setStatus('thinking'),
-          onGenerationEnd: () => setStatus('ready'),
+          onGenerationEnd: () => {
+            // A reply that ended WITHOUT done (aborted/superseded) must not leave its bubble id
+            // armed, or the NEXT reply's stream overwrites the old bubble in place (a reply then
+            // appears ABOVE the question it answers).
+            streamingId.current = null
+            setStatus('ready')
+          },
           onHistoryTrimmed: () => setTrimmed(true),
           onError: (where, message) => {
             setError(`${where}: ${message}`)

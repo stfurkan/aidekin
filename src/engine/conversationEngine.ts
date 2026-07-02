@@ -473,6 +473,11 @@ export class ConversationEngine {
   /** Barge-in / stop: abort the in-flight generation. Does NOT fire onGenerationEnd -
    *  the caller (voice barge-in) drives its own state, so we avoid a spurious idle. */
   abort(): void {
+    // Keep whatever already streamed (the visitor read and, in voice, HEARD it) - this covers
+    // BOTH interrupt paths: the barge-in (orchestrator calls abort() before the new transcript
+    // reaches sendUserMessage, so the commit there would find no in-flight turn) and the text
+    // widget's Stop button. Must run while currentId is still live.
+    this.commitPartialReply()
     if (this.currentId >= 0 && this.llm) {
       const msg: LlmIn = { kind: 'abort', id: this.currentId }
       this.llm.postMessage(msg)
