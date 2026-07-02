@@ -28,13 +28,13 @@ const check = (name: string, ok: boolean, detail = ''): void => {
   if (!ok) failures++
 }
 
-// Load a realistic logit vector: the last row of the [S, vocab] reference logits fixture.
-const buf = readFileSync(join(here, '..', '..', '..', 'scripts', 'bonsai', 'webgpu-test', 'forward-fixtures', 'logits.bin'))
-const allLogits = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
+// Load a realistic logit vector: one reference logits row, committed WITH the package so this
+// gate runs anywhere (CI, fresh clones) - it must not reach into the app repo's local fixtures.
 const VOCAB = 151669
-const rows = allLogits.length / VOCAB
-const baseRow = allLogits.slice((rows - 1) * VOCAB, rows * VOCAB)
-console.log(`loaded logits.bin: ${rows} rows x ${VOCAB}; using last row`)
+const buf = readFileSync(join(here, '..', 'test-fixtures', 'logits-row.bin'))
+if (buf.byteLength !== VOCAB * 4) throw new Error(`logits-row.bin: expected ${VOCAB * 4} bytes, got ${buf.byteLength}`)
+const baseRow = new Float32Array(buf.buffer, buf.byteOffset, VOCAB)
+console.log(`loaded test-fixtures/logits-row.bin: 1 row x ${VOCAB}`)
 
 // top-K by value, descending, lowest-index tie-break (matches argmax_masked + ORT TopK in practice)
 function topKSort(data: Float32Array, k: number): { ids: number[]; vals: number[] } {
