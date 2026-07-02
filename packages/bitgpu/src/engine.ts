@@ -101,7 +101,7 @@ interface EngineInternal extends Engine {
 
 type TypedArrayCtor = Float32ArrayConstructor | Uint8ArrayConstructor | Uint16ArrayConstructor
 const VIEW: Record<string, TypedArrayCtor> = { FLOAT: Float32Array, UINT8: Uint8Array, FLOAT16: Uint16Array }
-const WGSLS = ['matmul_binary_vec4', 'matmul_split', 'matmul_resid', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'add', 'copy']
+const WGSLS = ['matmul_split', 'matmul_resid', 'matmul_q2', 'rmsnorm', 'rope', 'swiglu', 'attention_cache', 'copy']
 const DEFAULT_MAX_SEQ = 2048
 
 const PARAM_AB = new ArrayBuffer(64)
@@ -150,7 +150,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   opts.onProgress?.({ phase: 'weights' })
   const dataUrl = opts.dataUrl ?? `${modelDir}/${manifest.data_file}`
   const auxUrl = opts.auxUrl ?? `${modelDir}/${manifest.aux_file}`
-  const [data, aux] = await Promise.all([fetchBytes(dataUrl), fetchBytes(auxUrl)])
+  let [data, aux] = await Promise.all([fetchBytes(dataUrl), fetchBytes(auxUrl)])
   const A = manifest.arch
   const T = manifest.tensors
 
@@ -208,9 +208,20 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     CD = GPUBufferUsage.COPY_DST,
     CS = GPUBufferUsage.COPY_SRC,
     U = GPUBufferUsage.UNIFORM
+  // Per-call transient tracking: generate/prefill/forward set `transients = []` so every scratch
+  // buffer they create (activations, per-dispatch uniforms, prompt embeddings) is destroyed as soon
+  // as its submission completes, instead of lingering until GC. A long prefill otherwise holds
+  // ~S x 4.3 MB of dead VRAM (2+ GB for a 512-token prompt) - real memory pressure on 8 GB devices.
+  let transients: GPUBuffer[] | null = null
+  const flushTransients = (): void => {
+    if (!transients) return
+    for (const b of transients) b.destroy()
+    transients = []
+  }
   const upload = (typed: ArrayBufferView, usage: number = S_ | CD): GPUBuffer => {
     const b = device.createBuffer({ size: typed.byteLength, usage })
     device.queue.writeBuffer(b, 0, typed as BufferSource)
+    transients?.push(b)
     return b
   }
   // Decode resource pool: in the decode loop the dispatch sequence is identical every batch, so reuse
@@ -242,7 +253,11 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     }
   }
   const actBuf = (n: number): GPUBuffer => {
-    if (!pooling) return device.createBuffer({ size: n * 4, usage: S_ | CS | CD })
+    if (!pooling) {
+      const b = device.createBuffer({ size: n * 4, usage: S_ | CS | CD })
+      transients?.push(b)
+      return b
+    }
     let b = bufPool[bufIdx]
     if (!b || b.size !== n * 4) {
       b = device.createBuffer({ size: n * 4, usage: S_ | CS | CD })
@@ -263,8 +278,8 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     fullHistory = []
   }
 
-  const tgt2 = readU8(manifest.luts.tgt2),
-    tgt4 = readU8(manifest.luts.tgt4)
+  const tgt2 = readU8(manifest.luts.tgt2) // load-time only (sign table + q2 expansion); not captured by any closure
+  let tgt4 = readU8(manifest.luts.tgt4)
   const signTable = new Uint8Array(256)
   for (let b = 0; b < 256; b++) {
     let bits = 0
@@ -324,10 +339,10 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     }
   }
 
-  const embWq = readU8(T.embed_tokens.weight!),
+  let embWq = readU8(T.embed_tokens.weight!),
     embScales = readF32(T.embed_tokens.scales!),
     embZp = readU8(T.embed_tokens.zp!)
-  const cosCache = readF32(T.cos_cache as Ref),
+  let cosCache = readF32(T.cos_cache as Ref),
     sinCache = readF32(T.sin_cache as Ref)
   // GPU-resident embedding table (for the on-GPU embed gather in the async decode loop). uint8 arrays
   // are uploaded as bytes and read as u32 (byte-extracted) in embed_gather.wgsl. ~49MB VRAM.
@@ -335,6 +350,17 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     tgt4G = upload(tgt4),
     embScalesG = upload(embScales),
     embZpG = upload(embZp)
+  // Detach from the fetched ArrayBuffers: the tables above are VIEWS into `data`/`aux`, and a live
+  // view pins its whole backing buffer, so keeping them would hold the ~290 MB download in CPU RAM
+  // for the engine's lifetime. Copy only what the CPU still needs (~50 MB) and drop the rest.
+  embWq = embWq.slice()
+  embScales = embScales.slice()
+  embZp = embZp.slice()
+  cosCache = cosCache.slice()
+  sinCache = sinCache.slice()
+  tgt4 = tgt4.slice()
+  data = null as unknown as ArrayBuffer
+  aux = null as unknown as ArrayBuffer
 
   function embedDequant(ids: number[]): Float32Array {
     const Hh = A.hidden,
@@ -423,6 +449,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     await rb.mapAsync(GPUMapMode.READ)
     const out = new Float32Array(rb.getMappedRange().slice(0))
     rb.unmap()
+    rb.destroy()
     return out
   }
   async function readbackU32(buf: GPUBuffer, n: number): Promise<Uint32Array> {
@@ -433,6 +460,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     await rb.mapAsync(GPUMapMode.READ)
     const out = new Uint32Array(rb.getMappedRange().slice(0))
     rb.unmap()
+    rb.destroy()
     return out
   }
 
@@ -647,22 +675,29 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   async function forward(ids: number[]): Promise<ForwardResult> {
     const S = ids.length
     await ensureKvCapacity(S)
-    const embedOut = upload(embedDequant(ids), S_ | CD | CS)
-    const enc = device.createCommandEncoder()
-    const { fn, layer0 } = stack(enc, embedOut, S, 0)
-    const logits = device.createBuffer({ size: S * W.lm_head.N! * 4, usage: S_ | CS })
-    const pass = enc.beginComputePass()
-    lmHead(pass, fn, S, logits)
-    pass.end()
-    device.queue.submit([enc.finish()])
-    await device.queue.onSubmittedWorkDone()
-    return {
-      embed: await readback(embedOut, S * Hd),
-      layer0: await readback(layer0!, S * Hd),
-      finalnorm: await readback(fn, S * Hd),
-      logits: await readback(logits, S * W.lm_head.N!),
-      vocab: W.lm_head.N!,
-      sequenceLength: S,
+    transients = []
+    try {
+      const embedOut = upload(embedDequant(ids), S_ | CD | CS)
+      const enc = device.createCommandEncoder()
+      const { fn, layer0 } = stack(enc, embedOut, S, 0)
+      const logits = device.createBuffer({ size: S * W.lm_head.N! * 4, usage: S_ | CS })
+      transients.push(logits)
+      const pass = enc.beginComputePass()
+      lmHead(pass, fn, S, logits)
+      pass.end()
+      device.queue.submit([enc.finish()])
+      await device.queue.onSubmittedWorkDone()
+      return {
+        embed: await readback(embedOut, S * Hd),
+        layer0: await readback(layer0!, S * Hd),
+        finalnorm: await readback(fn, S * Hd),
+        logits: await readback(logits, S * W.lm_head.N!),
+        vocab: W.lm_head.N!,
+        sequenceLength: S,
+      }
+    } finally {
+      flushTransients()
+      transients = null
     }
   }
 
@@ -673,78 +708,92 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     FULL = full
     const vocab = W.lm_head.N!
     const tokBuf = device.createBuffer({ size: Math.max(1, nTokens) * 4, usage: S_ | CS }) // GPU-resident token ids
-    const embG = actBuf(Hd) // GPU embedding of the current token
+    const embG = device.createBuffer({ size: Hd * 4, usage: S_ | CS | CD }) // GPU embedding of the current token (lives across the whole call)
     const lg = device.createBuffer({ size: vocab * 4, usage: S_ | CS })
-
-    const t0 = performance.now()
-    // prefill (CPU embed of the known prompt) -> last hidden -> lm_head -> GPU argmax -> tokBuf[0]
-    const encP = device.createCommandEncoder()
-    const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
-    const lastP = actBuf(Hd)
-    encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
-    let pp = encP.beginComputePass()
-    lmHead(pp, lastP, 1, lg)
-    pp.end()
-    pp = encP.beginComputePass()
-    runN(pp, 'argmax', [['u', vocab], ['u', 0], ['u', 0], ['u', 0]], [lg], tokBuf, 1)
-    pp.end()
-    device.queue.submit([encP.finish()])
-    await device.queue.onSubmittedWorkDone()
-    const firstTok = (await readbackU32(tokBuf, 1))[0]
-    const prefillMs = performance.now() - t0
-
-    const gen = [firstTok]
-    let recMs = 0,
-      gpuMs = 0,
-      rbMs = 0
-    const t1 = performance.now()
-    let total = 1 // tokens emitted (incl. prefill's first)
-    const stopSet = ctl?.stopTokens ? new Set(ctl.stopTokens) : null
-    if (ctl?.onToken && !stopSet?.has(firstTok)) ctl.onToken(firstTok)
-    let stopped = stopSet?.has(firstTok) ?? false
-    pooling = true // reuse decode scratch + uniform buffers across batches
-    poolInvalidate() // rebuild cached bind groups against this call's buffers
-    while (total < nTokens && !stopped) {
-      if (ctl?.signal?.aborted) break
-      const batch = Math.min(syncN, nTokens - total)
-      poolReset()
-      let t = performance.now()
-      const enc = device.createCommandEncoder()
-      for (let j = 0; j < batch; j++) {
-        const idxOut = total + j,
-          pos = posBase + ids.length + idxOut - 1
-        let pass = enc.beginComputePass()
-        runN(pass, 'embed_gather', [['u', Hd], ['u', idxOut - 1], ['u', 0], ['u', 0]], [tokBuf, embWqG, tgt4G, embScalesG, embZpG], embG, 1)
-        pass.end()
-        const r = stack(enc, embG, 1, pos)
-        const last = actBuf(Hd)
-        enc.copyBufferToBuffer(r.fn, 0, last, 0, Hd * 4)
-        pass = enc.beginComputePass()
-        lmHead(pass, last, 1, lg)
-        runN(pass, 'argmax', [['u', vocab], ['u', idxOut], ['u', 0], ['u', 0]], [lg], tokBuf, 1)
-        pass.end()
-      }
-      device.queue.submit([enc.finish()])
-      recMs += performance.now() - t
-      t = performance.now()
+    transients = [] // track prefill scratch so it can be destroyed once the prefill completes
+    try {
+      const t0 = performance.now()
+      // prefill (CPU embed of the known prompt) -> last hidden -> lm_head -> GPU argmax -> tokBuf[0]
+      const encP = device.createCommandEncoder()
+      const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
+      const lastP = actBuf(Hd)
+      encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
+      let pp = encP.beginComputePass()
+      lmHead(pp, lastP, 1, lg)
+      pp.end()
+      pp = encP.beginComputePass()
+      runN(pp, 'argmax', [['u', vocab], ['u', 0], ['u', 0], ['u', 0]], [lg], tokBuf, 1)
+      pp.end()
+      device.queue.submit([encP.finish()])
       await device.queue.onSubmittedWorkDone()
-      gpuMs += performance.now() - t
-      t = performance.now()
-      const toks = await readbackU32(tokBuf, total + batch)
-      rbMs += performance.now() - t
-      for (let j = 0; j < batch; j++) {
-        const tk = toks[total + j]
-        if (stopSet?.has(tk)) { stopped = true; break } // EOS lands at the batch boundary (greedy)
-        gen.push(tk)
-        ctl?.onToken?.(tk)
+      const firstTok = (await readbackU32(tokBuf, 1))[0]
+      flushTransients() // prefill scratch (~S x 4.3 MB across the 28 layers) is dead now
+      const prefillMs = performance.now() - t0
+
+      const gen: number[] = []
+      let recMs = 0,
+        gpuMs = 0,
+        rbMs = 0
+      const t1 = performance.now()
+      let total = 1 // decode positions consumed (incl. prefill's first)
+      const stopSet = ctl?.stopTokens ? new Set(ctl.stopTokens) : null
+      let stopped = stopSet?.has(firstTok) ?? false
+      if (!stopped) {
+        gen.push(firstTok) // a stop token is never emitted, even at position 0
+        ctl?.onToken?.(firstTok)
       }
-      total += batch
+      pooling = true // reuse decode scratch + uniform buffers across batches
+      poolInvalidate() // rebuild cached bind groups against this call's buffers
+      while (total < nTokens && !stopped) {
+        if (ctl?.signal?.aborted) break
+        const batch = Math.min(syncN, nTokens - total)
+        poolReset()
+        let t = performance.now()
+        const enc = device.createCommandEncoder()
+        for (let j = 0; j < batch; j++) {
+          const idxOut = total + j,
+            pos = posBase + ids.length + idxOut - 1
+          let pass = enc.beginComputePass()
+          runN(pass, 'embed_gather', [['u', Hd], ['u', idxOut - 1], ['u', 0], ['u', 0]], [tokBuf, embWqG, tgt4G, embScalesG, embZpG], embG, 1)
+          pass.end()
+          const r = stack(enc, embG, 1, pos)
+          const last = actBuf(Hd)
+          enc.copyBufferToBuffer(r.fn, 0, last, 0, Hd * 4)
+          pass = enc.beginComputePass()
+          lmHead(pass, last, 1, lg)
+          runN(pass, 'argmax', [['u', vocab], ['u', idxOut], ['u', 0], ['u', 0]], [lg], tokBuf, 1)
+          pass.end()
+        }
+        device.queue.submit([enc.finish()])
+        recMs += performance.now() - t
+        t = performance.now()
+        await device.queue.onSubmittedWorkDone()
+        gpuMs += performance.now() - t
+        t = performance.now()
+        const toks = await readbackU32(tokBuf, total + batch)
+        rbMs += performance.now() - t
+        for (let j = 0; j < batch; j++) {
+          const tk = toks[total + j]
+          if (stopSet?.has(tk)) { stopped = true; break } // EOS lands at the batch boundary (greedy)
+          gen.push(tk)
+          ctl?.onToken?.(tk)
+        }
+        total += batch
+      }
+      const decodeMs = performance.now() - t1,
+        nd = Math.max(1, gen.length - 1)
+      return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: firstTok, recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd }
+    } finally {
+      // Restore the shared flags even when a step throws (a stuck pooling=true would corrupt every
+      // later call), and release this call's GPU scratch instead of waiting on GC.
+      pooling = false
+      FULL = null
+      flushTransients()
+      transients = null
+      tokBuf.destroy()
+      embG.destroy()
+      lg.destroy()
     }
-    pooling = false
-    const decodeMs = performance.now() - t1,
-      nd = Math.max(1, gen.length - 1)
-    FULL = null
-    return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd }
   }
 
   // Sampled decode (do_sample): the GPU pre-filters the logits in place (repetition_penalty +
@@ -803,81 +852,94 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       return { ci, cv }
     }
 
-    const t0 = performance.now()
-    // prefill -> last hidden -> lm_head -> sampler chain (non-pooling), CPU samples the first token
-    const encP = device.createCommandEncoder()
-    const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
-    const lastP = actBuf(Hd)
-    encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
-    const pf = writeAffBan(history)
-    let pass = encP.beginComputePass()
-    lmHead(pass, lastP, 1, lg)
-    samplerChain(pass, pf.affLen, pf.banLen)
-    pass.end()
-    encP.copyBufferToBuffer(candIds, 0, rbBuf, 0, K * 4)
-    encP.copyBufferToBuffer(candVals, 0, rbBuf, K * 4, K * 4)
-    device.queue.submit([encP.finish()])
-    await device.queue.onSubmittedWorkDone()
-    const first = await readCands()
-    const firstTok = sampleFromCandidates(first.ci, first.cv, temperature, rng)
-    const prefillMs = performance.now() - t0
-
-    const gen = [firstTok]
-    history.push(firstTok)
-    let stopped = stopSet?.has(firstTok) ?? false
-    if (onToken && !stopped) onToken(firstTok)
-    device.queue.writeBuffer(tokBuf, 0, new Uint32Array([firstTok]))
-
-    let recMs = 0, gpuMs = 0, rbMs = 0
-    const t1 = performance.now()
-    let total = 1
-    pooling = true
-    poolInvalidate() // rebuild cached bind groups against this call's buffers
-    while (total < nTokens && !stopped) {
-      if (signal?.aborted) break
-      poolReset()
-      const idxOut = total, pos = posBase + ids.length + idxOut - 1
-      let t = performance.now()
-      const { affLen, banLen } = writeAffBan(history)
-      const enc = device.createCommandEncoder()
-      let p2 = enc.beginComputePass()
-      runN(p2, 'embed_gather', [['u', Hd], ['u', idxOut - 1], ['u', 0], ['u', 0]], [tokBuf, embWqG, tgt4G, embScalesG, embZpG], embG, 1)
-      p2.end()
-      const r = stack(enc, embG, 1, pos)
-      const last = actBuf(Hd)
-      enc.copyBufferToBuffer(r.fn, 0, last, 0, Hd * 4)
-      p2 = enc.beginComputePass()
-      lmHead(p2, last, 1, lg)
-      samplerChain(p2, affLen, banLen)
-      p2.end()
-      enc.copyBufferToBuffer(candIds, 0, rbBuf, 0, K * 4)
-      enc.copyBufferToBuffer(candVals, 0, rbBuf, K * 4, K * 4)
-      device.queue.submit([enc.finish()])
-      recMs += performance.now() - t
-      t = performance.now()
+    transients = [] // track prefill scratch so it can be destroyed once the prefill completes
+    try {
+      const t0 = performance.now()
+      // prefill -> last hidden -> lm_head -> sampler chain (non-pooling), CPU samples the first token
+      const encP = device.createCommandEncoder()
+      const { fn } = stack(encP, upload(embedDequant(ids), S_ | CD), ids.length, posBase)
+      const lastP = actBuf(Hd)
+      encP.copyBufferToBuffer(fn, (ids.length - 1) * Hd * 4, lastP, 0, Hd * 4)
+      const pf = writeAffBan(history)
+      let pass = encP.beginComputePass()
+      lmHead(pass, lastP, 1, lg)
+      samplerChain(pass, pf.affLen, pf.banLen)
+      pass.end()
+      encP.copyBufferToBuffer(candIds, 0, rbBuf, 0, K * 4)
+      encP.copyBufferToBuffer(candVals, 0, rbBuf, K * 4, K * 4)
+      device.queue.submit([encP.finish()])
       await device.queue.onSubmittedWorkDone()
-      gpuMs += performance.now() - t
-      t = performance.now()
-      const { ci, cv } = await readCands()
-      rbMs += performance.now() - t
-      const tk = sampleFromCandidates(ci, cv, temperature, rng)
-      total += 1
-      if (stopSet?.has(tk)) { stopped = true; break } // EOS: stop without emitting the stop token
-      gen.push(tk)
-      history.push(tk)
-      onToken?.(tk)
-      device.queue.writeBuffer(tokBuf, idxOut * 4, new Uint32Array([tk])) // feed the next step's embed gather
+      const first = await readCands()
+      const firstTok = sampleFromCandidates(first.ci, first.cv, temperature, rng)
+      flushTransients() // prefill scratch is dead now
+      const prefillMs = performance.now() - t0
+
+      const gen: number[] = []
+      let stopped = stopSet?.has(firstTok) ?? false
+      if (!stopped) {
+        gen.push(firstTok) // a stop token is never emitted or recorded, even at position 0
+        history.push(firstTok)
+        onToken?.(firstTok)
+        device.queue.writeBuffer(tokBuf, 0, new Uint32Array([firstTok]))
+      }
+
+      let recMs = 0, gpuMs = 0, rbMs = 0
+      const t1 = performance.now()
+      let total = 1
+      pooling = true
+      poolInvalidate() // rebuild cached bind groups against this call's buffers
+      while (total < nTokens && !stopped) {
+        if (signal?.aborted) break
+        poolReset()
+        const idxOut = total, pos = posBase + ids.length + idxOut - 1
+        let t = performance.now()
+        const { affLen, banLen } = writeAffBan(history)
+        const enc = device.createCommandEncoder()
+        let p2 = enc.beginComputePass()
+        runN(p2, 'embed_gather', [['u', Hd], ['u', idxOut - 1], ['u', 0], ['u', 0]], [tokBuf, embWqG, tgt4G, embScalesG, embZpG], embG, 1)
+        p2.end()
+        const r = stack(enc, embG, 1, pos)
+        const last = actBuf(Hd)
+        enc.copyBufferToBuffer(r.fn, 0, last, 0, Hd * 4)
+        p2 = enc.beginComputePass()
+        lmHead(p2, last, 1, lg)
+        samplerChain(p2, affLen, banLen)
+        p2.end()
+        enc.copyBufferToBuffer(candIds, 0, rbBuf, 0, K * 4)
+        enc.copyBufferToBuffer(candVals, 0, rbBuf, K * 4, K * 4)
+        device.queue.submit([enc.finish()])
+        recMs += performance.now() - t
+        t = performance.now()
+        await device.queue.onSubmittedWorkDone()
+        gpuMs += performance.now() - t
+        t = performance.now()
+        const { ci, cv } = await readCands()
+        rbMs += performance.now() - t
+        const tk = sampleFromCandidates(ci, cv, temperature, rng)
+        total += 1
+        if (stopSet?.has(tk)) { stopped = true; break } // EOS: stop without emitting the stop token
+        gen.push(tk)
+        history.push(tk)
+        onToken?.(tk)
+        device.queue.writeBuffer(tokBuf, idxOut * 4, new Uint32Array([tk])) // feed the next step's embed gather
+      }
+      const decodeMs = performance.now() - t1
+      const nd = Math.max(1, gen.length - 1)
+      return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: firstTok, recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd }
+    } finally {
+      // Restore the shared flags even when a step throws, and release this call's GPU buffers.
+      pooling = false
+      flushTransients()
+      transients = null
+      for (const b of [tokBuf, lg, candIds, candVals, affBuf, banBuf, rbBuf, embG]) b.destroy()
     }
-    pooling = false
-    const decodeMs = performance.now() - t1
-    const nd = Math.max(1, gen.length - 1)
-    return { prefillMs, decodeMs, tokPerSec: nd / (decodeMs / 1000), tokens: gen, firstArgmax: gen[0], recMs: recMs / nd, gpuMs: gpuMs / nd, rbMs: rbMs / nd }
   }
 
   // Run ONE decode step at the same position through the fused path and the slow (known-good) path
   // and return layer-0 checkpoints + final norm + logits for each, so a divergence pinpoints the
   // first fused kernel that differs.
   async function debugDecode(prefillIds: number[]): Promise<{ fast: Record<string, Float32Array>; slow: Record<string, Float32Array> }> {
+    await ensureKvCapacity(prefillIds.length + 1)
     const encP = device.createCommandEncoder()
     stack(encP, upload(embedDequant(prefillIds), S_ | CD), prefillIds.length, 0)
     device.queue.submit([encP.finish()])
@@ -898,8 +960,8 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       const ck: Record<string, Float32Array> = {}
       for (const [name, b] of Object.entries(DBG0)) ck[name] = await readback(b, b.size / 4)
       const off = pos * KV * Dh
-      ck.kc = (await readback(Kc[0], maxSeqLen * KV * Dh)).slice(off, off + KV * Dh)
-      ck.vc = (await readback(Vc[0], maxSeqLen * KV * Dh)).slice(off, off + KV * Dh)
+      ck.kc = (await readback(Kc[0], kvCapacity * KV * Dh)).slice(off, off + KV * Dh) // kvCapacity, not maxSeqLen: the cache may not have grown yet
+      ck.vc = (await readback(Vc[0], kvCapacity * KV * Dh)).slice(off, off + KV * Dh)
       ck.fn = await readback(r.fn, Hd)
       ck.logits = await readback(lg, W.lm_head.N!)
       FORCE_SLOW = false
@@ -968,24 +1030,23 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   // to the cached conversation (the prior turn's last token is re-fed so its K/V lands); otherwise the
   // cache resets and `promptTokenIds` is the full prompt. The KV cache lives across calls in Kc/Vc.
   async function generate(promptTokenIds: number[], genOpts: GenerateOptions = {}): Promise<GenerateResult> {
-    const maxTokens = genOpts.maxTokens ?? 256
     const sampled = genOpts.temperature != null && genOpts.temperature > 0 && genOpts.temperature !== 1
     const reuse = (genOpts.reuseCache ?? false) && fullHistory.length > 0
-
-    let prefillTokens: number[]
-    let posBase: number
-    if (reuse) {
-      posBase = fullHistory.length - 1 // the prior last token (uncached); re-feed it then the delta
-      prefillTokens = [fullHistory[fullHistory.length - 1], ...promptTokenIds]
-      fullHistory.push(...promptTokenIds) // the delta is now part of the conversation (last token already present)
-    } else {
-      fullHistory = [...promptTokenIds]
-      posBase = 0
-      prefillTokens = promptTokenIds
+    if (genOpts.signal?.aborted) {
+      // aborted before any work: don't touch fullHistory (the cache still matches it)
+      return { tokens: [], prefillMs: 0, decodeMs: 0, tokensPerSecond: 0, timing: { recordMs: 0, gpuMs: 0, readbackMs: 0 } }
     }
+
+    // Validate BEFORE mutating fullHistory: a throw must leave the reuse state exactly as it was,
+    // or a caller that catches and retries decodes against K/V that was never written.
+    const posBase = reuse ? fullHistory.length - 1 : 0 // reuse: the prior last token (uncached) is re-fed, then the delta
+    const prefillTokens = reuse ? [fullHistory[fullHistory.length - 1], ...promptTokenIds] : promptTokenIds
     if (prefillTokens.length === 0) throw new Error('generate: no tokens to process')
-    const cap = posBase + prefillTokens.length + maxTokens
-    if (cap > maxSeqLen) throw new Error(`generate: sequence length ${cap} exceeds maxSeqLen ${maxSeqLen}; trim history or raise maxSeqLen`)
+    const room = maxSeqLen - posBase - prefillTokens.length // decode positions left in the KV window
+    if (room < 1) throw new Error(`generate: prompt length ${posBase + prefillTokens.length} exceeds maxSeqLen ${maxSeqLen}; trim history or raise maxSeqLen`)
+    const maxTokens = Math.min(genOpts.maxTokens ?? 256, room) // clamp instead of throwing: fill the window, stop there
+    if (reuse) fullHistory.push(...promptTokenIds) // the delta is now part of the conversation (last token already present)
+    else fullHistory = [...promptTokenIds]
 
     let r: RawGenResult
     if (sampled) {
@@ -1013,13 +1074,19 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     if (ids.length === 0) throw new Error('prefill: no tokens to process')
     if (ids.length > maxSeqLen) throw new Error(`prefill: sequence length ${ids.length} exceeds maxSeqLen ${maxSeqLen}`)
     await ensureKvCapacity(ids.length)
-    const t0 = performance.now()
-    const enc = device.createCommandEncoder()
-    stack(enc, upload(embedDequant(ids), S_ | CD), ids.length, 0) // posBase 0: fresh prefix; writes K/V for every position
-    device.queue.submit([enc.finish()])
-    await device.queue.onSubmittedWorkDone()
-    fullHistory = [...ids]
-    return { prefillMs: performance.now() - t0 }
+    transients = []
+    try {
+      const t0 = performance.now()
+      const enc = device.createCommandEncoder()
+      stack(enc, upload(embedDequant(ids), S_ | CD), ids.length, 0) // posBase 0: fresh prefix; writes K/V for every position
+      device.queue.submit([enc.finish()])
+      await device.queue.onSubmittedWorkDone()
+      fullHistory = [...ids]
+      return { prefillMs: performance.now() - t0 }
+    } finally {
+      flushTransients()
+      transients = null
+    }
   }
 
   const api: EngineInternal = {

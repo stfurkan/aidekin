@@ -1,10 +1,17 @@
 {
   "name": "bitgpu",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Fast WebGPU runtime for 1-bit (binary-weight) LLMs in the browser. Bit-exact, zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
   "author": "Sait Furkan Teke",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stfurkan/aidekin.git",
+    "directory": "packages/bitgpu"
+  },
+  "homepage": "https://aidekin.com",
+  "bugs": "https://github.com/stfurkan/aidekin/issues",
   "keywords": [
     "webgpu",
     "llm",
@@ -17,12 +24,10 @@
     "on-device",
     "qwen3"
   ],
-  "engines": {
-    "node": ">=24.0.0"
-  },
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "exports": {
     ".": {
@@ -37,6 +42,7 @@
     "typecheck": "npm run gen:shaders && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test:sampler": "tsx scripts/verify-sampler.ts",
     "check:publish": "publint --strict && attw --pack . --profile esm-only",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run check:publish"
   },
   "devDependencies": {

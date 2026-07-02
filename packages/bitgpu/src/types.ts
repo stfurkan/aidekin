@@ -26,8 +26,9 @@ export interface EngineOptions {
   fetchJson?: (url: string) => Promise<unknown>
   /** Fetch binary (data/aux). Override to add caching (e.g. OPFS) for the ~290MB data file. Default: `fetch(url).arrayBuffer()`. */
   fetchArrayBuffer?: (url: string) => Promise<ArrayBuffer>
-  /** GPU power preference. Default `'high-performance'` (picks the discrete GPU on multi-GPU machines). */
-  powerPreference?: GPUPowerPreference
+  /** GPU power preference. Default `'high-performance'` (picks the discrete GPU on multi-GPU machines).
+   *  (Spelled out rather than `GPUPowerPreference` so the published d.ts resolves without @webgpu/types.) */
+  powerPreference?: 'low-power' | 'high-performance'
   /** Force the no-subgroup reduction path (for testing the fallback). Default `false`. */
   forceNoSubgroups?: boolean
   /** Workgroup size for the no-subgroup reduction kernels. Default `64`. */
