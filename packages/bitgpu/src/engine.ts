@@ -260,6 +260,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const specs: Array<[string, Record<string, number>?]> = [...WGSLS.map((n): [string] => [n]), ['matmul_split_tiled'], ['matmul_resid_tiled'], ['argmax'], ['embed_gather'], ['sampler_penalty'], ['argmax_masked']]
   if (useSG) {
     for (const n of ['rmsnorm_sg', 'attention_sg', 'matmul_split_sg', 'matmul_q2_sg', 'rmsnorm_rope_sg']) specs.push([n, { SG: sgMax }])
+    for (const n of ['matmul_split_sm', 'matmul_resid_sm', 'matmul_q2_sm']) specs.push([n, { SG: sgMax }]) // small-batch (M=2..9) verify-pass GEMVs
     for (const n of ['matmul_resid_mr_sg', 'matmul_swiglu_mr_sg']) specs.push([n, { SG: sgMax, ROWS: ROWS_MR }])
   } else {
     for (const n of ['matmul_split_wg', 'matmul_resid_wg', 'matmul_q2_wg']) specs.push([n, { WG: WG_NS }])
@@ -552,6 +553,11 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   // differential debug: FORCE_SLOW routes S=1 through the prefill (known-good) path; DBG0 collects
   // layer-0 checkpoint buffers so a fused step and a slow step can be compared kernel by kernel.
   let FORCE_SLOW = false
+  // Small-batch routing: when set to S (2..9, subgroup path only), the matmuls of an S-row pass
+  // use the _sm kernels, which read each weight word once for all S rows - the lever that makes
+  // the speculative-decode verify pass profitable. 0 = off (scalar/tiled prefill kernels).
+  // Set ONLY around the PLD verify-step encode; every shipped non-PLD path keeps its kernels.
+  let SMALLM = 0
   let DBG0: Record<string, GPUBuffer> | null = null
   const cap = (li: number, name: string, buf: GPUBuffer): void => {
     if (li === 0 && DBG0) DBG0[name] = buf
@@ -626,6 +632,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     } else if (S === 1) {
       const gx = Math.min(Ntot, 65535) // no-subgroup decode: workgroup-reduction GEMV
       runWG(pass, 'matmul_split_wg', [['u', w.K!], ['u', w.nb!], ['u', w.N0!], ['u', w.N1!], ['u', w.N2!], ['u', gx]], [inBuf, w.sign!, w.scales!], outs, gx, Math.ceil(Ntot / gx))
+    } else if (useSG && S === SMALLM) {
+      const gx = Math.min(Ntot, 65535) // small-batch GEMV: weights read once for all S rows
+      runWG(pass, 'matmul_split_sm', [['u', w.K!], ['u', w.nb!], ['u', w.N0!], ['u', w.N1!], ['u', w.N2!], ['u', gx], ['u', S]], [inBuf, w.sign!, w.scales!], outs, gx, Math.ceil(Ntot / gx))
     } else if (tiledPrefill(S)) {
       runWG(pass, 'matmul_split_tiled', [['u', S], ['u', w.K!], ['u', w.nb!], ['u', w.N0!], ['u', w.N1!], ['u', w.N2!]], [inBuf, w.sign!, w.scales!], outs, Math.ceil(Ntot / 64), Math.ceil(S / 64)) // long-prompt prefill: tiled GEMM
     } else {
@@ -641,6 +650,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     } else if (S === 1) {
       const gx = Math.min(w.N!, 65535) // no-subgroup decode: workgroup-reduction GEMV + residual
       runWG(pass, 'matmul_resid_wg', [['u', w.N!], ['u', w.K!], ['u', w.nb!], ['u', gx], ['u', 0], ['u', 0]], [inBuf, w.sign!, w.scales!, resid], [out], gx, Math.ceil(w.N! / gx))
+    } else if (useSG && S === SMALLM) {
+      const gx = Math.min(w.N!, 65535) // small-batch GEMV + residual
+      runWG(pass, 'matmul_resid_sm', [['u', w.N!], ['u', w.K!], ['u', w.nb!], ['u', gx], ['u', S], ['u', 0]], [inBuf, w.sign!, w.scales!, resid], [out], gx, Math.ceil(w.N! / gx))
     } else if (tiledPrefill(S)) {
       runWG(pass, 'matmul_resid_tiled', [['u', S], ['u', w.N!], ['u', w.K!], ['u', w.nb!], ['u', 0], ['u', 0]], [inBuf, w.sign!, w.scales!, resid], [out], Math.ceil(w.N! / 64), Math.ceil(S / 64)) // long-prompt prefill: tiled GEMM
     } else {
@@ -733,6 +745,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     } else if (M === 1) {
       const gx = Math.min(lm.N!, 65535) // no-subgroup decode: workgroup-reduction 2-bit GEMV
       runWG(pass, 'matmul_q2_wg', [['u', lm.N!], ['u', lm.K!], ['u', lm.nb!], ['u', lm.zp!], ['u', gx], ['u', 0]], [fn, lm.codes!, lm.scales!], [out], gx, Math.ceil(lm.N! / gx))
+    } else if (useSG && M === SMALLM) {
+      const gx = Math.min(lm.N!, 65535) // small-batch 2-bit GEMV: the code stream read once for all M rows
+      runWG(pass, 'matmul_q2_sm', [['u', lm.N!], ['u', lm.K!], ['u', lm.nb!], ['u', lm.zp!], ['u', gx], ['u', M]], [fn, lm.codes!, lm.scales!], [out], gx, Math.ceil(lm.N! / gx))
     } else {
       run(pass, 'matmul_q2', [['u', M], ['u', lm.N!], ['u', lm.K!], ['u', lm.nb!], ['u', 128], ['u', lm.zp!]], [fn, lm.codes!, lm.scales!], out, M * lm.N!)
     }
@@ -1161,12 +1176,16 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
         const S = drafts.length + 1
         await ensureKvCapacity(pos + S)
         let t = performance.now()
-        // shared forward: [tLast, ...drafts] at pos -> K/V for pos..pos+S-1 + logits for every row
+        // shared forward: [tLast, ...drafts] at pos -> K/V for pos..pos+S-1 + logits for every row.
+        // Routed through the small-batch kernels (weights read once for all S rows); S=1 keeps
+        // the fused decode path via the S===1 branches.
+        SMALLM = useSG && S >= 2 && S <= 9 ? S : 0
         const enc = device.createCommandEncoder()
         const r = stack(enc, upload(embedDequant([tLast, ...drafts]), S_ | CD), S, pos)
         pass = enc.beginComputePass()
         lmHead(pass, r.fn, S, lgAll)
         pass.end()
+        SMALLM = 0
         if (!sampled) {
           for (let j = 0; j < S; j++) {
             enc.copyBufferToBuffer(lgAll, j * vocab * 4, lg, 0, vocab * 4)
@@ -1248,6 +1267,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
         spec: { steps: specSteps, drafted, accepted },
       }
     } finally {
+      SMALLM = 0 // encode-time flag; a throw mid-encode must not leak it into other paths
       flushTransients()
       transients = null
       for (const b of [lg, lgAll, idsOut, candIds, candVals, affBuf, banBuf, rbAll]) b.destroy()
