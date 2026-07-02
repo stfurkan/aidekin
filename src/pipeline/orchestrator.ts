@@ -68,6 +68,10 @@ const TURN_FALLBACK_MS = 600
 // clipped (VAD detection always lags the actual onset by a frame or two).
 const PRE_BUFFER_SAMPLES = 8000
 
+// Post-load ASR/VAD errors can repeat per mic frame (~31/s); an identical error is
+// surfaced at most once per this window so it can't flood the transcript.
+const ERROR_REPEAT_MS = 5000
+
 interface Waiter {
   resolve: () => void
   reject: (e: Error) => void
@@ -101,6 +105,9 @@ export class Orchestrator {
   private vadSpeaking = false
   private turnReady = false
   private muted = false
+  // True while the echo gate (onMicFrame) is dropping frames; tracks the open→closed
+  // transition so the VAD is reset exactly once per gate close.
+  private echoGated = false
   // A speech-start arrived while the assistant was thinking/speaking. We do NOT cancel the
   // reply yet (a cough/table-knock also fires speech-start); we wait for the ASR to confirm
   // real words before barging in, and a VAD misfire clears this without touching the reply.
@@ -118,8 +125,14 @@ export class Orchestrator {
   private currentAsrId = -1
   private ttsId = 0
   private readonly liveTtsIds = new Set<number>()
+  private lastErrorKey = ''
+  private lastErrorAt = 0
 
   private readonly waiters = new Map<string, Waiter>()
+
+  // Per-(label, file) download progress: each worker downloads several files in
+  // parallel, so a label's fraction must aggregate them, not take the last reporter.
+  private readonly loadFiles = new Map<string, Map<string, { loaded: number; total: number }>>()
 
   private readonly loadMap = new Map<string, ComponentLoad>([
     ['LLM', { label: 'LLM', title: 'Brain · Bonsai', status: 'pending', detail: 'bitgpu', fraction: 0 }],
@@ -265,7 +278,7 @@ export class Orchestrator {
     // CPU/GPU-bound, not network-bound). Serial bounds peak GPU/WASM memory to one model
     // (Safari's ceiling). VAD/Turn are tiny and the LLM uses its own cache, so they just init.
     await this.initWorker(this.vad, { kind: 'init', assetBase: modelSource('vad') }, 'VAD', false)
-    await this.initWorker(this.turn, { kind: 'init', modelBase: '/models/turn' }, 'Turn', true)
+    await this.initWorker(this.turn, { kind: 'init', modelBase: modelSource('turn') }, 'Turn', true)
     // ASR: the FP16 Nemotron, encoder on WebGPU (real-time). Single engine - WebGPU
     // is required (as it is for the LLM). Reads from the OPFS cache warmed in phase 1.
     await this.initWorker(this.asr, { kind: 'init', modelBase: modelSource('asr'), device: 'webgpu' }, 'ASR', false)
@@ -323,7 +336,7 @@ export class Orchestrator {
     this.clearFinalizeTimer()
     this.cancelInFlight()
     this.inUserTurn = false
-    this.vadSpeaking = false
+    this.resetVad()
     this.preBuffer = []
     this.preBufferLen = 0
     // Shared engine: return it to text mode so typed replies don't get spoken.
@@ -343,7 +356,7 @@ export class Orchestrator {
       // Discard any half-captured utterance so it isn't finalized after unmuting.
       this.clearFinalizeTimer()
       this.inUserTurn = false
-      this.vadSpeaking = false
+      this.resetVad()
       if (this.state === 'listening') this.setState('idle')
     }
   }
@@ -368,7 +381,7 @@ export class Orchestrator {
     this.waiters.clear()
     for (const [label, w] of pending) w.reject(new Error(`${label}: voice load cancelled`))
     await this.mic?.stop()
-    this.playback.stop()
+    this.playback.dispose()
     if (this.ownsEngine) {
       this.engine.dispose()
     } else {
@@ -414,7 +427,16 @@ export class Orchestrator {
   // Barge-in while THINKING still works (no TTS is pending then); mid-speech interrupt is the
   // mute button's job (true interrupt-during-speech needs acoustic echo cancellation).
   private onMicFrame(samples: Float32Array): void {
-    if (this.playback.playing || this.liveTtsIds.size > 0) return
+    if (this.playback.playing || this.liveTtsIds.size > 0) {
+      // Gate just closed: reset the VAD so stale mid-utterance speaking state can't
+      // swallow the next utterance when the gate reopens.
+      if (!this.echoGated) {
+        this.echoGated = true
+        this.resetVad()
+      }
+      return
+    }
+    this.echoGated = false
     const keep = samples.slice() // retained in the rolling pre-onset buffer
     this.pushPreBuffer(keep)
     if (this.muted) return // muted: keep the pre-onset buffer fresh, but do not listen
@@ -428,6 +450,14 @@ export class Orchestrator {
       this.post(this.asr, { kind: 'chunk', id: this.currentAsrId, samples: forAsr }, [forAsr.buffer])
     }
     this.post(this.vad, { kind: 'frame', samples }, [samples.buffer])
+  }
+
+  /** Reset the VAD worker's frame processor. Every mic-gate close path (echo gate, mute,
+   *  stopListening) can land mid-utterance; without a reset the worker's stale speaking
+   *  state would swallow the next utterance once frames resume. */
+  private resetVad(): void {
+    this.vadSpeaking = false
+    this.post(this.vad, { kind: 'reset' })
   }
 
   private pushPreBuffer(frame: Float32Array): void {
@@ -538,6 +568,16 @@ export class Orchestrator {
   }
 
   private onAsr(m: AsrOut): void {
+    // A post-load stream/flush error means no 'final' will arrive: settle the pending
+    // turn (drop the placeholder, cancel finalize, resync the orb) so the session
+    // isn't stuck on Listening.
+    if (m.kind === 'error' && this.loaded && (this.inUserTurn || this.state === 'listening')) {
+      this.pendingBargeIn = false
+      this.clearFinalizeTimer()
+      this.inUserTurn = false
+      this.cb.onUserTranscript?.('', true) // empty final drops the placeholder bubble
+      this.resyncOrbState()
+    }
     if (this.lifecycle('ASR', m)) return
     if (m.kind === 'partial') {
       // Drop partials from a superseded stream (a new turn already started).
@@ -706,7 +746,19 @@ export class Orchestrator {
       if (c) {
         c.status = 'loading'
         c.detail = l.detail
-        c.fraction = l.total > 0 ? Math.min(1, l.loaded / l.total) : c.fraction
+        let files = this.loadFiles.get(label)
+        if (!files) {
+          files = new Map()
+          this.loadFiles.set(label, files)
+        }
+        files.set(l.file ?? '', { loaded: l.loaded, total: l.total })
+        let loaded = 0
+        let total = 0
+        for (const f of files.values()) {
+          loaded += f.loaded
+          total += f.total
+        }
+        c.fraction = total > 0 ? Math.min(1, loaded / total) : c.fraction
         this.emitLoad()
       }
       return true
@@ -741,7 +793,20 @@ export class Orchestrator {
   }
 
   private reportError(label: string, message: string): void {
-    this.cb.onError?.(label, message)
+    // A failed synth never emits 'done', and its lingering id would hold the echo gate
+    // (onMicFrame) closed forever, leaving the session deaf. The error carries no id,
+    // so abandon every pending synth and resync the orb.
+    if (label === 'TTS' && this.liveTtsIds.size > 0) {
+      this.liveTtsIds.clear()
+      this.resyncOrbState()
+    }
+    const key = `${label}: ${message}`
+    const now = Date.now()
+    if (key !== this.lastErrorKey || now - this.lastErrorAt >= ERROR_REPEAT_MS) {
+      this.cb.onError?.(label, message)
+    }
+    this.lastErrorKey = key
+    this.lastErrorAt = now
     const c = this.loadMap.get(label)
     if (c && c.status !== 'ready') {
       c.status = 'error'

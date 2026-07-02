@@ -159,6 +159,7 @@ async function handle(msg: LlmIn): Promise<void> {
     } else if (msg.kind === 'generate') {
       await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false)
     } else if (msg.kind === 'abort') {
+      if (queued && msg.id === queued.id) queued = null // cancel a queued turn before it ever starts
       if (msg.id === currentId) {
         invalidateCache = true // partial generation -> cache no longer matches a clean prefix
         abortController?.abort()
@@ -191,7 +192,10 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
         post({ kind: 'load', label: 'LLM', file: 'weights', detail: `weights ${Math.round((100 * p.loaded) / (p.total || 1))}%`, loaded: p.loaded, total: p.total || 0 }),
       )
     }
-    return (await fetch(url)).arrayBuffer()
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`fetch ${url} failed: HTTP ${res.status}`)
+    if ((res.headers.get('content-type') ?? '').includes('text/html')) throw new Error(`${url} returned HTML (SPA fallback), not model data`)
+    return res.arrayBuffer()
   }
   engine = await withRetry(
     () =>
@@ -205,6 +209,14 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
       }),
     { onRetry },
   )
+
+  // Surface an unexpected GPU device loss (driver reset, OS reclaim) instead of hanging "thinking".
+  const current = engine
+  void current.lost.then((info) => {
+    if (info.reason === 'destroyed' || engine !== current) return // dispose/re-init, not a failure
+    engine = null
+    post({ kind: 'error', message: `LLM: GPU device lost (${info.message || info.reason}); close and reopen the chat to reload` })
+  })
 
   await warmup()
   const cap = engine.capabilities

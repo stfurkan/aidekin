@@ -202,10 +202,11 @@ export function embedModelUrls(): { onnxUrl: string; tokenizerJsonUrl: string; t
   }
 }
 
-export function modelSource(role: 'asr' | 'tts' | 'vad'): string {
+export function modelSource(role: 'asr' | 'tts' | 'vad' | 'turn'): string {
   const cdn = (import.meta.env.VITE_MODEL_CDN as string | undefined)?.replace(/\/$/, '')
   if (cdn) return `${cdn}/${role}`
   if (role === 'asr') return HF_RESOLVE(ASR.hfModelId)
   if (role === 'tts') return HF_RESOLVE(TTS.hfModelId)
+  if (role === 'turn') return HF_RESOLVE(TURN.hfModelId)
   return `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${vadVersion}/dist`
 }

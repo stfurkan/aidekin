@@ -32,6 +32,11 @@ export class MicCapture {
   private node?: AudioWorkletNode
   private stream?: MediaStream
   private source?: MediaStreamAudioSourceNode
+  // stop() during an in-flight start() must still release the mic: the pending
+  // getUserMedia is tracked so its tracks can be stopped the moment it resolves,
+  // and `stopped` makes start() bail out of wiring after each await.
+  private pendingStream?: Promise<MediaStream>
+  private stopped = false
 
   /** Actual context sample rate (16000 if the browser honored the request). */
   contextRate = 0
@@ -47,7 +52,7 @@ export class MicCapture {
   }
 
   async start(): Promise<void> {
-    if (this.ctx) return
+    if (this.ctx || this.stopped) return // single-shot: a stopped capture never restarts
     // Mic DSP policy (ASR-tuned, not telephony-tuned):
     //  - autoGainControl OFF: it over-amplifies close speech and CLIPS it (peak≈1.0 →
     //    broadband distortion), and boosting signal+noise together doesn't improve SNR.
@@ -57,7 +62,7 @@ export class MicCapture {
     //    often only 15-25 dB SNR, so removing background noise improves ASR accuracy. Turn
     //    it off only for a clean/studio mic where suppression artifacts would hurt instead.
     const noiseSuppression = this.opts.noiseSuppression ?? true
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    this.pendingStream = navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         echoCancellation: false,
@@ -65,6 +70,19 @@ export class MicCapture {
         autoGainControl: false,
       },
     })
+    let stream: MediaStream
+    try {
+      stream = await this.pendingStream
+    } finally {
+      this.pendingStream = undefined
+    }
+    // stop() arrived while getUserMedia was pending: release the tracks now (nothing
+    // else holds them yet) and do not wire the graph.
+    if (this.stopped) {
+      stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+    this.stream = stream
     // Confirm the device actually honored the constraints (some force DSP on).
     const settings = this.stream.getAudioTracks()[0]?.getSettings?.() ?? {}
     console.info(
@@ -81,6 +99,7 @@ export class MicCapture {
     this.contextRate = this.ctx.sampleRate
 
     await this.ctx.audioWorklet.addModule(workletUrl)
+    if (this.stopped) return // stop() already released the stream and closed the context
 
     this.source = this.ctx.createMediaStreamSource(this.stream)
     this.node = new AudioWorkletNode(this.ctx, 'pcm-capture', {
@@ -115,6 +134,13 @@ export class MicCapture {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true
+    // A start() still awaiting getUserMedia stops its own tracks on resolve (see start),
+    // but stop() must not resolve while the mic could still be live - so await it here
+    // and stop the tracks too (double-stopping a track is harmless).
+    if (this.pendingStream) {
+      await this.pendingStream.then((s) => s.getTracks().forEach((t) => t.stop())).catch(() => undefined)
+    }
     try {
       this.source?.disconnect()
       this.node?.disconnect()

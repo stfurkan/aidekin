@@ -97,6 +97,9 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const seq = useRef(0)
   const pendingDispose = useRef<ReturnType<typeof setTimeout> | null>(null)
   const orchRef = useRef<Orchestrator | null>(null)
+  // Voice activation generation: bumped on every toggle. An in-flight activation checks
+  // it after each await, so toggling off mid-load cancels instead of resurrecting voice.
+  const voiceGen = useRef(0)
   const userStreamingId = useRef<number | null>(null)
   const levelRef = useRef(0)
   // Latest callbacks, read by the (mount-once) engine so it never goes stale.
@@ -358,6 +361,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const toggleVoice = useCallback(() => {
     const orch = orchRef.current
     if (voiceActive) {
+      voiceGen.current++ // cancel any in-flight activation (checked after each await below)
       setVoiceActive(false)
       setMuted(false)
       if (orch && orch.isLoaded) {
@@ -376,7 +380,14 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     setVoiceActive(true)
     // Already loaded this session → resume listening instantly, no reload.
     if (orch) {
-      void orch.startListening().catch(() => undefined)
+      const gen = ++voiceGen.current
+      void orch
+        .startListening()
+        .then(() => {
+          // Toggled off while the mic was opening: undo the listen that just landed.
+          if (voiceGen.current !== gen) void orch.stopListening().catch(() => undefined)
+        })
+        .catch(() => undefined)
       return
     }
     // First activation: ensure the shared LLM is loaded, then lazy-load the orchestrator
@@ -386,6 +397,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       setVoiceActive(false)
       return
     }
+    const gen = ++voiceGen.current
     setVoiceState('loading')
     setVoiceLoadPct(0)
     // Are the speech weights already on disk? Drives "Loading" vs "~1.6 GB download" copy.
@@ -401,11 +413,16 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
         // instead of a QuotaExceededError mid-download (best practice for large downloads).
         const { estimateStorage } = await import('@/core/storage')
         const est = await estimateStorage().catch(() => null)
+        if (voiceGen.current !== gen) return
         if (est && est.quotaBytes > 0 && est.quotaBytes - est.usageBytes < 1_700_000_000) {
           throw new Error('Not enough free storage for voice (about 1.6 GB needed). Try text instead, or free up space.')
         }
         await ensureLoaded(engine)
+        // Toggled off mid-activation: before the orchestrator exists there is nothing
+        // for the toggle-off path to dispose, so the cancel happens here.
+        if (voiceGen.current !== gen) return
         const { Orchestrator } = await import('@/pipeline/orchestrator')
+        if (voiceGen.current !== gen) return
         created = new Orchestrator({
           device: 'webgpu',
           engine,
@@ -429,11 +446,14 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
         })
         orchRef.current = created
         await created.load()
+        if (voiceGen.current !== gen) return // toggle-off already disposed it via orchRef
         await created.startListening()
+        // Toggled off while the mic was opening: undo the listen that just landed.
+        if (voiceGen.current !== gen) void created.stopListening().catch(() => undefined)
       } catch (e) {
         // If the user abandoned voice mid-load (toggleVoice cleared/replaced orchRef and already
         // disposed), this rejection is the intentional cancel - clean up quietly, no error shown.
-        if (orchRef.current !== created) {
+        if (voiceGen.current !== gen || orchRef.current !== created) {
           void created?.dispose().catch(() => undefined)
           return
         }

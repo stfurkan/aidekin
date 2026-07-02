@@ -56,11 +56,19 @@ with any tokenizer.
   treated as `modelUrl`.
 - `engine.generate(promptTokenIds, options?)` - generate tokens. Greedy by default; sampling, streaming
   (`onToken`), EOS (`stopTokens`), cancellation (`signal`) and cross-turn cache reuse (`reuseCache`) are
-  all supported. See `src/types.ts` for the full option shape.
+  all supported. `maxTokens` is clamped to the KV window. See the published `EngineOptions` /
+  `GenerateOptions` types for the full option shapes.
+- `engine.prefill(promptTokenIds)` - prefill a prompt prefix into the KV cache without decoding, so a
+  later `generate(delta, { reuseCache: true })` starts from a warm cache (e.g. a static system prompt).
 - `engine.forward(tokenIds)` - single forward pass (hidden states + logits) for correctness checks.
 - `engine.resetCache()` - clear the cross-turn KV cache (start a fresh conversation).
 - `engine.capabilities` - detected GPU path (`useSubgroups`, `subgroupSize`, adapter info, limits).
+- `engine.lost` - promise that resolves if the GPU device is lost (also via `onDeviceLost` option);
+  create a new engine to recover.
 - `engine.dispose()` - release GPU resources.
+
+Errors: `WebGPUUnavailableError` (no WebGPU / no adapter) and `GpuOutOfMemoryError` (weight upload or
+KV growth failed) are exported so you can branch on them.
 
 ## Development
 

@@ -53,7 +53,7 @@ async function handle(msg: TtsIn): Promise<void> {
 
 async function loadAsset(base: string, rel: string): Promise<ArrayBuffer> {
   return getModelAsset(`tts/${rel}`, `${base}/${rel}`, (p) =>
-    post({ kind: 'load', label: 'TTS', detail: `${rel} · ${fmtBytes(p.loaded)} / ${fmtBytes(p.total)}`, loaded: p.loaded, total: p.total }),
+    post({ kind: 'load', label: 'TTS', file: rel, detail: `${rel} · ${fmtBytes(p.loaded)} / ${fmtBytes(p.total)}`, loaded: p.loaded, total: p.total }),
   )
 }
 

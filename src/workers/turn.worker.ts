@@ -9,7 +9,7 @@ import * as ort from 'onnxruntime-web/wasm'
 import { getModelAsset } from '../core/modelStore'
 import { fmtBytes } from '../core/format'
 import { wasmThreads } from '../core/runtime'
-import { TURN, ORT_WASM_CDN } from '../models/registry'
+import { modelSource, ORT_WASM_CDN } from '../models/registry'
 import type { TurnIn, TurnOut } from '../protocol/messages'
 import { whisperFeatures } from './turnFeatures'
 
@@ -31,15 +31,19 @@ ctx.onmessage = (ev: MessageEvent<TurnIn>) => {
 
 async function handle(msg: TurnIn): Promise<void> {
   try {
-    if (msg.kind === 'init') await init()
+    if (msg.kind === 'init') await init(msg.modelBase)
     else if (msg.kind === 'analyze') await analyze(msg.id, msg.samples)
   } catch (err) {
     post({ kind: 'error', message: `Turn: ${(err as Error).message}` })
   }
 }
 
-async function init(): Promise<void> {
-  const url = `https://huggingface.co/${TURN.hfModelId}/resolve/main/onnx/model_quantized.onnx`
+async function init(base: string): Promise<void> {
+  // Honor the caller's base like the other workers, so a VITE_MODEL_CDN mirror covers Smart Turn
+  // too. The orchestrator still sends its '/models/turn' literal, which only exists after the
+  // optional fetch-models run; resolve that one through the registry (CDN override or the HF Hub).
+  const src = base === '/models/turn' ? modelSource('turn') : base
+  const url = `${src}/onnx/model_quantized.onnx`
   const buf = await getModelAsset('turn/model_quantized.onnx', url, (p) =>
     post({ kind: 'load', label: 'Turn', detail: `model_quantized.onnx · ${fmtBytes(p.loaded)} / ${fmtBytes(p.total)}`, loaded: p.loaded, total: p.total }),
   )

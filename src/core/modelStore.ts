@@ -178,6 +178,14 @@ async function opfsRead(key: string): Promise<ArrayBuffer | null> {
   }
 }
 
+/** Error for a definitive HTTP answer. A 4xx (other than 408/429) cannot be fixed by retrying,
+ *  so it is marked `permanent` and withRetry rethrows it immediately instead of backing off. */
+function httpError(url: string, status: number): Error {
+  const err = new Error(`fetch ${url} → HTTP ${status}`) as Error & { permanent?: boolean }
+  if (status >= 400 && status < 500 && status !== 408 && status !== 429) err.permanent = true
+  return err
+}
+
 /** Stream a URL straight to an OPFS file, verify completeness, then read it back. */
 async function streamToOpfs(
   dir: FileSystemDirectoryHandle,
@@ -212,8 +220,16 @@ async function streamToOpfs(
       headers.Range = `bytes=${have}-`
       headers['If-Range'] = priorEtag
     }
-    const res = await fetch(url, Object.keys(headers).length ? { headers } : undefined)
-    if (!res.ok || !res.body) throw new Error(`fetch ${url} → HTTP ${res.status}`)
+    let res = await fetch(url, Object.keys(headers).length ? { headers } : undefined)
+    if (res.status === 416 && headers.Range) {
+      // 416 = the resume Range starts at/past EOF: a byte-complete partial whose final flush
+      // landed but whose .done marker never did. It can't be resumed or trusted, so drop it
+      // and restart a clean download.
+      access.truncate(0)
+      await removePart(dir, key)
+      res = await fetch(url)
+    }
+    if (!res.ok || !res.body) throw httpError(url, res.status)
     const resumed = res.status === 206 // server honored the range → keep what we have, append the rest
     let offset = resumed ? have : 0
     if (!resumed) access.truncate(0) // fresh, changed, or no-range server (200): start over
@@ -271,7 +287,7 @@ async function streamToOpfs(
 // In-memory fallback for browsers without OPFS sync access (kept minimal).
 async function fetchToBuffer(url: string, onProgress?: ProgressFn): Promise<ArrayBuffer> {
   const res = await fetch(url)
-  if (!res.ok || !res.body) throw new Error(`fetch ${url} → HTTP ${res.status}`)
+  if (!res.ok || !res.body) throw httpError(url, res.status)
   const compressed = !!res.headers.get('content-encoding')
   const total = Number(res.headers.get('content-length')) || 0
   const reportedTotal = compressed ? 0 : total
@@ -391,6 +407,24 @@ export async function getModelAsset(
     onProgress?.({ loaded: cached.byteLength, total: cached.byteLength })
     return cached
   }
+  // Cross-tab: two same-origin tabs loading at once must not download the same asset twice
+  // (worse, the loser's cache write transiently removes the winner's fresh .done marker).
+  // Serialize per key on a Web Lock; the waiter re-checks the cache the winner just filled.
+  const locks = typeof navigator !== 'undefined' ? (navigator as Navigator & { locks?: LockManager }).locks : undefined
+  if (locks?.request) {
+    return locks.request('aidekin:model:' + key, async (): Promise<ArrayBuffer> => {
+      const won = await opfsRead(key)
+      if (won) {
+        onProgress?.({ loaded: won.byteLength, total: won.byteLength })
+        return won
+      }
+      return downloadAsset(key, url, onProgress)
+    }) as Promise<ArrayBuffer>
+  }
+  return downloadAsset(key, url, onProgress)
+}
+
+async function downloadAsset(key: string, url: string, onProgress?: ProgressFn): Promise<ArrayBuffer> {
   const onRetry = (n: number, e: unknown, ms: number): void => {
     const err = e as { name?: string; message?: string }
     // Include the real reason (handle DOMException vs network reset vs size mismatch) so a
@@ -400,6 +434,7 @@ export async function getModelAsset(
     )
   }
   const dir = await opfsDir()
+  let persist = !!dir
   if (dir) {
     try {
       // Retry transient CDN resets / rate limits; a quota error is permanent, so don't retry it.
@@ -409,9 +444,13 @@ export async function getModelAsset(
       })
       if (streamed) return streamed
     } catch (err) {
-      // Out-of-space → surface clearly instead of silently re-downloading forever.
+      // Out of quota mid-stream: the partial can never complete, and its bytes + .part sidecar
+      // would sit in quota forever. Drop them, skip the cache write below (it would just hit
+      // quota again), and serve this session via the in-memory path.
       if (err instanceof DOMException && err.name === 'QuotaExceededError') {
-        throw new Error('Out of storage space while caching model weights (QuotaExceededError).')
+        await dir.removeEntry(sanitize(key)).catch(() => undefined)
+        await removePart(dir, key)
+        persist = false
       }
       // Otherwise fall through to the in-memory fetch below.
     }
@@ -423,6 +462,6 @@ export async function getModelAsset(
   // bytes are already in memory here, so writeBufferToOpfs holds the handle only briefly.
   // Best-effort: a cache-write failure must never fail the load.
   const buf = await withRetry(() => fetchToBuffer(url, onProgress), { onRetry })
-  if (dir) await writeBufferToOpfs(dir, key, buf).catch(() => undefined)
+  if (dir && persist) await writeBufferToOpfs(dir, key, buf).catch(() => undefined)
   return buf
 }

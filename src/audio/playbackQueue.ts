@@ -53,6 +53,17 @@ export class PlaybackQueue {
     }
   }
 
+  /** Stop and close the AudioContext (session teardown). Each leaked running context
+   *  counts against the browser's cap (Safari allows ~4), so dispose must release it.
+   *  Idempotent; enqueue after dispose would just create a fresh context. */
+  dispose(): void {
+    this.stop()
+    const ctx = this.ctx
+    this.ctx = null
+    this.gain = null
+    if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => undefined)
+  }
+
   /** Stop and clear everything immediately (barge-in). */
   stop(): void {
     for (const src of this.sources) {

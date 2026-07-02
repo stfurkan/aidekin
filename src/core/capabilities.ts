@@ -51,6 +51,20 @@ async function detectWebGpu(): Promise<WebGpuInfo> {
       return { supported: false, reason: 'No GPUAdapter returned (hardware/driver blocklisted WebGPU)' }
     }
     const info = adapter.info
+    // A software-fallback adapter (e.g. SwiftShader) "supports" WebGPU, but LLM decode on it is
+    // unusable - it must not greenlight the 290MB download. The flag lives on the adapter in
+    // older Chrome and on adapter.info in the current spec; check both.
+    const fallback =
+      (adapter as GPUAdapter & { isFallbackAdapter?: boolean }).isFallbackAdapter === true ||
+      (info as (GPUAdapterInfo & { isFallbackAdapter?: boolean }) | undefined)?.isFallbackAdapter === true
+    if (fallback) {
+      return {
+        supported: false,
+        reason: 'Only a software-fallback WebGPU adapter is available (no usable GPU) - too slow for the LLM',
+        vendor: info?.vendor || undefined,
+        architecture: info?.architecture || undefined,
+      }
+    }
     const limits = adapter.limits
     const toMB = (bytes: number | bigint): number => Math.round(Number(bytes) / (1024 * 1024))
     return {
@@ -122,7 +136,7 @@ export function planDegradation(r: CapabilityReport): DegradationPlan {
     warnings.push('WASM SIMD unavailable - speech models (ASR/turn/TTS) will be significantly slower.')
   }
   if (!r.opfs) {
-    warnings.push('OPFS unavailable - falling back to IndexedDB/Cache Storage for model weights.')
+    warnings.push('OPFS unavailable - model weights cannot be cached and will re-download every session.')
   }
   if (r.webgpu.supported && r.webgpu.maxBufferSizeMB && r.webgpu.maxBufferSizeMB < 1024) {
     warnings.push(

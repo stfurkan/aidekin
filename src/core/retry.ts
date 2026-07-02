@@ -2,6 +2,8 @@
 // fetches, which can hit transient CDN resets / rate limits (Hugging Face Xet, jsDelivr) that
 // a single retry usually clears. Full jitter (delay = random in [0, cap], cap doubling each
 // attempt) is the AWS-recommended backoff: it spreads concurrent retries so they don't thunder.
+// An error carrying `permanent: true` (set where the failure is KNOWN definitive, e.g. an HTTP
+// 4xx) is rethrown immediately - backoff would only delay the user-visible error.
 
 export interface RetryOptions {
   /** Max retries AFTER the first attempt (default 3 → up to 4 total tries). */
@@ -29,7 +31,8 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       return await fn()
     } catch (err) {
       lastErr = err
-      if (attempt === retries || !shouldRetry(err)) break
+      const permanent = (err as { permanent?: unknown } | null)?.permanent === true
+      if (attempt === retries || permanent || !shouldRetry(err)) break
       const ceiling = Math.min(maxMs, baseMs * 2 ** attempt)
       const delay = Math.floor(Math.random() * ceiling)
       opts.onRetry?.(attempt + 1, err, delay)

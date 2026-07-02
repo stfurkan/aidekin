@@ -41,6 +41,17 @@ export interface EngineOptions {
   maxSeqLen?: number
   /** Called as the model loads. */
   onProgress?: (progress: LoadProgress) => void
+  /** Called if the GPU device is lost after creation (driver reset, OS reclaim, tab backgrounding
+   *  on some platforms). The engine is unusable afterward; create a new one to recover. Not called
+   *  for the intentional loss caused by {@link Engine.dispose}. */
+  onDeviceLost?: (info: DeviceLostInfo) => void
+}
+
+/** Why the GPU device went away. Mirrors GPUDeviceLostInfo without requiring @webgpu/types. */
+export interface DeviceLostInfo {
+  /** 'destroyed' when {@link Engine.dispose} caused it, otherwise the platform reason ('unknown', ...). */
+  reason: string
+  message: string
 }
 
 /** Options for a single {@link Engine.generate} call. Set `temperature` to a value other than 0 or 1
@@ -124,6 +135,9 @@ export interface Engine {
   resetCache(): void
   /** Detected GPU capabilities and selected code path. */
   readonly capabilities: EngineCapabilities
+  /** Resolves when the GPU device is lost (including via {@link dispose}, with reason 'destroyed').
+   *  After an unexpected loss the engine is dead; create a new one to recover. */
+  readonly lost: Promise<DeviceLostInfo>
   /** Release GPU resources. The engine is unusable afterward. */
   dispose(): void
 }

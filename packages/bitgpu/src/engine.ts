@@ -8,9 +8,10 @@
 // unchanged (bit-exact). Only the shader source (now inlined, not fetched), the configuration
 // (now typed options, not URL params), and the public surface differ.
 import { SHADERS } from './shaders.generated'
-import { WebGPUUnavailableError } from './errors'
+import { GpuOutOfMemoryError, WebGPUUnavailableError } from './errors'
 import { MT19937, affectedIds, ngramBans, sampleFromCandidates } from './sampler'
 import type {
+  DeviceLostInfo,
   Engine,
   EngineCapabilities,
   EngineOptions,
@@ -138,8 +139,41 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const modelDir = opts.modelUrl ? opts.modelUrl.replace(/\/$/, '') : null
   if (!modelDir && !opts.manifestUrl) throw new Error('createEngine: provide modelUrl or manifestUrl')
   const powerPreference = opts.powerPreference ?? 'high-performance'
-  const fetchJson = opts.fetchJson ?? (async (url: string) => (await fetch(url)).json())
-  const fetchBytes = opts.fetchArrayBuffer ?? (async (url: string) => (await fetch(url)).arrayBuffer())
+  const fetchJson =
+    opts.fetchJson ??
+    (async (url: string) => {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`bitgpu: fetch ${url} failed: HTTP ${res.status}`)
+      if ((res.headers.get('content-type') ?? '').includes('text/html'))
+        throw new Error(`bitgpu: ${url} returned HTML, not JSON (a SPA fallback is probably serving index.html for missing model files)`)
+      return res.json()
+    })
+  const fetchBytes =
+    opts.fetchArrayBuffer ??
+    (async (url: string) => {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`bitgpu: fetch ${url} failed: HTTP ${res.status}`)
+      const total = Number(res.headers.get('content-length') ?? 0)
+      if (!res.body || !total) return res.arrayBuffer()
+      // Stream so onProgress can report the (multi-hundred-MB) weights download.
+      const reader = res.body.getReader()
+      const chunks: Uint8Array[] = []
+      let loaded = 0
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+        loaded += value.byteLength
+        opts.onProgress?.({ phase: 'weights', loaded, total })
+      }
+      const out = new Uint8Array(loaded)
+      let p = 0
+      for (const c of chunks) {
+        out.set(c, p)
+        p += c.byteLength
+      }
+      return out.buffer
+    })
 
   if (typeof navigator === 'undefined' || !navigator.gpu) {
     throw new WebGPUUnavailableError('WebGPU is not available (no navigator.gpu). Use a WebGPU-capable browser over a secure context.')
@@ -153,9 +187,22 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   let [data, aux] = await Promise.all([fetchBytes(dataUrl), fetchBytes(auxUrl)])
   const A = manifest.arch
   const T = manifest.tensors
+  // Fail loud on manifests the kernels cannot run, instead of producing silent garbage: the WGSL
+  // assumes silu activation, head_dim <= 128 (per-thread register arrays), and 128-wide scale blocks.
+  const FINAL_NORM = `layers.${A.layers}.final_norm_layernorm`
+  if (A.act !== 'silu') throw new Error(`bitgpu: unsupported activation '${A.act}' (kernels implement silu/SwiGLU)`)
+  if (A.head_dim > 128) throw new Error(`bitgpu: unsupported head_dim ${A.head_dim} (kernels assume <= 128)`)
+  if (!T[FINAL_NORM]) throw new Error(`bitgpu: manifest is missing the final norm tensor '${FINAL_NORM}'`)
+  for (const [name, t] of Object.entries(T)) {
+    if (t.block !== undefined && t.block !== 128) throw new Error(`bitgpu: tensor ${name} has block ${t.block} (kernels assume 128)`)
+  }
 
   const readRef = (ref: Ref): Float32Array | Uint8Array | Uint16Array => {
     const src = ref.src === 'aux' ? aux : data
+    if (ref.off + ref.len > src.byteLength)
+      throw new Error(
+        `bitgpu: tensor range ${ref.off}+${ref.len} exceeds the ${ref.src === 'aux' ? 'aux' : 'data'} file (${src.byteLength} bytes); the download is truncated or the manifest does not match it`,
+      )
     const V = VIEW[ref.dtype]!
     if (V === Uint8Array) return new Uint8Array(src, ref.off, ref.len)
     const bpe = V.BYTES_PER_ELEMENT
@@ -172,7 +219,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const sgMax = info.subgroupMaxSize ?? 32
   const sgMin = info.subgroupMinSize ?? sgMax
   const forceNoSG = opts.forceNoSubgroups ?? false
-  const WG_NS = Math.min(256, opts.noSubgroupWorkgroupSize ?? 64) // no-subgroup reduction workgroup size
+  // No-subgroup reduction workgroup size. Snapped to a power of two in [32, 256]: the _wg kernels'
+  // tree reductions halve the stride each step, so any other size silently drops partial sums.
+  const WG_NS = Math.min(256, Math.max(32, 1 << Math.round(Math.log2(opts.noSubgroupWorkgroupSize ?? 64))))
   const NOTILE = opts.prefillTiling === 'never' // force the scalar prefill GEMM (A/B)
   const FORCETILE = opts.prefillTiling === 'always' // use tiled even for short prompts (validation)
   const tiledPrefill = (S: number): boolean => FORCETILE || (!NOTILE && S >= 64) // tiled GEMM wins only once it fills its 64-row tiles
@@ -180,7 +229,18 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   const maxSeqLen = Math.max(1, opts.maxSeqLen ?? DEFAULT_MAX_SEQ) // KV-cache length cap (VRAM ~ maxSeqLen x 224KB)
   const useSG = hasSG && sgMin === sgMax && (sgMax === 32 || sgMax === 64) && !forceNoSG // uniform >=32 -> head_dim/SG<=4
   const device = await adapter.requestDevice({ requiredFeatures: useSG ? (['subgroups'] as GPUFeatureName[]) : [] }) // no requiredLimits -> code to the guaranteed minimums (runs on low-end/mobile)
-  const L = adapter.limits // awareness: largest binding (lm_head ~77MB) < 128MiB, shared mem <=8KB < 16KB min, WG <=256
+  // awareness: largest binding (lm_head ~77MB) < 128MiB, shared mem <=8KB < 16KB min, WG <=256
+
+  // Surface device loss (driver reset, OS reclaim) instead of hanging: consumers get a promise +
+  // an optional callback. dispose() also resolves it, with reason 'destroyed' (no callback then).
+  const lost: Promise<DeviceLostInfo> = device.lost.then((info) => {
+    const li = { reason: String(info.reason ?? 'unknown'), message: info.message }
+    if (li.reason !== 'destroyed') opts.onDeviceLost?.(li)
+    return li
+  })
+  device.addEventListener('uncapturederror', (ev) => {
+    console.error(`[bitgpu] uncaptured WebGPU error: ${(ev as GPUUncapturedErrorEvent).error.message}`)
+  })
 
   opts.onProgress?.({ phase: 'pipelines' })
   const pipelines: Record<string, GPUComputePipeline> = {}
@@ -294,6 +354,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     return { sign, scales: readF32(t.scales!), N: t.N!, K: t.K!, nb: t.K! / 128 }
   }
 
+  // WebGPU allocation errors are DEFERRED: without an error scope the ~300 MB of weight uploads
+  // "succeed" with invalid buffers on VRAM-poor devices and every later generate returns garbage.
+  device.pushErrorScope('out-of-memory')
   const W: Record<string, GpuWeight> = {}
   for (const [name, t] of Object.entries(T)) {
     if (t.kind === 'q2') {
@@ -384,12 +447,13 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
   }
   function ropeBufs(posBase: number, S: number): { cos: GPUBuffer; sin: GPUBuffer } {
     const D = A.head_dim,
+      R = D / 2, // rotary halves: caches store [seq, D/2]; the full vector is concat(half, half)
       cos = new Float32Array(S * D),
       sin = new Float32Array(S * D)
     for (let s = 0; s < S; s++)
       for (let d = 0; d < D; d++) {
-        cos[s * D + d] = cosCache[(posBase + s) * 64 + (d % 64)]
-        sin[s * D + d] = sinCache[(posBase + s) * 64 + (d % 64)]
+        cos[s * D + d] = cosCache[(posBase + s) * R + (d % R)]
+        sin[s * D + d] = sinCache[(posBase + s) * R + (d % R)]
       }
     const cb = actBuf(S * D),
       sb = actBuf(S * D)
@@ -415,6 +479,8 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     Kc.push(actBuf(kvCapacity * KV * Dh))
     Vc.push(actBuf(kvCapacity * KV * Dh))
   }
+  const loadOom = await device.popErrorScope()
+  if (loadOom) throw new GpuOutOfMemoryError(`GPU allocation failed while loading weights (~350 MB VRAM needed): ${loadOom.message}`)
   // Grow every layer's K/V buffer to hold at least `needed` positions, preserving the cached content
   // (so a cross-turn reuse mid-conversation survives a growth). Rare (only when crossing a capacity
   // threshold); the copy is GPU-side and bounded geometrically. Invalidates cached decode bind groups
@@ -423,6 +489,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     if (needed <= kvCapacity) return
     const newCap = Math.min(maxSeqLen, Math.max(needed, kvCapacity * 2))
     const copyBytes = kvCapacity * KV * Dh * 4 // preserve all currently-allocated K/V
+    device.pushErrorScope('out-of-memory')
     const enc = device.createCommandEncoder()
     const olds: GPUBuffer[] = []
     for (let li = 0; li < A.layers; li++) {
@@ -436,6 +503,18 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     }
     device.queue.submit([enc.finish()])
     await device.queue.onSubmittedWorkDone()
+    const oom = await device.popErrorScope()
+    if (oom) {
+      // Roll back to the old (still valid) buffers so the engine stays usable at its current size.
+      for (let li = 0; li < A.layers; li++) {
+        Kc[li].destroy()
+        Vc[li].destroy()
+        Kc[li] = olds[2 * li]
+        Vc[li] = olds[2 * li + 1]
+      }
+      poolInvalidate()
+      throw new GpuOutOfMemoryError(`KV cache growth to ${newCap} positions failed: ${oom.message}`)
+    }
     for (const b of olds) b.destroy()
     kvCapacity = newCap
     poolInvalidate()
@@ -667,7 +746,7 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
       if (li === 0) layer0 = cur
     }
     const fn = actBuf(S * Hd)
-    rms(pass, cur, 'layers.28.final_norm_layernorm', S, Hd, fn)
+    rms(pass, cur, FINAL_NORM, S, Hd, fn)
     pass.end()
     return { fn, layer0 }
   }
@@ -1020,8 +1099,9 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     subgroupSize: sgMax,
     adapter: { vendor: info.vendor, architecture: info.architecture, device: info.device, description: info.description },
     limits: {
-      maxStorageBufferBindingSize: Number(L.maxStorageBufferBindingSize),
-      maxComputeWorkgroupStorageSize: L.maxComputeWorkgroupStorageSize,
+      // the DEVICE limits (what dispatches are actually validated against), not the adapter's maximums
+      maxStorageBufferBindingSize: Number(device.limits.maxStorageBufferBindingSize),
+      maxComputeWorkgroupStorageSize: device.limits.maxComputeWorkgroupStorageSize,
     },
   }
 
@@ -1089,12 +1169,28 @@ export async function createEngine(options: EngineOptions | string): Promise<Eng
     }
   }
 
+  // The engine shares one KV cache, buffer pool, and flag set across calls, so concurrent
+  // generate/prefill/forward would corrupt each other. Serialize them: overlapping calls queue
+  // instead of interleaving (npm consumers do not all have the app's single-flight worker).
+  let opChain: Promise<unknown> = Promise.resolve()
+  const serialize = <Args extends unknown[], R>(fn: (...args: Args) => Promise<R>): ((...args: Args) => Promise<R>) => {
+    return (...args: Args) => {
+      const run = opChain.then(
+        () => fn(...args),
+        () => fn(...args), // a failed predecessor must not poison the queue
+      )
+      opChain = run.catch(() => undefined)
+      return run
+    }
+  }
+
   const api: EngineInternal = {
-    generate,
-    prefill,
-    forward,
+    generate: serialize(generate),
+    prefill: serialize(prefill),
+    forward: serialize(forward),
     resetCache,
     capabilities,
+    lost,
     dispose: () => device.destroy(),
     device,
     adapter,

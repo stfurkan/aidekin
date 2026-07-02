@@ -22,10 +22,13 @@ const config = withDefaults(parseConfigFromHash(location.hash))
 // The embedding page's origin - used to target postMessage and scope persistence.
 const hostOrigin = (() => {
   try {
-    return new URL(document.referrer).origin
+    if (document.referrer) return new URL(document.referrer).origin
   } catch {
-    return ''
+    /* fall through */
   }
+  // Hosts with Referrer-Policy: no-referrer send no referrer; ancestorOrigins (Chromium/WebKit)
+  // still exposes the embedder, keeping the close bridge + per-host persistence working there.
+  return location.ancestorOrigins?.[0] ?? ''
 })()
 const allowed = new Set([hostOrigin, ...(config.allowedOrigins ?? [])].filter(Boolean))
 const persistKey = config.persist ? `aidekin-chat:${hostOrigin || 'local'}` : undefined

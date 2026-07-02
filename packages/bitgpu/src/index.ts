@@ -1,6 +1,7 @@
 export { createEngine } from './engine'
-export { WebGPUUnavailableError } from './errors'
+export { GpuOutOfMemoryError, WebGPUUnavailableError } from './errors'
 export type {
+  DeviceLostInfo,
   Engine,
   EngineOptions,
   EngineCapabilities,

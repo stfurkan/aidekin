@@ -55,7 +55,7 @@ async function handle(msg: AsrIn): Promise<void> {
 
 async function loadAsset(base: string, rel: string): Promise<ArrayBuffer> {
   return getModelAsset(`asr/${rel}`, `${base}/${rel}`, (p) =>
-    post({ kind: 'load', label: 'ASR', detail: `${rel} · ${fmtBytes(p.loaded)} / ${fmtBytes(p.total)}`, loaded: p.loaded, total: p.total }),
+    post({ kind: 'load', label: 'ASR', file: rel, detail: `${rel} · ${fmtBytes(p.loaded)} / ${fmtBytes(p.total)}`, loaded: p.loaded, total: p.total }),
   )
 }
 

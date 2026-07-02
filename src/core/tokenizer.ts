@@ -5,6 +5,7 @@
 // works on token ids; this module is the product's encode/decode/chat-template layer.
 import { Tokenizer } from '@huggingface/tokenizers'
 import { Template } from '@huggingface/jinja'
+import { getModelAsset } from './modelStore'
 
 export interface ChatMessage {
   role: string
@@ -80,10 +81,12 @@ export class LlmTokenizer {
   }
 
   /** Load tokenizer.json + tokenizer_config.json (from the HF Hub by model id, or explicit URLs). The
-   *  caller may pass a `fetchJson` that handles caching (e.g. OPFS); the default is a plain fetch. */
+   *  caller may pass a `fetchJson` that overrides fetching; the default routes through the OPFS model
+   *  cache (keyed by model id + filename), so a fully cached model still boots when the Hub is
+   *  unreachable. The ~7MB tokenizer.json otherwise re-downloads on EVERY worker init. */
   static async load(
     source: { modelId: string } | { tokenizerJsonUrl: string; tokenizerConfigUrl: string },
-    fetchJson: (url: string) => Promise<unknown> = async (url) => (await fetch(url)).json(),
+    fetchJson?: (url: string) => Promise<unknown>,
   ): Promise<LlmTokenizer> {
     let jsonUrl: string
     let cfgUrl: string
@@ -95,7 +98,13 @@ export class LlmTokenizer {
       jsonUrl = source.tokenizerJsonUrl
       cfgUrl = source.tokenizerConfigUrl
     }
-    const [json, cfg] = await Promise.all([fetchJson(jsonUrl), fetchJson(cfgUrl)])
+    const get =
+      fetchJson ??
+      (async (url: string): Promise<unknown> => {
+        const key = 'modelId' in source ? `llm-tokenizer/${source.modelId}/${url.split('/').pop()}` : `llm-tokenizer/${url}`
+        return JSON.parse(new TextDecoder().decode(await getModelAsset(key, url)))
+      })
+    const [json, cfg] = await Promise.all([get(jsonUrl), get(cfgUrl)])
     return new LlmTokenizer(json, cfg as Record<string, unknown>)
   }
 }

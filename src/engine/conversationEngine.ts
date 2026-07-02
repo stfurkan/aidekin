@@ -109,7 +109,13 @@ function guardFabrications(text: string, context: string, streaming: boolean): s
     const tail = /\S*(?:https?:\/\/|www\.|@)\S*$/i.exec(out) // a link/email still being typed at the end
     if (tail && tail.index >= 0) out = out.slice(0, tail.index)
   }
-  out = out.replace(URL_OR_EMAIL, (m) => (context.includes(m) ? m : ''))
+  out = out.replace(URL_OR_EMAIL, (m) => {
+    if (context.includes(m)) return m
+    // Sentence punctuation glued to the match ("see aidekin.com.") is not part of the URL/email;
+    // don't let it turn a legitimate quote into a false positive.
+    const bare = m.replace(/[.,!?;:]+$/, '')
+    return bare && context.includes(bare) ? m : ''
+  })
   return out.replace(/[^\S\n]{2,}/g, ' ').replace(/[^\S\n]+([.,!?;:])/g, '$1')
 }
 
@@ -434,7 +440,9 @@ export class ConversationEngine {
     // Skip an empty reply (e.g. all tokens spent in a <think> block) - don't record it.
     if (text) {
       this.assistant = text
-      this.pushAssistant(text)
+      // Keep the RAW reply as the turn's model form when the guard edited it: the worker's KV
+      // cache holds the raw tokens, so sending the edited text would silently kill reuse.
+      this.pushAssistant(text, raw !== text ? raw : undefined)
       this.cb.onAssistantText?.(text, true)
     }
     this.currentId = -1
@@ -574,8 +582,8 @@ export class ConversationEngine {
     this.persist()
   }
 
-  private pushAssistant(text: string): void {
-    this.messages.push({ role: 'assistant', content: text })
+  private pushAssistant(text: string, model?: string): void {
+    this.messages.push(model ? { role: 'assistant', content: text, model } : { role: 'assistant', content: text })
     this.trim()
     this.persist()
   }

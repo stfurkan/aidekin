@@ -32,7 +32,15 @@ function readDataConfig(el: HTMLScriptElement): Cfg {
   if (d.mode) cfg.mode = d.mode as Cfg['mode']
   if (d.systemPrompt) cfg.systemPrompt = d.systemPrompt
   if (d.greeting) cfg.greeting = d.greeting
-  if (d.knowledgeUrl) cfg.knowledgeUrl = d.knowledgeUrl
+  if (d.knowledgeUrl) {
+    // Resolve against the HOST page here: inside the iframe a relative URL would resolve
+    // against the widget origin and silently disable RAG.
+    try {
+      cfg.knowledgeUrl = new URL(d.knowledgeUrl, location.href).href
+    } catch {
+      cfg.knowledgeUrl = d.knowledgeUrl
+    }
+  }
   if (d.ragTopK) cfg.ragTopK = Number(d.ragTopK)
   if (d.reasoning) cfg.reasoning = d.reasoning !== 'false'
   if (d.theme) cfg.theme = d.theme as Cfg['theme']
