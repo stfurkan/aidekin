@@ -25,7 +25,13 @@ export interface Scenario {
 }
 
 // Format rules the system prompt promises for EVERY reply.
-export const GLOBAL_MUST_NOT = [/<[a-z]+[\s>]/i, /```/, /https?:\/\//i]
+export const GLOBAL_MUST_NOT = [
+  /<[a-z]+[\s>]/i,
+  /```/,
+  /https?:\/\//i,
+  // Mangled brand-name spellings (penalized subword flips): aidkin, aidakin, aideskin, ...
+  /\baid(?!ekin\b)[aeks]*kin\b|\baidekit\b|\baidedin\b|\baide kin\b/i,
+]
 
 export const SCENARIOS: Scenario[] = [
   {

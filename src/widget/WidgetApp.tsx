@@ -419,6 +419,11 @@ function VoiceView({
           )}
         </div>
       )}
+      {!loadingVoice && (
+        <p className="px-3 pb-2 text-center text-[10px] leading-tight text-muted-foreground">
+          AI can make mistakes. Double-check important info.
+        </p>
+      )}
     </div>
   )
 }

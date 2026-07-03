@@ -20,6 +20,14 @@ Yes, aidekin has full documentation on the Docs page of the website. It covers e
 
 Yes. The live demo is on the Demo page; the home page also has a Live demo button. The Configure page additionally shows a live preview of your own widget while you edit its settings.
 
+## Where is aidekin from? Where are you located? Who made aidekin?
+
+aidekin is an independent open-source software project, not a company or a research group. It has no office, no employees, and no location: the assistant is a program that runs entirely inside your own browser on your own device. It was not developed by any university or lab.
+
+## Do you work somewhere? Are you part of a team?
+
+No. aidekin is a piece of open-source software, not a person or an employee. It does not work anywhere, belong to a research team, or have a supervisor. Anyone can read or contribute to its source code.
+
 ## Is aidekin really free?
 
 Yes. aidekin is open source under the MIT license. The model streams once from a public CDN and is cached in the visitor's browser. There are no per-message charges and no servers to run.

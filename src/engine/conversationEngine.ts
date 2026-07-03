@@ -75,6 +75,12 @@ export interface EngineOptions {
   /** Prompt-lookup speculative decoding (bitgpu experimental; identical output, speed varies
    *  by workload). Default off; measure with the eval before enabling anywhere. */
   promptLookup?: boolean
+  /** The assistant's brand name (the widget title). When set to a single word of 6+ letters,
+   *  near-miss spellings in replies are corrected to it deterministically: a small model spells
+   *  a coined name unreliably (measured at every sampling setting), and a mangled brand name is
+   *  the single most visible quality defect. Words the user or the retrieved context actually
+   *  used are never touched. */
+  brandName?: string
   callbacks?: EngineCallbacks
 }
 
@@ -105,7 +111,26 @@ const RAG_INSTRUCTION =
 const CHAT_INSTRUCTION =
   'When the user greets you or makes small talk, reply with one short, friendly sentence and offer ' +
   'to help; never explain, define, or analyze what the user said. If an earlier question in the ' +
-  'conversation was never answered, address it in your reply.'
+  'conversation was never answered, address it in your reply. You are open-source software running ' +
+  'entirely in this browser: you have no location, workplace, team, or creator organization, and ' +
+  'you must never invent one.'
+
+/** Preserve the original word's leading capitalization when substituting the brand spelling. */
+const matchCase = (firstChar: string, brand: string): string =>
+  firstChar === firstChar.toUpperCase() ? brand[0].toUpperCase() + brand.slice(1) : brand
+
+/** True when `b` is within one edit (sub/ins/del) of `a`, case-insensitive. */
+function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return true
+  const la = a.length
+  const lb = b.length
+  if (Math.abs(la - lb) > 1) return false
+  let i = 0
+  while (i < la && i < lb && a[i] === b[i]) i++
+  if (la === lb) return a.slice(i + 1) === b.slice(i + 1) // one substitution
+  const [shorter, longer] = la < lb ? [a, b] : [b, a]
+  return shorter.slice(i) === longer.slice(i + 1) // one insertion/deletion
+}
 
 // The product promises plain text. A model that emits markup under pressure ("write me the
 // exact html embed code") gets it stripped deterministically - enforcement in code, not one
@@ -169,6 +194,7 @@ export class ConversationEngine {
   private readonly maxHistoryTokens: number
   private readonly samplerSeed?: number
   private promptLookup: boolean
+  private readonly brandName: string | null
   /** tok/s + speculation stats of the last completed generation (measurement/eval). */
   lastGenStats: { tps?: number; speculation?: { steps: number; drafted: number; accepted: number } } | null = null
 
@@ -233,6 +259,8 @@ export class ConversationEngine {
     this.maxHistoryTokens = opts.maxHistoryTokens ?? DEFAULT_MAX_HISTORY_TOKENS
     this.samplerSeed = opts.samplerSeed
     this.promptLookup = opts.promptLookup ?? false
+    const brand = opts.brandName?.trim() ?? ''
+    this.brandName = /^[a-z]{6,}$/i.test(brand) ? brand : null
     this.systemPrompt = opts.systemPrompt
     this.messages = this.hydrate()
   }
@@ -333,12 +361,33 @@ export class ConversationEngine {
 
   // ── conversation turn ───────────────────────────────────────────────────────
 
+  /** Correct near-miss spellings of the brand name ("Aidkin", "aideskin", "aide kin") to the
+   *  configured spelling. Deterministic and tightly scoped: single alphabetic words sharing the
+   *  brand's first three letters, within ONE edit, and not literally present in the user's
+   *  message or the retrieved context (a word they actually used is never rewritten). */
+  private fixBrandSpelling(text: string): string {
+    const brand = this.brandName
+    if (!brand) return text
+    const lower = brand.toLowerCase()
+    const protectedText = (this.turnContext + ' ' + (this.messages[this.messages.length - 1]?.content ?? '')).toLowerCase()
+    // The split form first ("aide kin"): join it when the two halves spell the brand.
+    let out = text.replace(/\b([a-z]{2,})[ ]([a-z]{2,})\b/gi, (m, a: string, b: string) => ((a + b).toLowerCase() === lower ? matchCase(m[0], brand) : m))
+    out = out.replace(/\b[a-z]{3,}\b/gi, (w) => {
+      const wl = w.toLowerCase()
+      if (wl === lower || wl.slice(0, 3) !== lower.slice(0, 3)) return w
+      if (!withinOneEdit(wl, lower)) return w
+      if (protectedText.includes(wl)) return w // a real word from the user/context stays
+      return matchCase(w[0], brand)
+    })
+    return out
+  }
+
   /** A new turn is superseding a reply that is still streaming. Whatever already streamed was
    *  SEEN - and in voice mode already HEARD - so vanishing it desyncs the transcript from
    *  reality. Commit the partial as the reply, in order, before the new user turn is recorded. */
   private commitPartialReply(): void {
     if (this.currentId < 0) return
-    const partial = stripHtmlTags(this.retriever ? guardFabrications(this.assistant, this.turnContext, false) : this.assistant).trim()
+    const partial = this.fixBrandSpelling(stripHtmlTags(this.retriever ? guardFabrications(this.assistant, this.turnContext, false) : this.assistant)).trim()
     if (!partial) return
     this.assistant = partial
     this.pushAssistant(partial)
@@ -440,7 +489,7 @@ export class ConversationEngine {
     if (m.kind === 'token') {
       if (m.id !== this.currentId) return
       this.assistant += m.text
-      const shown = stripHtmlTags(this.retriever ? guardFabrications(this.assistant, this.turnContext, true) : this.assistant)
+      const shown = this.fixBrandSpelling(stripHtmlTags(this.retriever ? guardFabrications(this.assistant, this.turnContext, true) : this.assistant))
       this.cb.onAssistantText?.(shown, false)
       if (this.chunkClauses) {
         const sink = this.clauseSink ?? this.cb.onAssistantClause
@@ -480,7 +529,7 @@ export class ConversationEngine {
     const raw = this.assistant.trim() ? this.assistant : (doneText ?? '').trim()
     // Grounded turns: strip any URL/email the model invented or mangled (not verbatim in the
     // retrieved context) from the STORED + displayed answer, so it can't resurface on reload either.
-    const text = stripHtmlTags(this.retriever ? guardFabrications(raw, this.turnContext, false) : raw)
+    const text = this.fixBrandSpelling(stripHtmlTags(this.retriever ? guardFabrications(raw, this.turnContext, false) : raw))
     if (this.chunkClauses) {
       const sink = this.clauseSink ?? this.cb.onAssistantClause
       const rest = this.chunker.flush()
@@ -573,7 +622,9 @@ export class ConversationEngine {
       this.prewarmTimer = null
       if (!this.llm) return
       const system: ChatMessage = { role: 'system', content: this.composedSystem() }
-      this.llm.postMessage({ kind: 'prewarm', system })
+      // Send the full model view: for a restored conversation the worker warms the whole
+      // transcript (exactly what the next request will send), not just the system prompt.
+      this.llm.postMessage({ kind: 'prewarm', system, messages: this.modelView() })
       this.cacheDirty = false
     }, 300)
   }

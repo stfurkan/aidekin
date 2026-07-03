@@ -24,6 +24,7 @@ async function run(): Promise<void> {
 
   const engine = new ConversationEngine({
     systemPrompt: resolveSystemPrompt({ title: 'aidekin' }), // the DEFAULT prompt every embedder gets
+    brandName: 'aidekin',
     ragTopK: 3,
     samplerSeed: 42,
     callbacks: {

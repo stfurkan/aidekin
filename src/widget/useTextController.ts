@@ -123,6 +123,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     if (!engineRef.current) {
       const engine = new ConversationEngine({
         systemPrompt: resolveSystemPrompt(config),
+        brandName: config.title,
         retriever: null, // RAG attaches later via setRetriever when a knowledge URL is set
         ragTopK: config.ragTopK,
         chunkClauses: false,
