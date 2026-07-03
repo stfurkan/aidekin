@@ -6,16 +6,12 @@
   "license": "MIT",
   "author": "Sait Furkan Teke",
   "description": "aidekin: a 100% client-side, embeddable voice and text AI widget that runs entirely in the browser (WebGPU). No backend, no API keys, no per-message cost.",
-  "workspaces": [
-    "packages/*"
-  ],
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
     "dev": "vite",
-    "build:engine": "npm run build -w bitgpu",
-    "build": "npm run build:engine && tsc --noEmit && vite build && vite build --config vite.loader.config.ts",
+    "build": "tsc --noEmit && vite build && vite build --config vite.loader.config.ts",
     "build:app": "vite build",
     "build:loader": "vite build --config vite.loader.config.ts",
     "preview": "vite preview",
@@ -29,10 +25,10 @@
     "eval:chat": "node scripts/eval-chat.mjs"
   },
   "dependencies": {
-    "bitgpu": "*",
     "@huggingface/jinja": "0.5.9",
     "@huggingface/tokenizers": "0.1.3",
     "@ricky0123/vad-web": "0.0.30",
+    "bitgpu": "0.1.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "fft.js": "4.0.4",
@@ -55,6 +51,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "@webgpu/types": "0.1.70",
+    "playwright-core": "1.61.1",
     "tailwindcss": "4.3.1",
     "tsx": "4.22.4",
     "tw-animate-css": "1.4.0",
