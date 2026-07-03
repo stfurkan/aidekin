@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>aidekin device diagnostics</title>
+    <style>
+      body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; padding: 16px; background: #0f1a17; color: #e6f0ec; }
+      h1 { font-size: 16px; margin: 0 0 8px; }
+      p { margin: 0 0 12px; color: #9db3ac; font-size: 13px; }
+      button { font: inherit; padding: 10px 16px; margin: 0 8px 12px 0; border: 1px solid #3a4f48; border-radius: 8px; background: #1a2b26; color: #e6f0ec; }
+      button:active { background: #24463b; }
+      pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 12px; }
+      .pass { color: #7dd8a5; } .fail { color: #ff8a8a; }
+    </style>
+  </head>
+  <body>
+    <h1>aidekin device diagnostics</h1>
+    <p>Internal test page. Tapping Run downloads the ~290MB model (cached after the first run) and measures this device's GPU path, speed, and memory behavior.</p>
+    <button id="run">Run</button>
+    <button id="copy">Copy log</button>
+    <pre id="out">idle.</pre>
+    <script type="module" src="/src/diag/main.ts"></script>
+  </body>
+</html>

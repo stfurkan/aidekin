@@ -87,6 +87,9 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         widget: fileURLToPath(new URL('./widget/index.html', import.meta.url)),
+        // TEMPORARY: hidden device-diagnostics page for mobile GPU testing (not linked
+        // anywhere, noindex). Remove this input + diag.html + src/diag/ after testing.
+        diag: fileURLToPath(new URL('./diag.html', import.meta.url)),
       },
     },
     // The AudioWorklet must be a standalone file for audioWorklet.addModule() -
