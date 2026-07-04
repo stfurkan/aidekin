@@ -639,7 +639,7 @@ function ConstrainedNotice({ reason, onProceed }: { reason?: string; onProceed: 
         <p className="mb-1.5 text-sm font-medium">Runs on this device</p>
         <p className="text-xs text-muted-foreground">
           {reason ?? 'aidekin runs the model on your device and works best on desktop or a recent phone.'} The
-          fastest experience is Chrome or Edge on a computer.
+          fastest experience is on a computer.
         </p>
         <button
           type="button"
