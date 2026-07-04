@@ -241,7 +241,7 @@ function TextView({
   canVoice: boolean
   onTalk: () => void
 }) {
-  const { turns, status, loadPct, cached, error, send, stop, retry, trimmed } = controller
+  const { turns, status, loadPct, cached, error, send, stop, retry, trimmed, slowDevice } = controller
   const [draft, setDraft] = useState('')
   const { scrollRef, onScroll } = useStickyAutoScroll(turns, status)
   const loading = status === 'loading'
@@ -275,6 +275,11 @@ function TextView({
         {trimmed && turns.length > 0 && (
           <p className="mono-kicker self-center py-1 text-center text-[10px] normal-case tracking-normal">
             earlier messages trimmed to keep replies fast
+          </p>
+        )}
+        {slowDevice && turns.length > 0 && (
+          <p className="mono-kicker self-center py-1 text-center text-[10px] normal-case tracking-normal">
+            this device is on the slower side for on-device AI · replies may take a while
           </p>
         )}
         {turns.map((t) => (
@@ -631,17 +636,17 @@ function ConstrainedNotice({ reason, onProceed }: { reason?: string; onProceed: 
   return (
     <Centered>
       <div className="max-w-xs px-6 text-center">
-        <p className="mb-1.5 text-sm font-medium">This device may not have enough memory</p>
+        <p className="mb-1.5 text-sm font-medium">Runs on this device</p>
         <p className="text-xs text-muted-foreground">
-          {reason ?? 'aidekin runs the model on your device and works best on desktop.'} For the best
-          experience, open it in Chrome or Edge on a desktop.
+          {reason ?? 'aidekin runs the model on your device and works best on desktop or a recent phone.'} The
+          fastest experience is Chrome or Edge on a computer.
         </p>
         <button
           type="button"
           onClick={onProceed}
           className="mt-4 rounded-md border border-border px-4 py-2 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
         >
-          Try anyway
+          Continue
         </button>
       </div>
     </Centered>

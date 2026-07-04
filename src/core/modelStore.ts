@@ -194,6 +194,7 @@ async function streamToOpfs(
   key: string,
   url: string,
   onProgress?: ProgressFn,
+  readBack = true, // false: persist to disk only and skip the whole-file ArrayBuffer (streaming consumers)
 ): Promise<ArrayBuffer | null> {
   const handle = (await dir.getFileHandle(sanitize(key), { create: true })) as SyncCapableFileHandle
   if (!handle.createSyncAccessHandle) {
@@ -264,8 +265,10 @@ async function streamToOpfs(
     if (total > 0 && size !== total) {
       throw new Error(`incomplete download for ${key}: ${size}/${total} bytes`)
     }
-    buf = new ArrayBuffer(size)
-    access.read(new Uint8Array(buf), { at: 0 })
+    // Streaming consumers re-read from disk via opfsReadStream; skipping the read-back keeps the
+    // first download's peak at one chunk (the buffered peak is what iOS Safari kills the tab for).
+    buf = readBack ? new ArrayBuffer(size) : new ArrayBuffer(0)
+    if (readBack) access.read(new Uint8Array(buf), { at: 0 })
   } catch (err) {
     // Interrupted or failed mid-write: KEEP the partial bytes + the .part ETag sidecar so the NEXT
     // call resumes from here instead of re-downloading the whole (multi-hundred-MB) file. A worker
@@ -427,10 +430,11 @@ export async function getModelAsset(
 }
 
 /**
- * Stream a model asset instead of buffering it: served straight from the OPFS file when cached
- * (peak memory = one chunk), otherwise downloaded through getModelAsset (locked, resumable,
- * persisted) and then re-read from disk so the download buffer can be collected immediately.
- * Cache-less sessions (private browsing, quota exhaustion) stream over the in-memory buffer.
+ * Stream a model asset WITHOUT ever holding the whole file in memory: served straight from the
+ * OPFS file when cached; otherwise downloaded to OPFS (locked, resumable, no read-back) and then
+ * streamed from disk. Cache-less sessions (private browsing, quota exhaustion) pipe the network
+ * body straight through - they re-download next visit, which those sessions imply anyway. The
+ * buffered fallback was the last remaining ~290MB peak, and iOS Safari kills the tab for it.
  */
 export async function getModelAssetStream(key: string, url: string, onProgress?: ProgressFn): Promise<ReadableStream<Uint8Array>> {
   const cached = await opfsReadStream(key)
@@ -438,10 +442,52 @@ export async function getModelAssetStream(key: string, url: string, onProgress?:
     onProgress?.({ loaded: cached.size, total: cached.size })
     return cached.stream
   }
-  const buf = await getModelAsset(key, url, onProgress)
-  const now = await opfsReadStream(key)
-  if (now) return now.stream
-  return new Response(buf).body as ReadableStream<Uint8Array>
+  const run = async (): Promise<ReadableStream<Uint8Array>> => {
+    const won = await opfsReadStream(key) // the lock winner may have just filled the cache
+    if (won) {
+      onProgress?.({ loaded: won.size, total: won.size })
+      return won.stream
+    }
+    const dir = await opfsDir()
+    if (dir) {
+      try {
+        const onRetry = (n: number, e: unknown, ms: number): void => {
+          const err = e as { name?: string; message?: string }
+          console.warn(`[aidekin] model fetch failed for ${key} (${err?.name || 'Error'}: ${err?.message || String(e)}); retry ${n} in ${ms}ms`)
+        }
+        const ok = await withRetry(() => streamToOpfs(dir, key, url, onProgress, false), {
+          shouldRetry: (e) => !(e instanceof DOMException && e.name === 'QuotaExceededError'),
+          onRetry,
+        })
+        if (ok) {
+          const now = await opfsReadStream(key)
+          if (now) return now.stream
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'QuotaExceededError') {
+          await dir.removeEntry(sanitize(key)).catch(() => undefined)
+          await removePart(dir, key)
+        }
+        // fall through to the direct network stream
+      }
+    }
+    const res = await fetch(url)
+    if (!res.ok || !res.body) throw httpError(url, res.status, res)
+    const total = Number(res.headers.get('content-length')) || 0
+    let loaded = 0
+    return res.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, ctrl) {
+          loaded += chunk.byteLength
+          onProgress?.({ loaded, total })
+          ctrl.enqueue(chunk)
+        },
+      }),
+    )
+  }
+  const locks = typeof navigator !== 'undefined' ? (navigator as Navigator & { locks?: LockManager }).locks : undefined
+  if (locks?.request) return locks.request('aidekin:model:' + key, run) as Promise<ReadableStream<Uint8Array>>
+  return run()
 }
 
 /** Stream a COMPLETE cached asset from OPFS (same completeness checks as opfsRead), or null. */

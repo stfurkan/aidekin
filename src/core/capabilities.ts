@@ -197,8 +197,11 @@ export function resolveWidgetCapabilities(r: CapabilityReport, requested: Widget
   // on many capable desktops, which would false-flag them. Mobile is the reliable signal.
   const lowMemory = r.deviceMemoryGB != null && r.deviceMemoryGB <= 4
   const constrained = r.isMobile || lowMemory
+  // Recent flagship phones run the model well (measured: iPhone 14 Pro ~15-19 tok/s after the
+  // streaming loader + f16 KV work); budget phones load it but are painfully slow. So the warning
+  // sets expectations instead of claiming phones cannot load it.
   const constrainedReason = constrained
-    ? 'aidekin runs the AI model on your device, which needs a desktop browser with enough memory. Phones and tablets usually cannot load it.'
+    ? 'aidekin downloads a ~300 MB AI model and runs it on this device. Recent high-end phones handle it well; older or low-memory devices may be slow. Wi-Fi recommended.'
     : undefined
 
   if (requested === 'text') {

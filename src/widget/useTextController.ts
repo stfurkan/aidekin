@@ -36,6 +36,8 @@ export interface TextController {
   clear: () => void
   /** True once the sliding window has dropped old turns (UI shows a subtle marker). */
   trimmed: boolean
+  /** True once a reply MEASURED under reading speed (<6 tok/s) - the UI sets expectations. */
+  slowDevice: boolean
   /** Unload the model from memory, clear its on-disk cache, and reset to 'cold' so the
    *  next message re-downloads. */
   forgetModel: () => Promise<ClearResult>
@@ -78,6 +80,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const [voiceLoadPct, setVoiceLoadPct] = useState(0)
   const [voiceCached, setVoiceCached] = useState<boolean | null>(null)
   const [trimmed, setTrimmed] = useState(false)
+  const [slowDevice, setSlowDevice] = useState(false)
   const [muted, setMuted] = useState(false)
 
   // Has the LLM been downloaded before? Check the SAME OPFS cache + key the worker writes
@@ -160,6 +163,11 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
             // appears ABOVE the question it answers).
             streamingId.current = null
             setStatus('ready')
+            // Performance-based expectation setting: the static pre-download heuristic can't tell
+            // a flagship phone (~15-19 tok/s, fine) from a budget one (~2-5 tok/s, painful). The
+            // first real reply gives a MEASURED decode rate; under reading speed, say so once.
+            const tps = engineRef.current?.lastGenStats?.tps
+            if (tps !== undefined && tps > 0 && tps < 6) setSlowDevice(true)
           },
           onHistoryTrimmed: () => setTrimmed(true),
           onError: (where, message) => {
@@ -494,6 +502,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     retry,
     clear,
     trimmed,
+    slowDevice,
     forgetModel,
     voiceState,
     voiceActive,
