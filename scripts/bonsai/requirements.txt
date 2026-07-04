@@ -1,5 +1,0 @@
-# Offline Bonsai weight tooling. Unpinned on purpose: install the latest of each.
-onnx
-numpy
-onnxruntime
-tokenizers
