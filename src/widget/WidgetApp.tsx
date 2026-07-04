@@ -41,6 +41,22 @@ function useStickyAutoScroll(...deps: unknown[]) {
     if (el && stick.current) el.scrollTop = el.scrollHeight
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)
+  // Virtual keyboard: when it opens, the host loader shrinks our iframe to the visible rect, and
+  // WebKit may also force-scroll THIS document to reveal the focused composer. Undo that scroll
+  // (the app is its own scroll container) and keep the log pinned to the newest message.
+  useEffect(() => {
+    const onResize = (): void => {
+      window.scrollTo(0, 0)
+      const el = scrollRef.current
+      if (el && stick.current) el.scrollTop = el.scrollHeight
+    }
+    window.addEventListener('resize', onResize)
+    window.visualViewport?.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.visualViewport?.removeEventListener('resize', onResize)
+    }
+  }, [])
   return { scrollRef, onScroll }
 }
 
@@ -285,7 +301,7 @@ function TextView({
           maxLength={4000}
           disabled={loading}
           placeholder={loading ? 'Setting up the assistant…' : 'Type a message…'}
-          className="max-h-28 min-h-10 flex-1 resize-none rounded-xl border border-input bg-background px-3.5 py-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+          className="max-h-28 min-h-10 flex-1 resize-none rounded-xl border border-input bg-background px-3.5 py-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:text-base"
         />
         {canVoice && (
           <button

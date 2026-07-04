@@ -227,6 +227,35 @@ function init(): void {
   const onKeydown = (e: KeyboardEvent): void => {
     if (e.key === 'Escape' && open) doClose()
   }
+  // Virtual-keyboard fit. iOS never resizes the page for the on-screen keyboard: it SCROLLS the
+  // host page instead, and position:fixed elements (this panel) go out of view with it - with
+  // the keyboard up, neither the conversation nor the composer stayed visible on phones. While
+  // the panel is open, track the VisualViewport; when the keyboard eats enough height to matter,
+  // pin the panel into the VISIBLE rect (phones) or lift it above the keyboard (larger screens),
+  // and clear the inline overrides when it goes away. Desktop never trips the threshold. (The
+  // declarative fix, interactive-widget=resizes-content, is still unsupported in WebKit.)
+  const vv = window.visualViewport
+  const kbClear = (): void => {
+    for (const p of ['top', 'left', 'right', 'bottom', 'width', 'height', 'maxHeight'] as const) panel.style[p] = ''
+  }
+  const kbFit = (): void => {
+    if (!vv || !open) return
+    const kb = window.innerHeight - vv.height - vv.offsetTop // keyboard inset from the bottom
+    if (kb < 100) return kbClear()
+    if (window.innerWidth <= 480) {
+      // fullscreen phone panel: pin to the visible rect
+      panel.style.top = `${vv.offsetTop + 12}px`
+      panel.style.left = `${vv.offsetLeft + 12}px`
+      panel.style.width = `${vv.width - 24}px`
+      panel.style.height = `${vv.height - 24}px`
+      panel.style.right = 'auto'
+      panel.style.bottom = 'auto'
+    } else {
+      // floating panel: lift above the keyboard and cap the height to what remains visible
+      panel.style.bottom = `${kb + 20}px`
+      panel.style.maxHeight = `${vv.height - 40}px`
+    }
+  }
   function doOpen(): void {
     ensureIframe()
     panel.classList.remove('hidden')
@@ -234,6 +263,8 @@ function init(): void {
     launcher.classList.add('hidden')
     open = true
     document.addEventListener('keydown', onKeydown)
+    vv?.addEventListener('resize', kbFit)
+    vv?.addEventListener('scroll', kbFit)
     emit('open')
   }
   function doClose(): void {
@@ -241,6 +272,9 @@ function init(): void {
     launcher.classList.remove('hidden')
     open = false
     document.removeEventListener('keydown', onKeydown)
+    vv?.removeEventListener('resize', kbFit)
+    vv?.removeEventListener('scroll', kbFit)
+    kbClear()
     launcher.focus() // return focus to the launcher (was hidden while open)
     setTimeout(() => {
       if (!open) panel.classList.add('hidden')
