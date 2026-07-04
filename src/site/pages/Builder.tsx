@@ -331,7 +331,7 @@ function ResultPanel({ result }: { result: BuildResult }) {
   const kb = result.bytes / 1024
   const size = kb < 1024 ? `${kb.toFixed(0)} KB` : `${(kb / 1024).toFixed(2)} MB`
   return (
-    <div className="mt-8 rounded-lg border border-primary/30 bg-primary/[0.06] p-6">
+    <div className="mt-8 rounded-lg border border-primary/30 bg-primary/6 p-6">
       <div className="mb-3 flex items-center gap-2 text-primary">
         <CheckCircle2 className="size-5" />
         <span className="font-semibold">knowledge.bin downloaded</span>

@@ -322,8 +322,8 @@ function Callout({ children, tone = 'note' }: { children: ReactNode; tone?: 'not
     <div
       className={
         tone === 'warn'
-          ? 'rounded-lg border border-destructive/30 bg-destructive/[0.06] p-4 text-sm leading-relaxed text-foreground'
-          : 'rounded-lg border border-primary/25 bg-primary/[0.05] p-4 text-sm leading-relaxed text-foreground'
+          ? 'rounded-lg border border-destructive/30 bg-destructive/6 p-4 text-sm leading-relaxed text-foreground'
+          : 'rounded-lg border border-primary/25 bg-primary/5 p-4 text-sm leading-relaxed text-foreground'
       }
     >
       {children}

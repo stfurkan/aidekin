@@ -494,7 +494,7 @@ const Bubble = memo(function Bubble({ role, text }: { role: WidgetTurn['role']; 
         'max-w-[85%] rounded-xl px-3.5 py-2.5 text-left text-sm leading-relaxed animate-in fade-in slide-in-from-bottom-1',
         !isAssistant && 'whitespace-pre-wrap',
         role === 'user' && 'self-end rounded-br-sm bg-secondary',
-        isAssistant && 'self-start rounded-bl-sm border border-primary/25 bg-primary/[0.07]',
+        isAssistant && 'self-start rounded-bl-sm border border-primary/25 bg-primary/7',
         role === 'error' &&
           'self-start rounded-bl-sm border border-destructive/40 bg-destructive/10 text-destructive',
       )}
@@ -506,7 +506,7 @@ const Bubble = memo(function Bubble({ role, text }: { role: WidgetTurn['role']; 
 
 function TypingDots() {
   return (
-    <div className="flex items-center gap-1 self-start rounded-xl rounded-bl-sm border border-primary/25 bg-primary/[0.07] px-3.5 py-3">
+    <div className="flex items-center gap-1 self-start rounded-xl rounded-bl-sm border border-primary/25 bg-primary/7 px-3.5 py-3">
       {[0, 1, 2].map((i) => (
         <span
           key={i}

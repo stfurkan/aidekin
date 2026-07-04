@@ -118,7 +118,7 @@ export function HeroChat() {
       className={
         m.role === 'user'
           ? 'max-w-[85%] self-end rounded-xl rounded-br-sm bg-secondary px-3.5 py-2.5 text-sm leading-relaxed'
-          : 'max-w-[88%] self-start rounded-xl rounded-bl-sm border border-primary/25 bg-primary/[0.07] px-3.5 py-2.5 text-sm leading-relaxed'
+          : 'max-w-[88%] self-start rounded-xl rounded-bl-sm border border-primary/25 bg-primary/7 px-3.5 py-2.5 text-sm leading-relaxed'
       }
     >
       {m.text || '…'}
@@ -140,7 +140,7 @@ export function HeroChat() {
           <div ref={scrollRef} className="convo-scroll flex flex-1 flex-col gap-2.5 overflow-y-auto px-3.5 py-3">
             {bubbles}
             {dots && (
-              <div className="flex items-center gap-1 self-start rounded-xl rounded-bl-sm border border-primary/25 bg-primary/[0.07] px-3.5 py-3">
+              <div className="flex items-center gap-1 self-start rounded-xl rounded-bl-sm border border-primary/25 bg-primary/7 px-3.5 py-3">
                 {[0, 1, 2].map((i) => (
                   <span
                     key={i}
