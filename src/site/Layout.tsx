@@ -217,6 +217,9 @@ function SiteFooter() {
           <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="hover:text-foreground">
             GitHub
           </a>
+          <a href={`${GITHUB_URL}/issues`} target="_blank" rel="noreferrer" className="hover:text-foreground">
+            Report a problem
+          </a>
           <span className="opacity-60">MIT licensed</span>
         </div>
       </div>

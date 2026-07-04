@@ -12,7 +12,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react'
-import { Send, Square, Trash2, X, Loader2, Settings, HardDrive, Mic, MicOff, Keyboard, Sun, Moon } from 'lucide-react'
+import { Send, Square, Trash2, X, Loader2, Settings, HardDrive, Mic, MicOff, Keyboard, Sun, Moon, MessageSquareWarning } from 'lucide-react'
 import {
   probeCapabilities,
   resolveWidgetCapabilities,
@@ -861,6 +861,10 @@ function SettingsMenu({
               </button>
             )}
             {note && <p className="px-2 pt-1 text-[11px] text-muted-foreground">{note}</p>}
+            {/* Zero telemetry means user reports are the ONLY error signal - keep this easy to find. */}
+            <a href="https://github.com/stfurkan/aidekin/issues" target="_blank" rel="noreferrer" className={itemCls}>
+              <MessageSquareWarning className="size-4" /> Report a problem
+            </a>
             <a
               href="https://aidekin.com"
               target="_blank"
