@@ -19,8 +19,13 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* ── Ledger palette: warm paper & ink, one rationed jade accent ──────────────── */
-:root {
+/* ── Ledger palette: warm paper & ink, one rationed jade accent ────────────────
+   .theme-light / .theme-dark force a SUBTREE's palette regardless of the page theme
+   (an element's own custom properties beat inherited ones): used by the configurator's
+   live preview so the owner's "Default theme" choice renders inside a site of either mode.
+   The widget is variable-driven only (no dark: utilities), which is what makes this sound. */
+:root,
+.theme-light {
   --background: #fbfbf9; /* warm paper, not pure white */
   --foreground: #17191c; /* ink */
   --card: #f4f4f0; /* raised paper */
@@ -43,7 +48,8 @@
   --orb-idle: var(--slate-8);
   color-scheme: light;
 }
-.dark {
+.dark,
+.theme-dark {
   --background: #0b0c0e; /* near-black, faint cool cast */
   --foreground: #edeef0;
   --card: #131518;

@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, Copy, Database } from 'lucide-react'
+import { Check, ChevronDown, Copy, Database } from 'lucide-react'
 import { WidgetApp } from '@/widget/WidgetApp'
 import { WidgetFrame } from '@/widget/WidgetFrame'
 import { withDefaults, type WidgetConfig } from '@/widget/protocol'
@@ -105,19 +105,19 @@ export default function Configure() {
               </div>
             </Field>
             <Field label="Launcher position">
-              <select className={inputCls} value={f.position} onChange={(e) => set('position', e.target.value as Form['position'])}>
+              <Select value={f.position} onChange={(v) => set('position', v as Form['position'])}>
                 <option value="bottom-right">Bottom right</option>
                 <option value="bottom-left">Bottom left</option>
-              </select>
+              </Select>
             </Field>
           </div>
 
           <Field label="Default theme">
-            <select className={inputCls} value={f.theme} onChange={(e) => set('theme', e.target.value as Form['theme'])}>
+            <Select value={f.theme} onChange={(v) => set('theme', v as Form['theme'])}>
               <option value="auto">System (follows the visitor's OS)</option>
               <option value="light">Light</option>
               <option value="dark">Dark</option>
-            </select>
+            </Select>
             <p className="mt-1.5 text-xs text-muted-foreground">
               Match your site's look. Visitors can still toggle light/dark inside the widget, and
               their choice is remembered on your site.
@@ -125,10 +125,10 @@ export default function Configure() {
           </Field>
 
           <Field label="Mode">
-            <select className={inputCls} value={f.mode} onChange={(e) => set('mode', e.target.value as Form['mode'])}>
+            <Select value={f.mode} onChange={(v) => set('mode', v as Form['mode'])}>
               <option value="text">Text only (recommended)</option>
               <option value="both">Text + voice (beta)</option>
-            </select>
+            </Select>
             <p className="mt-1.5 text-xs text-muted-foreground">
               Text is light and works on any WebGPU browser. Voice is a beta opt-in: it adds a
               one-time ~1.6&nbsp;GB speech download on first mic tap and works best on desktop.
@@ -164,9 +164,14 @@ export default function Configure() {
         {/* Live preview */}
         <div className="lg:sticky lg:top-24 lg:self-start">
           <p className="mono-kicker mb-2">Live preview</p>
-          <WidgetFrame className="shadow-xl">
-            <WidgetApp config={previewConfig} loadOnMount={false} />
-          </WidgetFrame>
+          {/* theme-light/theme-dark scope the palette to the preview subtree, so the owner's
+              "Default theme" renders here regardless of this site's own mode. The visitor
+              toggle is hidden (lockTheme): inline it would flip the whole site's theme. */}
+          <div className={f.theme === 'light' ? 'theme-light' : f.theme === 'dark' ? 'theme-dark' : undefined}>
+            <WidgetFrame className="shadow-xl">
+              <WidgetApp config={previewConfig} loadOnMount={false} lockTheme />
+            </WidgetFrame>
+          </div>
           <p className="mt-2 text-xs text-muted-foreground">Type to load the model and try it for real.</p>
         </div>
       </div>
@@ -235,6 +240,20 @@ function Snippet({ form }: { form: Form }) {
 
 const inputCls =
   'w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring'
+
+/** Native <select> with the platform chrome stripped: Safari's default select ignores border
+ *  and padding styling entirely, so appearance-none + our own chevron renders identically
+ *  everywhere. The icon sits over the select and passes clicks through. */
+function Select({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: ReactNode }) {
+  return (
+    <div className="relative">
+      <select className={`${inputCls} appearance-none pr-8`} value={value} onChange={(e) => onChange(e.target.value)}>
+        {children}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+    </div>
+  )
+}
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (

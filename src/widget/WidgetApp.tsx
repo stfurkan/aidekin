@@ -69,9 +69,12 @@ interface Props {
   loadOnMount?: boolean
   onMessage?: (role: 'user' | 'assistant', text: string) => void
   onClose?: () => void
+  /** Hide the visitor theme toggle (configurator preview: the theme is driven by the
+   *  "Default theme" control there, and the toggle would flip the whole host site). */
+  lockTheme?: boolean
 }
 
-export function WidgetApp({ config, embedded, persistKey, loadOnMount, onMessage, onClose }: Props) {
+export function WidgetApp({ config, embedded, persistKey, loadOnMount, onMessage, onClose, lockTheme }: Props) {
   const [caps, setCaps] = useState<WidgetCapabilities | null>(null)
   const [tryAnyway, setTryAnyway] = useState(false)
 
@@ -107,6 +110,7 @@ export function WidgetApp({ config, embedded, persistKey, loadOnMount, onMessage
           persistKey={persistKey}
           loadOnMount={loadOnMount}
           onMessage={onMessage}
+          lockTheme={lockTheme}
           voiceAvailable={config.mode !== 'text' && caps.voiceAvailable}
         />
       )}
@@ -119,8 +123,9 @@ function ChatPanel({
   persistKey,
   loadOnMount,
   onMessage,
+  lockTheme,
   voiceAvailable,
-}: Pick<Props, 'config' | 'persistKey' | 'loadOnMount' | 'onMessage'> & { voiceAvailable?: boolean }) {
+}: Pick<Props, 'config' | 'persistKey' | 'loadOnMount' | 'onMessage' | 'lockTheme'> & { voiceAvailable?: boolean }) {
   const c = useTextController(config, { persistKey, loadOnMount, onMessage })
   const canText = config.mode !== 'voice'
   const canVoice = !!voiceAvailable
@@ -141,7 +146,7 @@ function ChatPanel({
   return (
     <>
       <div className="flex items-center justify-end gap-1 px-3 pt-2">
-        <ThemeToggle />
+        {!lockTheme && <ThemeToggle />}
         <SettingsMenu
           onClearChat={c.clear}
           hasChat={c.turns.length > 0}
