@@ -202,37 +202,38 @@ function ThemeToggle() {
 }
 
 function SiteFooter() {
+  const links: Array<{ label: string; to?: string; href?: string }> = [
+    { to: '/docs', label: 'Docs' },
+    { to: '/privacy', label: 'Privacy' },
+    { to: '/terms', label: 'Terms' },
+    { href: GITHUB_URL, label: 'GitHub' },
+    { href: 'https://github.com/stfurkan/bitgpu', label: 'Built on bitgpu' },
+    { href: `${GITHUB_URL}/issues`, label: 'Report a problem' },
+  ]
   return (
     <footer className="border-t border-border">
-      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-5 py-8 text-sm text-muted-foreground sm:flex-row">
-        <div className="flex items-center gap-2.5">
-          <AidekinMark className="size-4 shrink-0 text-foreground" coreClassName="fill-primary" />
+      {/* Two stacked rows on phones (brand line, then links wrapping over several rows),
+          merging into the one-line spread on wide screens. Nothing is hidden at any width. */}
+      <div className="mx-auto flex max-w-6xl flex-col gap-5 px-5 py-8 text-sm text-muted-foreground lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-start gap-2.5 lg:items-center">
+          <AidekinMark className="mt-0.5 size-4 shrink-0 text-foreground lg:mt-0" coreClassName="fill-primary" />
           <span>
-            <span className="font-medium text-foreground">aidekin</span>
-            <span className="hidden sm:inline">
-              , your own voice and text agent, running 100% in the browser.
-            </span>
+            <span className="font-medium text-foreground">aidekin</span>, your own voice and text
+            agent, running 100% in the browser.
           </span>
         </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <Link to="/docs" className="hover:text-foreground">
-            Docs
-          </Link>
-          <Link to="/privacy" className="hover:text-foreground">
-            Privacy
-          </Link>
-          <Link to="/terms" className="hover:text-foreground">
-            Terms
-          </Link>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="hover:text-foreground">
-            GitHub
-          </a>
-          <a href="https://github.com/stfurkan/bitgpu" target="_blank" rel="noreferrer" className="hover:text-foreground">
-            Built on bitgpu
-          </a>
-          <a href={`${GITHUB_URL}/issues`} target="_blank" rel="noreferrer" className="hover:text-foreground">
-            Report a problem
-          </a>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 lg:justify-end">
+          {links.map((l) =>
+            l.to ? (
+              <Link key={l.label} to={l.to} className="hover:text-foreground">
+                {l.label}
+              </Link>
+            ) : (
+              <a key={l.label} href={l.href} target="_blank" rel="noreferrer" className="hover:text-foreground">
+                {l.label}
+              </a>
+            ),
+          )}
           <span className="opacity-60">MIT licensed</span>
         </div>
       </div>

@@ -8,7 +8,7 @@ import { useLocation } from 'react-router-dom'
 
 const SITE = 'aidekin'
 const ORIGIN = 'https://aidekin.com'
-const HOME_TITLE = 'aidekin: your own on-device voice and text agent'
+const HOME_TITLE = 'aidekin: an AI agent that runs inside your visitor’s browser'
 const DEFAULT_DESC =
   'A private voice and text AI agent that runs entirely in the browser. No backend, no API keys, no per-message cost.'
 
