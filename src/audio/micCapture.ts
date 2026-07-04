@@ -3,6 +3,7 @@
 // the worklet falls back to an anti-aliased windowed-sinc resampler otherwise.
 
 import workletUrl from './pcmWorklet.js?url'
+import { dlog } from '../core/log'
 
 export interface MicFrame {
   /** frameSize samples of 16 kHz mono PCM in [-1, 1]. */
@@ -85,7 +86,7 @@ export class MicCapture {
     this.stream = stream
     // Confirm the device actually honored the constraints (some force DSP on).
     const settings = this.stream.getAudioTracks()[0]?.getSettings?.() ?? {}
-    console.info(
+    dlog(
       `[aidekin] mic DSP · echoCancellation=${settings.echoCancellation} ` +
         `autoGainControl=${settings.autoGainControl} noiseSuppression=${settings.noiseSuppression}`,
     )
@@ -116,7 +117,7 @@ export class MicCapture {
       if (d.type === 'meta') {
         this.contextRate = d.inRate
         this.resamplingInWorklet = d.resampling
-        console.info(
+        dlog(
           `[aidekin] mic capture · contextRate=${d.inRate}Hz → ${d.targetRate}Hz · ` +
             `resampling-in-worklet=${d.resampling} (false = browser did high-quality resample)`,
         )

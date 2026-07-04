@@ -12,6 +12,7 @@ import { wasmThreads } from '../core/runtime'
 import { modelSource, ORT_WASM_CDN } from '../models/registry'
 import type { TurnIn, TurnOut } from '../protocol/messages'
 import { whisperFeatures } from './turnFeatures'
+import { dlog, setDebug } from '../core/log'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: TurnOut): void => ctx.postMessage(m)
@@ -31,7 +32,10 @@ ctx.onmessage = (ev: MessageEvent<TurnIn>) => {
 
 async function handle(msg: TurnIn): Promise<void> {
   try {
-    if (msg.kind === 'init') await init(msg.modelBase)
+    if (msg.kind === 'init') {
+      setDebug(msg.debug ?? false)
+      await init(msg.modelBase)
+    }
     else if (msg.kind === 'analyze') await analyze(msg.id, msg.samples)
   } catch (err) {
     post({ kind: 'error', message: `Turn: ${(err as Error).message}` })
@@ -66,6 +70,6 @@ async function analyze(id: number, samples: Float32Array): Promise<void> {
   const logitsTensor = out.logits ?? out[session.outputNames[0]]
   const logit = Number((logitsTensor.data as Float32Array)[0])
   const prob = 1 / (1 + Math.exp(-logit)) // sigmoid → P(END_OF_TURN)
-  console.info(`[aidekin] Turn analyze id=${id} feats=[1,80,800] logit=${logit.toFixed(3)} p=${prob.toFixed(3)}`)
+  dlog(`[aidekin] Turn analyze id=${id} feats=[1,80,800] logit=${logit.toFixed(3)} p=${prob.toFixed(3)}`)
   post({ kind: 'verdict', id, complete: prob > 0.5, prob })
 }

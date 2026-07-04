@@ -9,6 +9,7 @@ import { EMBED, ORT_WASM_CDN, embedModelUrls } from '../models/registry'
 import { getModelAsset } from '../core/modelStore'
 import { withRetry } from '../core/retry'
 import { QUERY_INSTRUCTION, poolAndNormalize, tokenizeBatch } from './embedderCore'
+import { dlog } from '../core/log'
 
 export type EmbedProgress = (p: { status?: string; file?: string; loaded?: number; total?: number; progress?: number }) => void
 
@@ -39,7 +40,7 @@ async function load(onProgress?: EmbedProgress): Promise<Embedder> {
           onProgress?.({ file: 'embedder', loaded: p.loaded, total: p.total, progress: p.total ? (100 * p.loaded) / p.total : 0 }),
         )
         const session = await ort.InferenceSession.create(onnx)
-        console.info(`[aidekin] embedder ready in ${(performance.now() - t0).toFixed(0)}ms`)
+        dlog(`[aidekin] embedder ready in ${(performance.now() - t0).toFixed(0)}ms`)
         return { tok, session }
       },
       { onRetry: (n, _e, ms) => console.warn(`[aidekin] embedder load failed (transient); retry ${n} in ${ms}ms`) },

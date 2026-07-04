@@ -14,6 +14,7 @@ import { PlaybackQueue } from '../audio/playbackQueue'
 import { pruneIncompleteAssets } from '../core/modelStore'
 import { ConversationEngine } from '../engine/conversationEngine'
 import { LLM, llmMaxSeqLen, llmModelUrls, modelSource } from '../models/registry'
+import { debugEnabled, dlog } from '../core/log'
 import type {
   AsrIn, AsrOut, Device, LlmIn, LlmOut, LoadProgress,
   TtsIn, TtsOut, TurnIn, TurnOut, VadIn, VadOut,
@@ -207,7 +208,7 @@ export class Orchestrator {
       sumSq += pcm[i] * pcm[i]
     }
     const rms = Math.sqrt(sumSq / Math.max(1, n))
-    console.info(
+    dlog(
       `[aidekin] captured ${(n / 16000).toFixed(1)}s · peak=${peak.toFixed(3)} rms=${rms.toFixed(4)} → ` +
         `aidekin-utterance.wav (raw) + aidekin-utterance-loud.wav (normalized)`,
     )
@@ -262,7 +263,7 @@ export class Orchestrator {
     // Self-heal: drop any partial weights from a previously interrupted download (tab
     // closed / worker killed mid-stream) so they can't accumulate as orphaned OPFS bytes.
     const pruned = await pruneIncompleteAssets().catch(() => 0)
-    if (pruned > 0) console.info(`[aidekin] pruned ${pruned} incomplete model file(s) from a prior interrupted download`)
+    if (pruned > 0) dlog(`[aidekin] pruned ${pruned} incomplete model file(s) from a prior interrupted download`)
 
     // Phase 1 - DOWNLOAD the heavy speech weights (ASR ~690 MB + TTS ~360 MB) in PARALLEL.
     // Each worker streams its own files to the OPFS cache without creating any sessions, so the
@@ -278,17 +279,17 @@ export class Orchestrator {
     // CPU/GPU-bound, not network-bound). Serial bounds peak GPU/WASM memory to one model
     // (Safari's ceiling). VAD/Turn are tiny and the LLM uses its own cache, so they just init.
     await this.initWorker(this.vad, { kind: 'init', assetBase: modelSource('vad') }, 'VAD', false)
-    await this.initWorker(this.turn, { kind: 'init', modelBase: modelSource('turn') }, 'Turn', true)
+    await this.initWorker(this.turn, { kind: 'init', modelBase: modelSource('turn'), debug: debugEnabled() }, 'Turn', true)
     // ASR: the FP16 Nemotron, encoder on WebGPU (real-time). Single engine - WebGPU
     // is required (as it is for the LLM). Reads from the OPFS cache warmed in phase 1.
-    await this.initWorker(this.asr, { kind: 'init', modelBase: modelSource('asr'), device: 'webgpu' }, 'ASR', false)
-    await this.initWorker(this.tts, { kind: 'init', modelBase: modelSource('tts'), device: this.device }, 'TTS', false)
+    await this.initWorker(this.asr, { kind: 'init', modelBase: modelSource('asr'), device: 'webgpu', debug: debugEnabled() }, 'ASR', false)
+    await this.initWorker(this.tts, { kind: 'init', modelBase: modelSource('tts'), device: this.device, debug: debugEnabled() }, 'TTS', false)
     // Brain: Bonsai on our bitgpu engine / WebGPU (data streams from the HF Hub, caches
     // to OPFS; manifest + aux served same-origin).
     // Brain: only in standalone mode. Shared mode reuses the widget engine's LLM.
     if (this.llm) {
       const u = llmModelUrls()
-      const llmInit: LlmIn = { kind: 'init', manifestUrl: u.manifestUrl, dataUrl: u.dataUrl, auxUrl: u.auxUrl, tokenizerModelId: LLM.tokenizerModelId, eosTokenId: LLM.eosTokenId, maxSeqLen: llmMaxSeqLen(), kvCache: LLM.kvCache }
+      const llmInit: LlmIn = { kind: 'init', manifestUrl: u.manifestUrl, dataUrl: u.dataUrl, auxUrl: u.auxUrl, tokenizerModelId: LLM.tokenizerModelId, eosTokenId: LLM.eosTokenId, maxSeqLen: llmMaxSeqLen(), kvCache: LLM.kvCache, debug: debugEnabled() }
       await this.initWorker(this.llm, llmInit, 'LLM', false)
       // Worker is loaded + initialized - hand it to the engine, which now drives
       // generation. onLlm forwards token/done events to engine.handleLlmMessage().
@@ -501,7 +502,7 @@ export class Orchestrator {
   private onVad(m: VadOut): void {
     if (this.lifecycle('VAD', m)) return
     if (m.kind === 'speech-start') {
-      console.info('[aidekin] VAD speech-start')
+      dlog('[aidekin] VAD speech-start')
       // The user (re)started talking - cancel any pending end-of-turn finalize.
       this.clearFinalizeTimer()
       // Defer barge-in: a transient noise (cough, table knock, door) also fires speech-start
@@ -512,7 +513,7 @@ export class Orchestrator {
       if (!this.inUserTurn) this.beginUserTurn()
       this.vadSpeaking = true
     } else if (m.kind === 'speech-end') {
-      console.info(`[aidekin] VAD speech-end · ${m.durationMs.toFixed(0)}ms of speech`)
+      dlog(`[aidekin] VAD speech-end · ${m.durationMs.toFixed(0)}ms of speech`)
       this.vadSpeaking = false
       if (!this.inUserTurn) return // no active turn
       // The full turn audio lives in this.turnAudio; m.audio is just the recent
@@ -528,7 +529,7 @@ export class Orchestrator {
       // NOT real speech, so drop the provisional turn WITHOUT barging in - this is what stops a
       // stray noise from killing an in-flight reply (cancelProvisionalTurn clears pendingBargeIn
       // and never touches the assistant). The orb resyncs to whatever the reply is doing.
-      console.info('[aidekin] VAD misfire (too-short blip) - cancelling provisional turn')
+      dlog('[aidekin] VAD misfire (too-short blip) - cancelling provisional turn')
       this.cancelProvisionalTurn()
     }
   }
@@ -536,7 +537,7 @@ export class Orchestrator {
   private onTurn(m: TurnOut): void {
     if (this.lifecycle('Turn', m)) return
     if (m.kind === 'verdict') {
-      console.info(`[aidekin] Smart Turn verdict · complete=${m.complete} p=${m.prob.toFixed(3)}`)
+      dlog(`[aidekin] Smart Turn verdict · complete=${m.complete} p=${m.prob.toFixed(3)}`)
       if (this.inUserTurn && m.complete) this.finalizeUserTurn()
       // not-complete → keep listening; the fallback timer still guarantees finalize.
     }
@@ -547,7 +548,7 @@ export class Orchestrator {
     this.finalizeTimer = setTimeout(() => {
       this.finalizeTimer = null
       if (this.inUserTurn && !this.vadSpeaking) {
-        console.info('[aidekin] turn fallback fired - finalizing without a complete verdict')
+        dlog('[aidekin] turn fallback fired - finalizing without a complete verdict')
         this.finalizeUserTurn()
       }
     }, TURN_FALLBACK_MS)
@@ -576,7 +577,7 @@ export class Orchestrator {
     this.lastUtteranceAudio = utter
     this.turnDebug = []
     // The stream was fed live; just flush the sub-chunk tail for the final transcript.
-    console.info(`[aidekin] finalize turn - flushing ASR (id=${this.currentAsrId})`)
+    dlog(`[aidekin] finalize turn - flushing ASR (id=${this.currentAsrId})`)
     this.post(this.asr, { kind: 'flush', id: this.currentAsrId })
   }
 
@@ -610,7 +611,7 @@ export class Orchestrator {
       // up on the LLM - without dropping any spoken text.
       this.cb.onUserTranscript?.(m.text, true)
       const text = m.text.trim()
-      console.info(`[aidekin] ASR final: "${text}"`)
+      dlog(`[aidekin] ASR final: "${text}"`)
       if (text) {
         // Real transcript: confirm the interruption (a fast one-word reply may not have
         // produced a partial first) so the previous reply's audio/generation is stopped.
@@ -657,7 +658,7 @@ export class Orchestrator {
     if (this.lifecycle('TTS', m)) return
     if (m.kind === 'audio') {
       if (!this.liveTtsIds.has(m.id)) return
-      console.info(`[aidekin] TTS audio id=${m.id} · ${m.pcm.length} samples @ ${m.sampleRate}Hz → playback`)
+      dlog(`[aidekin] TTS audio id=${m.id} · ${m.pcm.length} samples @ ${m.sampleRate}Hz → playback`)
       this.setState('speaking')
       this.playback.enqueue(m.pcm, m.sampleRate)
     } else if (m.kind === 'done') {

@@ -13,6 +13,7 @@ import { getModelAsset } from '../core/modelStore'
 import { fmtBytes } from '../core/format'
 import { ASR, ORT_WASM_CDN } from '../models/registry'
 import type { AsrIn, AsrOut, Device } from '../protocol/messages'
+import { dlog, setDebug } from '../core/log'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: AsrOut, transfer: Transferable[] = []): void => ctx.postMessage(m, transfer)
@@ -43,7 +44,10 @@ const EN_LANG_ID = ASR.langId.en
 
 async function handle(msg: AsrIn): Promise<void> {
   try {
-    if (msg.kind === 'init') await init(msg.modelBase, msg.device)
+    if (msg.kind === 'init') {
+      setDebug(msg.debug ?? false)
+      await init(msg.modelBase, msg.device)
+    }
     else if (msg.kind === 'prefetch') await prefetch(msg.modelBase)
     else if (msg.kind === 'chunk') await onChunk(msg.id, msg.samples)
     else if (msg.kind === 'flush') await onFlush(msg.id)
@@ -124,7 +128,7 @@ async function init(base: string, device: Device): Promise<void> {
   const tW = performance.now()
   const ref = await wasmEngine.selfTest()
   const wasmMs = performance.now() - tW
-  console.info(`[aidekin] ASR encoder WASM self-test: ${ref.reason} (${wasmMs.toFixed(0)}ms/window)`)
+  dlog(`[aidekin] ASR encoder WASM self-test: ${ref.reason} (${wasmMs.toFixed(0)}ms/window)`)
   if (!ref.ok) throw new Error(`ASR encoder self-test failed (${ref.reason})`)
 
   if (device !== 'webgpu') {
@@ -146,7 +150,7 @@ async function init(base: string, device: Device): Promise<void> {
   const gpu = await gpuEngine.selfTest()
   const gpuMs = performance.now() - tG
   const sim = cosineSim(gpu.output, refOut)
-  console.info(`[aidekin] ASR encoder WebGPU↔WASM: cos=${sim.toFixed(4)} · gpu=${gpuMs.toFixed(0)}ms wasm=${wasmMs.toFixed(0)}ms/window · ${gpu.reason}`)
+  dlog(`[aidekin] ASR encoder WebGPU↔WASM: cos=${sim.toFixed(4)} · gpu=${gpuMs.toFixed(0)}ms wasm=${wasmMs.toFixed(0)}ms/window · ${gpu.reason}`)
 
   if (gpu.ok && sim > 0.9 && gpuMs < wasmMs) {
     asr = mkEngine(encGpu)
@@ -168,7 +172,7 @@ async function finishInit(info: string): Promise<void> {
     const t = performance.now()
     try {
       await asr.warmup(EN_LANG_ID)
-      console.info(`[aidekin] ASR full-path warmup ${(performance.now() - t).toFixed(0)}ms`)
+      dlog(`[aidekin] ASR full-path warmup ${(performance.now() - t).toFixed(0)}ms`)
     } catch (e) {
       console.warn('[aidekin] ASR warmup failed (non-fatal):', e)
     }
@@ -218,7 +222,7 @@ async function onFlush(id: number): Promise<void> {
   const ids = await asr.endStream(EN_LANG_ID)
   if (ids.length > 0) tokenIds.push(...ids)
   const text = detok.decode(tokenIds)
-  console.info(
+  dlog(
     `[aidekin] ASR final id=${id} ${(streamLen / 16000).toFixed(2)}s ` +
       `peak=${streamPeak.toFixed(3)} → "${text}" (${(performance.now() - streamT0).toFixed(0)}ms)`,
   )

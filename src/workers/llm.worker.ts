@@ -9,6 +9,7 @@ import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
 import { LlmTokenizer } from '../core/tokenizer'
 import { getModelAssetStream } from '../core/modelStore'
 import { withRetry } from '../core/retry'
+import { dlog, setDebug } from '../core/log'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: LlmOut): void => ctx.postMessage(m)
@@ -175,6 +176,7 @@ async function handle(msg: LlmIn): Promise<void> {
 }
 
 async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
+  setDebug(msg.debug ?? false)
   eosTokenId = msg.eosTokenId ?? 151645
   maxSeqLen = msg.maxSeqLen ?? 2048
   dropCache()
@@ -243,7 +245,7 @@ async function warmup(): Promise<void> {
     const ids = tokenizer.encode(tokenizer.applyChatTemplate([{ role: 'user', content: 'Hi' }], { addGenerationPrompt: true, enableThinking: false }), false)
     await engine.generate(ids, { maxTokens: 1, ...SAMPLING, stopTokens: [eosTokenId] })
     engine.resetCache()
-    console.info(`[aidekin] LLM warmup ${(performance.now() - t0).toFixed(0)}ms`)
+    dlog(`[aidekin] LLM warmup ${(performance.now() - t0).toFixed(0)}ms`)
   } catch (e) {
     console.warn('[aidekin] LLM warmup skipped:', (e as Error).message)
   }
@@ -272,7 +274,7 @@ async function prewarm(system: ChatMessage, messages?: readonly ChatMessage[]): 
       const t0 = performance.now()
       await engine!.prefill(ids)
       cachedMessages = [...transcript] // the cache now represents exactly this prefix; the next clean append reuses it
-      console.info(`[aidekin] LLM prewarm ${(performance.now() - t0).toFixed(0)}ms (${ids.length} tok, ${transcript.length} msg)`)
+      dlog(`[aidekin] LLM prewarm ${(performance.now() - t0).toFixed(0)}ms (${ids.length} tok, ${transcript.length} msg)`)
     } catch (e) {
       console.warn('[aidekin] LLM prewarm skipped:', (e as Error).message)
     }
@@ -335,7 +337,7 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
   // first turn pays a full prefill despite the load-time prewarm (e.g. resetCache set, a longer-than
   // -expected message list from resumed history, or a system-content mismatch).
   if (!canReuse) {
-    console.info(
+    dlog(
       `[aidekin] LLM full-prefill (no reuse) · resetCache=${resetCache} think=${allowThink} ` +
         `chatWrap=${chatWrap !== null} cached=${cachedMessages ? cachedMessages.length : 'null'} msgs=${messages.length} ` +
         `cleanAppend=${cachedMessages ? isCleanAppend(cachedMessages, messages) : 'n/a'}`,
@@ -420,7 +422,7 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
   const per = result.decodeMs / nd
   const tm = result.timing
   const other = Math.max(0, per - tm.gpuMs - tm.recordMs - tm.readbackMs) // CPU sample + onToken decode/stream + writeBuffer
-  console.info(
+  dlog(
     `[aidekin] LLM(bonsai) done id=${id} ${canReuse ? 'cache-reuse' : 'full-prefill'} tokens=${nTokens} ${tps.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms) | per-token ${per.toFixed(1)}ms = gpu ${tm.gpuMs.toFixed(1)} + record ${tm.recordMs.toFixed(1)} + readback ${tm.readbackMs.toFixed(1)} + other ${other.toFixed(1)}` +
       (result.speculation ? ` | pld ${result.speculation.accepted}/${result.speculation.drafted} accepted in ${result.speculation.steps} steps` : ''),
   )

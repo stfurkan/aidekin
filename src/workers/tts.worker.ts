@@ -15,6 +15,7 @@ import {
   type SupertonicSessions,
 } from '../tts/supertonic'
 import type { Device, TtsIn, TtsOut } from '../protocol/messages'
+import { dlog, setDebug } from '../core/log'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: TtsOut, transfer: Transferable[] = []): void => ctx.postMessage(m, transfer)
@@ -42,7 +43,10 @@ ctx.onmessage = (ev: MessageEvent<TtsIn>) => {
 
 async function handle(msg: TtsIn): Promise<void> {
   try {
-    if (msg.kind === 'init') await init(msg.modelBase, msg.device)
+    if (msg.kind === 'init') {
+      setDebug(msg.debug ?? false)
+      await init(msg.modelBase, msg.device)
+    }
     else if (msg.kind === 'prefetch') await prefetch(msg.modelBase)
     else if (msg.kind === 'speak') await speak(msg.id, msg.text)
     else if (msg.kind === 'abort') aborted.add(msg.id)
@@ -108,7 +112,7 @@ async function init(base: string, device: Device): Promise<void> {
   try {
     const w0 = performance.now()
     await tts.synthesize('Hi.')
-    console.info(`[aidekin] TTS warmup done in ${(performance.now() - w0).toFixed(0)}ms`)
+    dlog(`[aidekin] TTS warmup done in ${(performance.now() - w0).toFixed(0)}ms`)
   } catch (err) {
     console.warn('[aidekin] TTS warmup skipped:', (err as Error).message)
   }
@@ -125,9 +129,9 @@ async function speak(id: number, text: string): Promise<void> {
     return
   }
   const t0 = performance.now()
-  console.info(`[aidekin] TTS speak id=${id} text="${clean.slice(0, 60)}"`)
+  dlog(`[aidekin] TTS speak id=${id} text="${clean.slice(0, 60)}"`)
   const pcm = await tts.synthesize(clean)
-  console.info(
+  dlog(
     `[aidekin] TTS synth id=${id} → ${pcm.length} samples ` +
       `(${(pcm.length / tts.sampleRate).toFixed(2)}s) in ${(performance.now() - t0).toFixed(0)}ms`,
   )

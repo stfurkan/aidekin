@@ -16,6 +16,7 @@
 import { LLM, llmHistoryTokens, llmMaxSeqLen, llmModelUrls } from '../models/registry'
 import type { ChatMessage, Device, LlmIn, LlmOut } from '../protocol/messages'
 import { SentenceChunker, speakable } from '../pipeline/sentenceChunker'
+import { debugEnabled, dlog } from '../core/log'
 
 /** One retrieved chunk of grounding context returned by the RAG retriever. */
 export interface RetrievedChunk {
@@ -293,6 +294,7 @@ export class ConversationEngine {
       eosTokenId: LLM.eosTokenId,
       maxSeqLen: llmMaxSeqLen(),
       kvCache: LLM.kvCache,
+      debug: debugEnabled(),
     }
     try {
       await new Promise<void>((resolve, reject) => {
@@ -418,7 +420,7 @@ export class ConversationEngine {
       // gate and is dropped here rather than pulled in and recited.
       const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
       // Log the scores so the gate can be calibrated against real greetings vs questions.
-      console.info(
+      dlog(
         `[aidekin] RAG "${userText.slice(0, 40)}" top=${(hits[0]?.score ?? 0).toFixed(3)} ` +
           `used=${relevant.length}/${hits.length} (gate ${this.ragMinScore})`,
       )
@@ -588,7 +590,7 @@ export class ConversationEngine {
    *  occurrence attributable from the console. */
   private markDirty(reason: string): void {
     this.cacheDirty = true
-    console.info(`[aidekin] LLM cache dirtied (${reason})`)
+    dlog(`[aidekin] LLM cache dirtied (${reason})`)
   }
 
   /** New session: clear back to just the system prompt (keeps it in storage). */

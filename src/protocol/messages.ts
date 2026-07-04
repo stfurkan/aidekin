@@ -47,7 +47,7 @@ export type VadOut =
 // turn end for the final. `id` is the turn id so stale results (after a barge-in)
 // are dropped. All messages are serialized on the worker's promise chain.
 export type AsrIn =
-  | { readonly kind: 'init'; readonly modelBase: string; readonly device: Device }
+  | { readonly kind: 'init'; readonly modelBase: string; readonly device: Device; readonly debug?: boolean }
   // Download all weights to the OPFS cache without creating sessions (parallel-download phase).
   | { readonly kind: 'prefetch'; readonly modelBase: string }
   | { readonly kind: 'chunk'; readonly id: number; readonly samples: Float32Array }
@@ -74,6 +74,7 @@ export type LlmIn =
       readonly eosTokenId?: number //     stop token (default 151645)
       readonly maxSeqLen?: number //      KV-cache length cap (default 2048)
       readonly kvCache?: 'f32' | 'f16' // KV storage precision ('f16' halves KV memory; engine falls back to f32 without shader-f16)
+      readonly debug?: boolean //         enable info-level worker logs (see core/log.ts)
     }
   | {
       readonly kind: 'generate'
@@ -117,7 +118,7 @@ export type LlmOut =
 
 // ── TTS worker (Supertonic) ──────────────────────────────────────────────────
 export type TtsIn =
-  | { readonly kind: 'init'; readonly modelBase: string; readonly device: Device }
+  | { readonly kind: 'init'; readonly modelBase: string; readonly device: Device; readonly debug?: boolean }
   // Download all weights to the OPFS cache without creating sessions (parallel-download phase).
   | { readonly kind: 'prefetch'; readonly modelBase: string }
   | { readonly kind: 'speak'; readonly id: number; readonly text: string }
@@ -130,7 +131,7 @@ export type TtsOut =
 
 // ── Smart Turn v3 worker ─────────────────────────────────────────────────────
 export type TurnIn =
-  | { readonly kind: 'init'; readonly modelBase: string }
+  | { readonly kind: 'init'; readonly modelBase: string; readonly debug?: boolean }
   | { readonly kind: 'analyze'; readonly id: number; readonly samples: Float32Array }
 export type TurnOut =
   | Lifecycle

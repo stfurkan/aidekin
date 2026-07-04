@@ -19,6 +19,7 @@
 // off instead of re-downloading from zero.
 
 import { withRetry } from './retry'
+import { dlog } from './log'
 
 export interface FetchProgress {
   readonly loaded: number
@@ -393,7 +394,7 @@ async function pruneIncompleteAssetsImpl(): Promise<number> {
   }
   // Name the casualties: a file pruned on EVERY load means a download keeps finishing without its
   // `.done` marker (it re-downloads each session), which this surfaces for diagnosis.
-  if (dropped.length) console.info(`[aidekin] pruned incomplete cache file(s): ${dropped.join(', ')}`)
+  if (dropped.length) dlog(`[aidekin] pruned incomplete cache file(s): ${dropped.join(', ')}`)
   return dropped.length
 }
 
