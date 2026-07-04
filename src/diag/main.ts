@@ -5,8 +5,8 @@
 // production model URLs and the same OPFS cache as the widget. A sessionStorage breadcrumb
 // survives an OS page kill, so a crash reports WHERE it died on the next open.
 import { createEngine, WebGPUUnavailableError, type Engine } from 'bitgpu'
-import { getModelAsset } from '@/core/modelStore'
-import { LLM, llmModelUrls } from '@/models/registry'
+import { getModelAssetStream } from '@/core/modelStore'
+import { LLM, llmMaxSeqLen, llmModelUrls } from '@/models/registry'
 
 const out = document.getElementById('out')!
 const t0 = performance.now()
@@ -71,25 +71,30 @@ async function run(): Promise<void> {
     log(`limits: maxBufferSize ${mb(adapter.limits.maxBufferSize)}, maxStorageBufferBindingSize ${mb(adapter.limits.maxStorageBufferBindingSize)}, wgStorage ${adapter.limits.maxComputeWorkgroupStorageSize}B`)
 
     setStage('model load')
-    log(`\nloading model (production URLs, OPFS-cached, maxSeqLen ${LLM.maxSeqLen})...`)
+    log(`\nloading model (production URLs, OPFS-cached, maxSeqLen ${llmMaxSeqLen()})...`)
     const urls = llmModelUrls()
     let lastPct = -10
-    const fetchArrayBuffer = async (url: string): Promise<ArrayBuffer> => {
-      if (url === urls.dataUrl) {
-        return getModelAsset('llm-bonsai-1.7b-q1', url, (p) => {
-          const pct = Math.round((100 * p.loaded) / (p.total || 1))
-          if (pct >= lastPct + 10) {
-            lastPct = pct
-            log(`  weights ${pct}% (${mb(p.loaded)})`)
-          }
-        })
+    const progress = (p: { loaded: number; total?: number }): void => {
+      const pct = Math.round((100 * p.loaded) / (p.total || 1))
+      if (pct >= lastPct + 10) {
+        lastPct = pct
+        log(`  weights ${pct}% (${mb(p.loaded)})`)
       }
+    }
+    // Same streaming path as the widget: OPFS-cached chunks flow straight into GPU buffers.
+    const fetchStream = async (url: string): Promise<ReadableStream<Uint8Array>> => {
+      if (url === urls.dataUrl) return getModelAssetStream('llm-bonsai-1.7b-q1', url, progress)
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`fetch ${url} failed: HTTP ${res.status}`)
+      return res.body as ReadableStream<Uint8Array>
+    }
+    const fetchArrayBuffer = async (url: string): Promise<ArrayBuffer> => {
       const res = await fetch(url)
       if (!res.ok) throw new Error(`fetch ${url} failed: HTTP ${res.status}`)
       return res.arrayBuffer()
     }
     const tLoad = performance.now()
-    engine = await createEngine({ ...urls, maxSeqLen: LLM.maxSeqLen, kvCache: LLM.kvCache, fetchArrayBuffer, onProgress: (p) => log(`  [${p.phase}]`) })
+    engine = await createEngine({ ...urls, maxSeqLen: llmMaxSeqLen(), kvCache: LLM.kvCache, fetchStream, fetchArrayBuffer, onProgress: (p) => log(`  [${p.phase}]`) })
     log(`engine ready in ${((performance.now() - tLoad) / 1000).toFixed(1)}s, ${memLine()}`)
     const cap = engine.capabilities
     log(`kernel path: ${cap.useSubgroups ? `subgroups SG=${cap.subgroupSize}` : 'WORKGROUP FALLBACK (no uniform SG32/64)'}, kv cache ${cap.kvCache}`, cap.useSubgroups ? 'pass' : undefined)

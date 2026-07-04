@@ -13,7 +13,7 @@
 // In adopted mode the orchestrator stays in charge of load/ready/error lifecycle,
 // so its existing load UI + error handling are byte-identical.
 
-import { LLM, llmModelUrls } from '../models/registry'
+import { LLM, llmHistoryTokens, llmMaxSeqLen, llmModelUrls } from '../models/registry'
 import type { ChatMessage, Device, LlmIn, LlmOut } from '../protocol/messages'
 import { SentenceChunker, speakable } from '../pipeline/sentenceChunker'
 
@@ -87,7 +87,6 @@ export interface EngineOptions {
 // Must fit the model's KV window: 2048 tokens minus up to 512 generated minus template overhead.
 // The 4-chars/token estimate runs optimistic for chat text, so stay well under that ceiling; the
 // worker additionally trims and retries if a transcript still outgrows the window.
-const DEFAULT_MAX_HISTORY_TOKENS = 1100
 // Rough token estimate (about 4 chars/token), good enough for a sliding-window trim.
 const approxTokens = (s: string): number => Math.ceil(s.length / 4)
 
@@ -256,7 +255,7 @@ export class ConversationEngine {
     this.chunkClauses = opts.chunkClauses ?? false
     this.alwaysThink = opts.reasoning ?? false
     this.persistKey = opts.persistKey
-    this.maxHistoryTokens = opts.maxHistoryTokens ?? DEFAULT_MAX_HISTORY_TOKENS
+    this.maxHistoryTokens = opts.maxHistoryTokens ?? llmHistoryTokens()
     this.samplerSeed = opts.samplerSeed
     this.promptLookup = opts.promptLookup ?? false
     const brand = opts.brandName?.trim() ?? ''
@@ -290,7 +289,7 @@ export class ConversationEngine {
       auxUrl: u.auxUrl,
       tokenizerModelId: LLM.tokenizerModelId,
       eosTokenId: LLM.eosTokenId,
-      maxSeqLen: LLM.maxSeqLen,
+      maxSeqLen: llmMaxSeqLen(),
       kvCache: LLM.kvCache,
     }
     try {

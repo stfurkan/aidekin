@@ -39,6 +39,21 @@ export const LLM = {
   kvCache: 'f16' as const,
 } as const
 
+/** Device-aware LLM window. Phones get 1024 positions: with f16 KV that is ~112MB of GPU memory
+ *  (vs ~224MB at 2048), and the growth transient shrinks to match - headroom that matters on iOS,
+ *  where the OS kills the heaviest tab on memory events like opening the keyboard. The cost is
+ *  earlier history trimming in long chats, on phones only. */
+export function llmMaxSeqLen(): number {
+  const mobile = typeof navigator !== 'undefined' && /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent)
+  return mobile ? 1024 : LLM.maxSeqLen
+}
+
+/** History-retention budget matched to the window: the 2048 window keeps the tuned 1100; the
+ *  mobile 1024 window keeps ~400 so system prompt + retrieved context + reply still fit. */
+export function llmHistoryTokens(): number {
+  return llmMaxSeqLen() >= 2048 ? 1100 : 400
+}
+
 // ── ASR (Nemotron 3.5 streaming, FP16 → WebGPU - the ONE AND ONLY engine) ─────
 // One model, one path. The heavy FastConformer-RNNT encoder runs FP16 on WebGPU
 // (RTF≪1 → real-time streaming); decoder/joint run on WASM. We drive the three ONNX

@@ -426,6 +426,40 @@ export async function getModelAsset(
   return downloadAsset(key, url, onProgress)
 }
 
+/**
+ * Stream a model asset instead of buffering it: served straight from the OPFS file when cached
+ * (peak memory = one chunk), otherwise downloaded through getModelAsset (locked, resumable,
+ * persisted) and then re-read from disk so the download buffer can be collected immediately.
+ * Cache-less sessions (private browsing, quota exhaustion) stream over the in-memory buffer.
+ */
+export async function getModelAssetStream(key: string, url: string, onProgress?: ProgressFn): Promise<ReadableStream<Uint8Array>> {
+  const cached = await opfsReadStream(key)
+  if (cached) {
+    onProgress?.({ loaded: cached.size, total: cached.size })
+    return cached.stream
+  }
+  const buf = await getModelAsset(key, url, onProgress)
+  const now = await opfsReadStream(key)
+  if (now) return now.stream
+  return new Response(buf).body as ReadableStream<Uint8Array>
+}
+
+/** Stream a COMPLETE cached asset from OPFS (same completeness checks as opfsRead), or null. */
+async function opfsReadStream(key: string): Promise<{ stream: ReadableStream<Uint8Array>; size: number } | null> {
+  const dir = await opfsDir()
+  if (!dir) return null
+  const expected = await readMarker(dir, key)
+  if (expected === null) return null
+  try {
+    const handle = await dir.getFileHandle(sanitize(key))
+    const file = await handle.getFile()
+    if (file.size !== expected) return null
+    return { stream: file.stream() as ReadableStream<Uint8Array>, size: file.size }
+  } catch {
+    return null
+  }
+}
+
 async function downloadAsset(key: string, url: string, onProgress?: ProgressFn): Promise<ArrayBuffer> {
   const onRetry = (n: number, e: unknown, ms: number): void => {
     const err = e as { name?: string; message?: string }

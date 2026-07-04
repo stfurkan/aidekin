@@ -7,7 +7,7 @@
 import { createEngine, type Engine, type GenerateResult } from 'bitgpu'
 import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
 import { LlmTokenizer } from '../core/tokenizer'
-import { getModelAsset } from '../core/modelStore'
+import { getModelAssetStream } from '../core/modelStore'
 import { withRetry } from '../core/retry'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
@@ -187,13 +187,20 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
   chatWrap = deriveChatWrap(tokenizer)
   if (!chatWrap) console.warn('[aidekin] LLM: non-ChatML template - cross-turn KV reuse disabled')
 
-  // Engine: OPFS-cache the ~290MB data file (so it never re-downloads); manifest + aux are tiny.
-  const fetchArrayBuffer = async (url: string): Promise<ArrayBuffer> => {
+  // Engine: STREAM the ~290MB data file (OPFS-cached; chunks flow straight into GPU buffers, so
+  // the whole file never sits in the worker heap - the peak that got the tab killed on phones).
+  // The tiny manifest + aux still come through fetchArrayBuffer.
+  const fetchStream = async (url: string): Promise<ReadableStream<Uint8Array>> => {
     if (url === msg.dataUrl) {
-      return getModelAsset('llm-bonsai-1.7b-q1', url, (p) =>
+      return getModelAssetStream('llm-bonsai-1.7b-q1', url, (p) =>
         post({ kind: 'load', label: 'LLM', file: 'weights', detail: `weights ${Math.round((100 * p.loaded) / (p.total || 1))}%`, loaded: p.loaded, total: p.total || 0 }),
       )
     }
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`fetch ${url} failed: HTTP ${res.status}`)
+    return res.body as ReadableStream<Uint8Array>
+  }
+  const fetchArrayBuffer = async (url: string): Promise<ArrayBuffer> => {
     const res = await fetch(url)
     if (!res.ok) throw new Error(`fetch ${url} failed: HTTP ${res.status}`)
     if ((res.headers.get('content-type') ?? '').includes('text/html')) throw new Error(`${url} returned HTML (SPA fallback), not model data`)
@@ -207,6 +214,7 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
         auxUrl: msg.auxUrl,
         maxSeqLen: msg.maxSeqLen ?? 2048,
         kvCache: msg.kvCache,
+        fetchStream,
         fetchArrayBuffer,
         onProgress: (p) => post({ kind: 'load', label: 'LLM', detail: p.phase, loaded: 0, total: 0 }),
       }),
