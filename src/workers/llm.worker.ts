@@ -206,6 +206,7 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
         dataUrl: msg.dataUrl,
         auxUrl: msg.auxUrl,
         maxSeqLen: msg.maxSeqLen ?? 2048,
+        kvCache: msg.kvCache,
         fetchArrayBuffer,
         onProgress: (p) => post({ kind: 'load', label: 'LLM', detail: p.phase, loaded: 0, total: 0 }),
       }),
@@ -222,7 +223,7 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
 
   await warmup()
   const cap = engine.capabilities
-  post({ kind: 'ready', info: `bitgpu (${cap.useSubgroups ? 'subgroups SG=' + cap.subgroupSize : 'workgroup fallback'})` })
+  post({ kind: 'ready', info: `bitgpu (${cap.useSubgroups ? 'subgroups SG=' + cap.subgroupSize : 'workgroup fallback'}, kv ${cap.kvCache})` })
 }
 
 /** Warm the decode path once so the user's FIRST message isn't a cold start. Best-effort; resets the

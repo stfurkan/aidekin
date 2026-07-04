@@ -31,7 +31,12 @@ export const LLM = {
   // Run on our own bitgpu engine (no transformers.js / onnxruntime for the brain).
   tokenizerModelId: 'onnx-community/Bonsai-1.7B-ONNX', // HF repo for tokenizer.json + tokenizer_config.json
   eosTokenId: 151645, //                                  <|im_end|>
-  maxSeqLen: 2048, //                                     KV-cache length cap (~448MB VRAM)
+  maxSeqLen: 2048, //                                     KV-cache length cap
+  // f16 KV storage (the industry standard): halves KV memory (2048-position cache ~448MB ->
+  // ~224MB, the difference between fitting and an OS tab-kill on iOS). All math stays f32;
+  // gated by the bitgpu verify suite (forward cosine 1.0, 96/96 greedy token agreement vs f32)
+  // and the behavioral eval. The engine falls back to f32 silently without shader-f16.
+  kvCache: 'f16' as const,
 } as const
 
 // ── ASR (Nemotron 3.5 streaming, FP16 → WebGPU - the ONE AND ONLY engine) ─────

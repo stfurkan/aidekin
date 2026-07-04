@@ -288,7 +288,7 @@ export class Orchestrator {
     // Brain: only in standalone mode. Shared mode reuses the widget engine's LLM.
     if (this.llm) {
       const u = llmModelUrls()
-      const llmInit: LlmIn = { kind: 'init', manifestUrl: u.manifestUrl, dataUrl: u.dataUrl, auxUrl: u.auxUrl, tokenizerModelId: LLM.tokenizerModelId, eosTokenId: LLM.eosTokenId, maxSeqLen: LLM.maxSeqLen }
+      const llmInit: LlmIn = { kind: 'init', manifestUrl: u.manifestUrl, dataUrl: u.dataUrl, auxUrl: u.auxUrl, tokenizerModelId: LLM.tokenizerModelId, eosTokenId: LLM.eosTokenId, maxSeqLen: LLM.maxSeqLen, kvCache: LLM.kvCache }
       await this.initWorker(this.llm, llmInit, 'LLM', false)
       // Worker is loaded + initialized - hand it to the engine, which now drives
       // generation. onLlm forwards token/done events to engine.handleLlmMessage().

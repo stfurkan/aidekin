@@ -89,10 +89,10 @@ async function run(): Promise<void> {
       return res.arrayBuffer()
     }
     const tLoad = performance.now()
-    engine = await createEngine({ ...urls, maxSeqLen: LLM.maxSeqLen, fetchArrayBuffer, onProgress: (p) => log(`  [${p.phase}]`) })
+    engine = await createEngine({ ...urls, maxSeqLen: LLM.maxSeqLen, kvCache: LLM.kvCache, fetchArrayBuffer, onProgress: (p) => log(`  [${p.phase}]`) })
     log(`engine ready in ${((performance.now() - tLoad) / 1000).toFixed(1)}s, ${memLine()}`)
     const cap = engine.capabilities
-    log(`kernel path: ${cap.useSubgroups ? `subgroups SG=${cap.subgroupSize}` : 'WORKGROUP FALLBACK (no uniform SG32/64)'}`, cap.useSubgroups ? 'pass' : undefined)
+    log(`kernel path: ${cap.useSubgroups ? `subgroups SG=${cap.subgroupSize}` : 'WORKGROUP FALLBACK (no uniform SG32/64)'}, kv cache ${cap.kvCache}`, cap.useSubgroups ? 'pass' : undefined)
     void engine.lost.then((l) => {
       if (l.reason !== 'destroyed') log(`GPU DEVICE LOST: ${l.reason} ${l.message}`, 'fail')
     })

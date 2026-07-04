@@ -73,6 +73,7 @@ export type LlmIn =
       readonly tokenizerModelId: string // HF repo for tokenizer.json + tokenizer_config.json
       readonly eosTokenId?: number //     stop token (default 151645)
       readonly maxSeqLen?: number //      KV-cache length cap (default 2048)
+      readonly kvCache?: 'f32' | 'f16' // KV storage precision ('f16' halves KV memory; engine falls back to f32 without shader-f16)
     }
   | {
       readonly kind: 'generate'

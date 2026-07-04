@@ -291,6 +291,7 @@ export class ConversationEngine {
       tokenizerModelId: LLM.tokenizerModelId,
       eosTokenId: LLM.eosTokenId,
       maxSeqLen: LLM.maxSeqLen,
+      kvCache: LLM.kvCache,
     }
     try {
       await new Promise<void>((resolve, reject) => {
