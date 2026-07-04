@@ -195,10 +195,10 @@ function ModePicker({
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 text-center">
       <AidekinMark className="size-10 text-foreground" coreClassName="fill-primary" />
-      <p className="max-w-[240px] text-sm text-muted-foreground">
+      <p className="max-w-60 text-sm text-muted-foreground">
         {greeting || 'How would you like to chat?'}
       </p>
-      <div className="flex w-full max-w-[260px] flex-col gap-2.5">
+      <div className="flex w-full max-w-65 flex-col gap-2.5">
         {/* Text is the recommended default (lighter, works everywhere) → it's the primary CTA.
             Voice is a heavier opt-in (large speech download, beta) → secondary. */}
         {canText && (
@@ -521,7 +521,7 @@ function TypingDots() {
 // Inline bouncing dots, inheriting the current text color (bg-current).
 function Dots({ className }: { className?: string }) {
   return (
-    <span className={cn('inline-flex items-center gap-[3px]', className)}>
+    <span className={cn('inline-flex items-center gap-0.75', className)}>
       {[0, 1, 2].map((i) => (
         <span
           key={i}

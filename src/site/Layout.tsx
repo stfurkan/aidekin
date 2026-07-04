@@ -91,7 +91,7 @@ function SiteHeader() {
             className="grid size-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
             aria-label="GitHub repository"
           >
-            <GithubIcon className="size-[18px]" />
+            <GithubIcon className="size-4.5" />
           </a>
           <Link
             to="/configure"
@@ -188,7 +188,7 @@ function ThemeToggle() {
       aria-label="Toggle theme"
       className="grid size-9 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
     >
-      {dark ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
+      {dark ? <Sun className="size-4.5" /> : <Moon className="size-4.5" />}
     </button>
   )
 }
