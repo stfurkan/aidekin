@@ -57,6 +57,45 @@
         }
       } catch (_) {}
     </script>
+    <!-- FAQ rich-result data. Keep in sync with the landing page's questions section. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Is it really free?",
+            "acceptedAnswer": { "@type": "Answer", "text": "The widget is open source (MIT) and the hosted snippet runs on a free static host. The model streams once from a public CDN and caches in the visitor's browser. There are no per-message charges." }
+          },
+          {
+            "@type": "Question",
+            "name": "What does the visitor download?",
+            "acceptedAnswer": { "@type": "Answer", "text": "About 290 MB for text chat (the language model), once, then cached. Turning on voice adds its speech models (about 1.6 GB) the first time it is used, also cached. After that it works offline." }
+          },
+          {
+            "@type": "Question",
+            "name": "Where does my data go?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Nowhere. Inference and retrieval happen entirely in the visitor's browser. The knowledge file is downloaded by visitors, so treat it as public and never put secrets in it." }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I use my own content?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. Build a knowledge file in your browser or via the CLI, host the small file anywhere, and point the widget at it. Answers get grounded in your content." }
+          },
+          {
+            "@type": "Question",
+            "name": "Which devices does it work on?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Recent desktop Chrome, Edge, Safari 26+, and Firefox 145+, plus current phones. Devices that cannot run it get a friendly notice instead of a crash." }
+          },
+          {
+            "@type": "Question",
+            "name": "Is a model this small actually useful?",
+            "acceptedAnswer": { "@type": "Answer", "text": "It is a 1.7-billion-parameter model: closer to a sharp product specialist than a general genius. Grounded in a knowledge file it answers product questions precisely and admits what it does not know." }
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

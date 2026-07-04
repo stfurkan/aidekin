@@ -4,7 +4,11 @@
 
 aidekin is an open-source, client-side AI assistant you drop onto any website. Your visitors get a private voice and text agent that runs entirely on their own device via WebGPU, powered by [bitgpu](https://github.com/stfurkan/bitgpu), our own inference engine for 1-bit LLMs. There is no backend, no API keys, and no per-message cost. Nothing they type or say leaves their machine.
 
-[aidekin.com](https://aidekin.com) · [Configure](https://aidekin.com/configure) · [Knowledge builder](https://aidekin.com/knowledge) · [Docs](https://aidekin.com/docs) · [Demo](https://aidekin.com/demo) · [GitHub](https://github.com/stfurkan/aidekin) · MIT licensed
+[aidekin.com](https://aidekin.com) · [Configure](https://aidekin.com/configure) · [Knowledge builder](https://aidekin.com/knowledge) · [Docs](https://aidekin.com/docs) · [Live demo](https://stfurkan.github.io/aidekin-demo/) · MIT licensed
+
+[![The aidekin widget on the Copperleaf Café demo site](public/copperleaf-demo.jpg)](https://stfurkan.github.io/aidekin-demo/)
+
+*Copperleaf Café: a fictional shop on its own domain, running the real embed with its own knowledge file. [Try it live.](https://stfurkan.github.io/aidekin-demo/)*
 
 ---
 
@@ -30,7 +34,7 @@ On page load the loader (~3 KB) only draws a floating launcher. The widget and t
 
 ## How it works
 
-```
+```text
 host page ──<script> loader (~3 KB, Shadow DOM launcher)──► on first open: <iframe> widget
                                                                   │ origin-checked postMessage
                                   text (default) ── mic toggle ─► voice (speech models load lazily)
@@ -46,7 +50,7 @@ Text needs only WebGPU. Voice adds on-device speech recognition and synthesis, l
 Configure with `data-*` attributes on the script tag (or a `window.AidekinConfig` object). The common ones:
 
 | attribute | values | default |
-|---|---|---|
+| --- | --- | --- |
 | `data-mode` | `text` · `voice` · `both` | `text` |
 | `data-title` | string (name + header) | `Assistant` |
 | `data-greeting` | string | none |
@@ -91,7 +95,7 @@ Open the printed URL in a WebGPU-capable browser. Model weights stream from CDNs
 ### Models
 
 | Role | Model | Runtime |
-|---|---|---|
+| --- | --- | --- |
 | LLM | `onnx-community/Bonsai-1.7B-ONNX` (`q1`, 1-bit) | [bitgpu](https://github.com/stfurkan/bitgpu) (WebGPU) |
 | ASR | `soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16` | onnxruntime-web (WebGPU + WASM) |
 | TTS | `Supertone/supertonic-3` | onnxruntime-web (WebGPU/WASM) |
@@ -103,9 +107,9 @@ The LLM runs on our own engine rather than a generic ONNX runtime because generi
 
 ### Project layout
 
-```
+```text
 src/
-  site/        Landing · Configure · Builder · Docs · Demo · Privacy · Terms · Layout · SiteWidget · icons
+  site/        Landing · Configure · Builder · Docs · Privacy · Terms · Layout · SiteWidget · icons
   widget/      WidgetApp · WidgetFrame · useTextController · SonarPing · Markdown · protocol · main
   embed/       loader            (the ~3 KB script + iframe launcher)
   engine/      conversationEngine (shared brain: LLM turn + history + RAG)
