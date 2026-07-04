@@ -25,7 +25,12 @@ const VOICE_REPLY = 'You can return anything within 30 days, no receipt needed.'
 
 export function HeroChat() {
   const [phase, setPhase] = useState<'text' | 'voice'>('text')
-  const [shown, setShown] = useState<Line[]>([])
+  // Reduced-motion users get the finished transcript immediately (lazy init, no animation).
+  const [shown, setShown] = useState<Line[]>(() =>
+    typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+      ? TEXT_SCRIPT.map((l) => ({ ...l }))
+      : [],
+  )
   const [dots, setDots] = useState(false)
   const [vState, setVState] = useState<AgentState>('listening')
   const [vLabel, setVLabel] = useState('Listening, just speak')
@@ -33,10 +38,7 @@ export function HeroChat() {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-      setShown(TEXT_SCRIPT.map((l) => ({ ...l })))
-      return
-    }
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return // static transcript set at init
     let cancelled = false
     const timers: ReturnType<typeof setTimeout>[] = []
     const wait = (ms: number) => new Promise<void>((r) => timers.push(setTimeout(r, ms)))

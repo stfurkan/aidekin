@@ -80,7 +80,7 @@ export function serializeIndex(chunks: IndexChunk[], builtAt: string): ArrayBuff
   dv.setUint32(o, metaBytes.length, true); o += 4
   u8.set(metaBytes, o); o += metaBytes.length
   dv.setUint32(o, textBytes.length, true); o += 4
-  u8.set(textBytes, o); o += textBytes.length
+  u8.set(textBytes, o)
   return buf
 }
 
@@ -136,7 +136,7 @@ export class VectorStore {
   /** Top-k by cosine (≈ dot product, since both query and stored rows are unit vectors). */
   search(query: Float32Array, k: number): SearchHit[] {
     const { int8, scales, dim, count } = this
-    const scored: { i: number; score: number }[] = new Array(count)
+    const scored = new Array<{ i: number; score: number }>(count)
     for (let i = 0; i < count; i++) {
       const base = i * dim
       const scale = scales[i]

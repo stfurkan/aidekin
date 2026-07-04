@@ -21,7 +21,7 @@ const sig = (x: number): number => 1 / (1 + Math.exp(-x))
 async function refFeatures(audio: Float32Array): Promise<Float32Array> {
   const out = (await (proc as unknown as (a: Float32Array) => Promise<{ input_features: { data: Float32Array; dims: number[] } }>)(audio)).input_features
   const frames = out.dims[out.dims.length - 1]
-  if (frames === 800) return out.data as Float32Array
+  if (frames === 800) return out.data
   const fixed = new Float32Array(80 * 800) // pinFeatures: right-pad/truncate to 800
   const copy = Math.min(frames, 800)
   for (let m = 0; m < 80; m++) for (let f = 0; f < copy; f++) fixed[m * 800 + f] = out.data[m * frames + f]

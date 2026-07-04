@@ -105,9 +105,12 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const voiceGen = useRef(0)
   const userStreamingId = useRef<number | null>(null)
   const levelRef = useRef(0)
-  // Latest callbacks, read by the (mount-once) engine so it never goes stale.
+  // Latest callbacks, read by the (mount-once) engine so it never goes stale. Written in an
+  // effect (the sanctioned latest-ref pattern): the engine only reads it asynchronously.
   const cbRef = useRef(opts)
-  cbRef.current = opts
+  useEffect(() => {
+    cbRef.current = opts
+  })
 
   const nextId = () => ++seq.current
 
@@ -187,6 +190,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
         if (m.role === 'system') continue
         restored.push({ id: nextId(), role: m.role === 'assistant' ? 'assistant' : 'user', text: m.content })
       }
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot restore of persisted history; the engine (its source) is created inside this same mount effect
       if (restored.length) setTurns(restored)
       // NOTE: we no longer auto-load the brain on mount. ChatPanel calls preload() once the
       // user enters a conversation (picks a mode / lands in the text view), so just opening to
@@ -213,6 +217,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   // Live-update the persona (configurator preview): custom prompt or title-derived name.
   useEffect(() => {
     engineRef.current?.setSystemPrompt(resolveSystemPrompt(config))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately narrowed: only the two prompt-affecting fields should re-derive the persona
   }, [config.systemPrompt, config.title])
 
   useEffect(() => {

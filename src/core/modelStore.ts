@@ -425,7 +425,7 @@ export async function getModelAsset(
         return won
       }
       return downloadAsset(key, url, onProgress)
-    }) as Promise<ArrayBuffer>
+    })
   }
   return downloadAsset(key, url, onProgress)
 }
@@ -487,7 +487,7 @@ export async function getModelAssetStream(key: string, url: string, onProgress?:
     )
   }
   const locks = typeof navigator !== 'undefined' ? (navigator as Navigator & { locks?: LockManager }).locks : undefined
-  if (locks?.request) return locks.request('aidekin:model:' + key, run) as Promise<ReadableStream<Uint8Array>>
+  if (locks?.request) return locks.request('aidekin:model:' + key, run)
   return run()
 }
 
@@ -501,7 +501,7 @@ async function opfsReadStream(key: string): Promise<{ stream: ReadableStream<Uin
     const handle = await dir.getFileHandle(sanitize(key))
     const file = await handle.getFile()
     if (file.size !== expected) return null
-    return { stream: file.stream() as ReadableStream<Uint8Array>, size: file.size }
+    return { stream: file.stream(), size: file.size }
   } catch {
     return null
   }

@@ -29,8 +29,8 @@ async function load(): Promise<Embedder> {
     promise = (async () => {
       const urls = embedModelUrls()
       const [tokJson, tokCfg, onnx] = await Promise.all([
-        cached(urls.tokenizerJsonUrl, 'tokenizer.json').then((b) => JSON.parse(b.toString('utf8'))),
-        cached(urls.tokenizerConfigUrl, 'tokenizer_config.json').then((b) => JSON.parse(b.toString('utf8'))),
+        cached(urls.tokenizerJsonUrl, 'tokenizer.json').then((b) => JSON.parse(b.toString('utf8')) as Record<string, unknown>),
+        cached(urls.tokenizerConfigUrl, 'tokenizer_config.json').then((b) => JSON.parse(b.toString('utf8')) as Record<string, unknown>),
         cached(urls.onnxUrl, 'model_quantized.onnx'),
       ])
       const tok = new Tokenizer(tokJson, tokCfg)

@@ -90,7 +90,7 @@ async function init(base: string, device: Device): Promise<void> {
   ])
   const cfg = JSON.parse(dec.decode(cfgBuf)) as SupertonicConfig
   const indexer = JSON.parse(dec.decode(idxBuf)) as number[]
-  const style = makeVoiceStyle(JSON.parse(dec.decode(styleBuf)))
+  const style = makeVoiceStyle(JSON.parse(dec.decode(styleBuf)) as Parameters<typeof makeVoiceStyle>[0])
 
   const mk = async (rel: string): Promise<ort.InferenceSession> =>
     ort.InferenceSession.create(new Uint8Array(await loadAsset(base, rel)), opts)

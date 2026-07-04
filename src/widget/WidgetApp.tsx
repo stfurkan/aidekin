@@ -141,6 +141,7 @@ function ChatPanel({
   // Type. Voice loads via toggleVoice. Sitting on the picker triggers no download.
   useEffect(() => {
     if (loadOnMount !== false && view === 'text') c.preload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `c` is a fresh object every render; c.preload is the stable (useCallback) dependency
   }, [view, loadOnMount, c.preload])
 
   return (
@@ -569,6 +570,7 @@ function LoadBar({ pct, cached }: { pct: number; cached: boolean }) {
     const dt = (now - anchor.current.t) / 1000
     const dp = pct - anchor.current.pct
     if (pct >= 0.99) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- progress-tick estimator: eta derives from ref history across ticks, not from render state
       setEta(null)
       return
     }
@@ -777,19 +779,21 @@ function SettingsMenu({
       .catch(() => undefined)
   }
 
+  // Every close path funnels through here so a pending confirmation never survives a
+  // close/reopen (event-driven; no state-sync effect needed).
+  const close = () => {
+    setOpen(false)
+    setConfirming(null)
+  }
+
   useEffect(() => {
     if (!open) return
     refreshStorage()
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key === 'Escape') close()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open])
-
-  // Drop any pending confirmation when the menu closes, so reopening starts clean.
-  useEffect(() => {
-    if (!open) setConfirming(null)
   }, [open])
 
   const removeModel = () => {
@@ -821,7 +825,7 @@ function SettingsMenu({
       </button>
       {open && (
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="fixed inset-0 z-10" onClick={close} />
           <div className="absolute right-0 z-20 mt-1 w-60 rounded-xl border border-border bg-popover p-2 shadow-xl">
             <p className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground">
               <HardDrive className="size-3.5" /> {storage ?? 'Checking storage…'}
@@ -835,7 +839,7 @@ function SettingsMenu({
                 onCancel={() => setConfirming(null)}
                 onConfirm={() => {
                   onClearChat()
-                  setOpen(false)
+                  close()
                 }}
               />
             ) : (

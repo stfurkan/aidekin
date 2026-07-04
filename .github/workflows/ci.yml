@@ -15,6 +15,7 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
+      - run: npm run lint
       # The engine now lives at github.com/stfurkan/bitgpu (own CI) and is consumed
       # as a pinned npm dependency. Root build = typecheck + site/widget + loader bundles.
       - run: npm run build

@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react'
-import { Link, NavLink, useLocation } from 'react-router-dom'
+import { Link, NavLink } from 'react-router-dom'
 import { Menu, Moon, Sun, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GithubIcon, AidekinMark } from './icons'
@@ -48,10 +48,9 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
 
 function SiteHeader() {
   const [open, setOpen] = useState(false)
-  const { pathname } = useLocation()
-
-  // Close the mobile menu whenever the route changes (e.g. after tapping a link).
-  useEffect(() => setOpen(false), [pathname])
+  // The mobile menu closes from its own event handlers (every item's onClick, Escape, the
+  // backdrop) rather than a route-change effect, so navigation never triggers a render cascade.
+  const closeMenu = () => setOpen(false)
 
   // While the mobile menu is open: close on Escape and lock background scroll (the backdrop
   // overlays the page), restoring both on close.
@@ -134,6 +133,7 @@ function SiteHeader() {
                     href={n.href}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={closeMenu}
                     className="rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                   >
                     {n.label}
@@ -142,6 +142,7 @@ function SiteHeader() {
                   <NavLink
                     key={n.label}
                     to={n.to!}
+                    onClick={closeMenu}
                     className={({ isActive }) =>
                       cn(
                         'rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
@@ -155,6 +156,7 @@ function SiteHeader() {
               )}
               <Link
                 to="/configure"
+                onClick={closeMenu}
                 className="mt-1 rounded-md bg-primary px-4 py-2.5 text-center text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
               >
                 Get your snippet

@@ -32,8 +32,8 @@ async function load(onProgress?: EmbedProgress): Promise<Embedder> {
           ? { onnxUrl: '/models/embed/model_quantized.onnx', tokenizerJsonUrl: '/models/embed/tokenizer.json', tokenizerConfigUrl: '/models/embed/tokenizer_config.json' }
           : embedModelUrls()
         const [tokJson, tokCfg] = await Promise.all([
-          fetch(urls.tokenizerJsonUrl).then((r) => r.json()),
-          fetch(urls.tokenizerConfigUrl).then((r) => r.json()),
+          fetch(urls.tokenizerJsonUrl).then((r) => r.json() as Promise<Record<string, unknown>>),
+          fetch(urls.tokenizerConfigUrl).then((r) => r.json() as Promise<Record<string, unknown>>),
         ])
         const tok = new Tokenizer(tokJson, tokCfg)
         const onnx = await getModelAsset('embed-bge-small-q8', urls.onnxUrl, (p) =>

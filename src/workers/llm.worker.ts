@@ -264,15 +264,15 @@ async function prewarm(system: ChatMessage, messages?: readonly ChatMessage[]): 
       // visitor's first turn a cache-append instead of a multi-second full prefill. Fall back to
       // just the system prompt when the transcript is trivial or too long to leave append room.
       let transcript: readonly ChatMessage[] = messages && messages.length > 1 ? messages : [system]
-      let str = tokenizer!.applyChatTemplate(transcript as ChatMessage[], { addGenerationPrompt: false, enableThinking: false }).replace(/\n$/, '')
-      let ids = tokenizer!.encode(str, false)
+      let str = tokenizer.applyChatTemplate(transcript as ChatMessage[], { addGenerationPrompt: false, enableThinking: false }).replace(/\n$/, '')
+      let ids = tokenizer.encode(str, false)
       if (transcript.length > 1 && ids.length > maxSeqLen - 600) {
         transcript = [system]
-        str = tokenizer!.applyChatTemplate([system], { addGenerationPrompt: false, enableThinking: false }).replace(/\n$/, '')
-        ids = tokenizer!.encode(str, false)
+        str = tokenizer.applyChatTemplate([system], { addGenerationPrompt: false, enableThinking: false }).replace(/\n$/, '')
+        ids = tokenizer.encode(str, false)
       }
       const t0 = performance.now()
-      await engine!.prefill(ids)
+      await engine.prefill(ids)
       cachedMessages = [...transcript] // the cache now represents exactly this prefix; the next clean append reuses it
       dlog(`[aidekin] LLM prewarm ${(performance.now() - t0).toFixed(0)}ms (${ids.length} tok, ${transcript.length} msg)`)
     } catch (e) {

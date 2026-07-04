@@ -15,7 +15,7 @@ async function hubJson(name: string): Promise<unknown> {
   if (!existsSync(CACHE)) mkdirSync(CACHE, { recursive: true })
   const p = join(CACHE, name)
   if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf8'))
-  const j = await (await fetch(`https://huggingface.co/${ID}/resolve/main/${name}`)).json()
+  const j: unknown = await (await fetch(`https://huggingface.co/${ID}/resolve/main/${name}`)).json()
   writeFileSync(p, JSON.stringify(j))
   return j
 }
@@ -31,7 +31,7 @@ const tokCfg = (await hubJson('tokenizer_config.json')) as Record<string, unknow
 const ref = await AutoTokenizer.from_pretrained(ID)
 const mine = new LlmTokenizer(tokJson, tokCfg)
 
-const refEnc = (t: string): number[] => Array.from(ref.encode(t, { add_special_tokens: false }) as number[], Number)
+const refEnc = (t: string): number[] => Array.from(ref.encode(t, { add_special_tokens: false }), Number)
 
 // curated tricky cases
 const curated = [

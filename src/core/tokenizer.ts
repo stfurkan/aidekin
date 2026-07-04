@@ -27,7 +27,7 @@ export class LlmTokenizer {
   readonly eosTokenId: number
 
   constructor(tokenizerJson: unknown, tokenizerConfig: Record<string, unknown>) {
-    this.tok = new Tokenizer(tokenizerJson as never, tokenizerConfig as never)
+    this.tok = new Tokenizer(tokenizerJson as never, tokenizerConfig)
     const tmpl = tokenizerConfig['chat_template']
     this.template = typeof tmpl === 'string' ? new Template(tmpl) : null
     const eos = tokenizerConfig['eos_token']
@@ -54,7 +54,7 @@ export class LlmTokenizer {
       messages,
       add_generation_prompt: opts.addGenerationPrompt ?? true,
       enable_thinking: opts.enableThinking ?? false,
-    }) as string
+    })
   }
 
   createDecoderStream(skipSpecialTokens = true): DecoderStream {

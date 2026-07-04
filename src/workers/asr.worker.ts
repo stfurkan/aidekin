@@ -22,7 +22,7 @@ ort.env.wasm.wasmPaths = ORT_WASM_CDN
 ort.env.logLevel = 'error' // hide benign "node not assigned to preferred EP" warnings
 
 const tensorCtor: TensorCtor = (type, data, dims) =>
-  new ort.Tensor(type as 'float32', data as Float32Array, dims) as unknown as OrtTensor
+  new ort.Tensor(type as 'float32', data as Float32Array, dims)
 
 let asr: SoniqoStreamingAsr | null = null
 let detok: NemotronDetokenizer | null = null
