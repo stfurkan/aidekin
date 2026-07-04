@@ -13,6 +13,7 @@ interface Form {
   greeting: string
   systemPrompt: string
   accent: string
+  theme: 'auto' | 'light' | 'dark'
   position: 'bottom-right' | 'bottom-left'
   knowledgeUrl: string
   persist: boolean
@@ -25,6 +26,7 @@ const INITIAL: Form = {
   greeting: 'Hi! Ask me anything. I run entirely in your browser.',
   systemPrompt: '',
   accent: '#29a383',
+  theme: 'auto',
   position: 'bottom-right',
   knowledgeUrl: '',
   persist: true,
@@ -40,6 +42,7 @@ function buildSnippet(f: Form, src: string): string {
   if (f.greeting.trim()) attrs.push(`data-greeting="${esc(f.greeting.trim())}"`)
   if (f.systemPrompt.trim()) attrs.push(`data-system-prompt="${esc(f.systemPrompt.trim())}"`)
   if (f.accent) attrs.push(`data-accent="${f.accent}"`)
+  if (f.theme !== 'auto') attrs.push(`data-theme="${f.theme}"`)
   if (f.position !== 'bottom-right') attrs.push(`data-position="${f.position}"`)
   if (f.knowledgeUrl.trim()) attrs.push(`data-knowledge-url="${f.knowledgeUrl.trim()}"`)
   if (f.reasoning) attrs.push(`data-reasoning="true"`)
@@ -60,6 +63,7 @@ export default function Configure() {
         greeting: f.greeting,
         systemPrompt: f.systemPrompt || undefined,
         accent: f.accent,
+        theme: f.theme,
         knowledgeUrl: f.knowledgeUrl || undefined,
         reasoning: f.reasoning,
       }),
@@ -107,6 +111,18 @@ export default function Configure() {
               </select>
             </Field>
           </div>
+
+          <Field label="Default theme">
+            <select className={inputCls} value={f.theme} onChange={(e) => set('theme', e.target.value as Form['theme'])}>
+              <option value="auto">System (follows the visitor's OS)</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Match your site's look. Visitors can still toggle light/dark inside the widget, and
+              their choice is remembered on your site.
+            </p>
+          </Field>
 
           <Field label="Mode">
             <select className={inputCls} value={f.mode} onChange={(e) => set('mode', e.target.value as Form['mode'])}>
