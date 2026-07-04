@@ -2,7 +2,7 @@
 
 **Your own voice + text AI agent, embedded with one script tag, running 100% in the visitor's browser.**
 
-aidekin is an open-source, client-side AI assistant you drop onto any website. Your visitors get a private voice and text agent that runs entirely on their own device via WebGPU. There is no backend, no API keys, and no per-message cost. Nothing they type or say leaves their machine.
+aidekin is an open-source, client-side AI assistant you drop onto any website. Your visitors get a private voice and text agent that runs entirely on their own device via WebGPU, powered by [bitgpu](https://github.com/stfurkan/bitgpu), our own inference engine for 1-bit LLMs. There is no backend, no API keys, and no per-message cost. Nothing they type or say leaves their machine.
 
 [aidekin.com](https://aidekin.com) · [Configure](https://aidekin.com/configure) · [Knowledge builder](https://aidekin.com/knowledge) · [Docs](https://aidekin.com/docs) · [Demo](https://aidekin.com/demo) · [GitHub](https://github.com/stfurkan/aidekin) · MIT licensed
 
@@ -16,13 +16,14 @@ Paste one line, just before the closing `</body>` tag:
 <script src="https://cdn.aidekin.com/loader.js" data-title="Acme" defer></script>
 ```
 
-On page load the loader (~2 KB) only draws a floating launcher. The widget and the model load on the **first open**, so there is zero impact on your page load. Generate a snippet tailored to your settings at [aidekin.com/configure](https://aidekin.com/configure).
+On page load the loader (~3 KB) only draws a floating launcher. The widget and the model load on the **first open**, so there is zero impact on your page load. Generate a snippet tailored to your settings at [aidekin.com/configure](https://aidekin.com/configure).
 
 ## Why aidekin
 
 - **On-device.** The language model, retrieval, and speech all run in the visitor's browser. No servers.
 - **Free per message.** The visitor's device does the work. No tokens, no metering, no bills.
 - **Private by design.** Nothing leaves the device. Works offline after the first load, and behind firewalls.
+- **Our own engine.** The LLM runs on [bitgpu](https://github.com/stfurkan/bitgpu), a purpose-built WebGPU runtime for 1-bit (binary-weight) models: the ~290 MB download stays packed in GPU memory (~0.5 GB VRAM, f16 KV cache), streams from cache straight into the GPU, and is verified bit-exact against its reference. Published separately as [`bitgpu` on npm](https://www.npmjs.com/package/bitgpu).
 - **Voice + text, one brain.** The same model answers whether the visitor types or talks.
 - **Your own knowledge (RAG).** Feed it your docs; retrieval runs in the browser.
 - **One script tag.** No build step, no backend, no keys. MIT licensed; self-host if you prefer.
@@ -30,11 +31,11 @@ On page load the loader (~2 KB) only draws a floating launcher. The widget and t
 ## How it works
 
 ```
-host page ──<script> loader (~2 KB, Shadow DOM launcher)──► on first open: <iframe> widget
+host page ──<script> loader (~3 KB, Shadow DOM launcher)──► on first open: <iframe> widget
                                                                   │ origin-checked postMessage
                                   text (default) ── mic toggle ─► voice (speech models load lazily)
                                         both run on-device:
-   VAD ─► Smart-Turn ─► ASR (Nemotron) ─► LLM (Bonsai-1.7B) ─► TTS (Supertonic), all WebGPU/WASM
+   VAD ─► Smart-Turn ─► ASR (Nemotron) ─► LLM (Bonsai-1.7B on bitgpu) ─► TTS (Supertonic)
                                               └─ optional RAG over your knowledge.bin
 ```
 
@@ -67,7 +68,7 @@ Host the file anywhere with cross-origin reads (a GitHub repo via a CDN, Cloudfl
 
 ## Browser support
 
-aidekin needs **WebGPU**: recent desktop Chrome/Edge, Safari 26+, Firefox 145+. Unsupported browsers see a short notice instead of a crash. One-time download: **~290 MB** for text, **~1.6 GB more** for voice (the first time it is used), cached afterwards. Browsers partition cache by site, so a visitor downloads once per site, then loads from cache.
+aidekin needs **WebGPU**: recent desktop Chrome/Edge, Safari 26+, Firefox 145+, and recent phones (text chat runs well on current iPhones and high-end Android; older phones work but are slower). Unsupported browsers see a short notice instead of a crash. One-time download: **~290 MB** for text, **~1.6 GB more** for voice (the first time it is used), cached afterwards. Browsers partition cache by site, so a visitor downloads once per site, then loads from cache.
 
 ---
 
@@ -85,18 +86,20 @@ Open the printed URL in a WebGPU-capable browser. Model weights stream from CDNs
 
 **Self-host the widget:** deploy `dist/`, then point the loader at your copy with `data-widget-origin`. Mirror the model weights and set `VITE_MODEL_CDN=https://your-bucket.example` at build time to serve them yourself; `VITE_MODEL_CDN=/models` + `npm run fetch-models` serves a local mirror for offline dev.
 
-**Swap a model:** everything lives behind one entry in [`src/models/registry.ts`](src/models/registry.ts) (the single source of truth) plus a small worker interface. Change `LLM.hfModelId` / `ASR.hfModelId` / `TTS` to swap.
+**Swap a model:** everything lives behind one entry in [`src/models/registry.ts`](src/models/registry.ts) (the single source of truth) plus a small worker interface. The speech models are plain ONNX repos; the LLM is a bitgpu-format model (manifest + packed 1-bit weights).
 
 ### Models
 
 | Role | Model | Runtime |
 |---|---|---|
-| LLM | `onnx-community/Bonsai-1.7B-ONNX` (`q1`) | transformers.js (WebGPU) |
+| LLM | `onnx-community/Bonsai-1.7B-ONNX` (`q1`, 1-bit) | [bitgpu](https://github.com/stfurkan/bitgpu) (WebGPU) |
 | ASR | `soniqo/Nemotron-3.5-ASR-Streaming-Multilingual-0.6B-ONNX-FP16` | onnxruntime-web (WebGPU + WASM) |
 | TTS | `Supertone/supertonic-3` | onnxruntime-web (WebGPU/WASM) |
-| Turn detect | `onnx-community/smart-turn-v3-ONNX` | transformers.js (WASM) |
+| Turn detect | `onnx-community/smart-turn-v3-ONNX` | onnxruntime-web (WASM) |
 | VAD | Silero v5 (via `@ricky0123/vad-web`) | onnxruntime-web (WASM) |
-| Embedder (RAG) | `Xenova/bge-small-en-v1.5` (`q8`, 384-dim) | transformers.js (WASM) |
+| Embedder (RAG) | `Xenova/bge-small-en-v1.5` (`q8`, 384-dim) | onnxruntime-web (WASM) |
+
+The LLM runs on our own engine rather than a generic ONNX runtime because generic WebGPU kernels dequantize low-bit weights to fp16 in VRAM (~3.4 GB for a 1.7B model). bitgpu keeps the weights packed (~0.5 GB VRAM), decodes them in-shader, and is gated bit-exact against the reference implementation on every release.
 
 ### Project layout
 
@@ -104,7 +107,7 @@ Open the printed URL in a WebGPU-capable browser. Model weights stream from CDNs
 src/
   site/        Landing · Configure · Builder · Docs · Demo · Privacy · Terms · Layout · SiteWidget · icons
   widget/      WidgetApp · WidgetFrame · useTextController · SonarPing · Markdown · protocol · main
-  embed/       loader            (the ~2 KB script + iframe launcher)
+  embed/       loader            (the ~3 KB script + iframe launcher)
   engine/      conversationEngine (shared brain: LLM turn + history + RAG)
   rag/         chunker · embedder · store · retriever
   pipeline/    orchestrator · sentenceChunker
@@ -124,4 +127,4 @@ Everything runs on the visitor's device, so there is nothing on your side to ste
 
 ## License
 
-MIT © Sait Furkan Teke. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
