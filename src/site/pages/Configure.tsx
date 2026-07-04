@@ -147,18 +147,22 @@ export default function Configure() {
             </Link>
           </Field>
 
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input type="checkbox" checked={f.persist} onChange={(e) => set('persist', e.target.checked)} className="size-4" />
-            Remember the conversation across reloads
-          </label>
-
-          <label className="flex cursor-pointer items-start gap-2 text-sm">
-            <input type="checkbox" checked={f.reasoning} onChange={(e) => set('reasoning', e.target.checked)} className="mt-0.5 size-4" />
-            <span>
-              Deeper reasoning on every reply
-              <span className="block text-xs text-muted-foreground">More accurate, but slower to start each answer. (RAG answers always reason.)</span>
-            </span>
-          </label>
+          <div>
+            <span className="mb-1.5 block text-sm font-medium">Behaviour</span>
+            <div className="space-y-3 rounded-md border border-input bg-background px-3.5 py-3">
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <input type="checkbox" checked={f.persist} onChange={(e) => set('persist', e.target.checked)} className="size-4" />
+                Remember the conversation across reloads
+              </label>
+              <label className="flex cursor-pointer items-start gap-2 text-sm">
+                <input type="checkbox" checked={f.reasoning} onChange={(e) => set('reasoning', e.target.checked)} className="mt-0.5 size-4" />
+                <span>
+                  Deeper reasoning on every reply
+                  <span className="block text-xs text-muted-foreground">More accurate, but slower to start each answer. (RAG answers always reason.)</span>
+                </span>
+              </label>
+            </div>
+          </div>
         </div>
 
         {/* Live preview */}

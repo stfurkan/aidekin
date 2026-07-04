@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { cn } from '@/lib/utils'
 import { Link } from 'react-router-dom'
 import { Check, Copy } from 'lucide-react'
 
@@ -60,7 +61,38 @@ const SELF_HOST = `<script
   defer
 ></script>`
 
+/** Which section is under the reader (rAF-throttled scroll check; ~10 sections, cheap).
+ *  Drives the sidebar's active state so "On this page" answers where you actually are. */
+function useActiveSection(ids: string[]): string {
+  const [active, setActive] = useState(ids[0])
+  useEffect(() => {
+    let raf = 0
+    const measure = () => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        let current = ids[0]
+        for (const id of ids) {
+          const el = document.getElementById(id)
+          if (el && el.getBoundingClientRect().top <= 120) current = id
+        }
+        setActive(current)
+      })
+    }
+    measure()
+    window.addEventListener('scroll', measure, { passive: true })
+    return () => {
+      window.removeEventListener('scroll', measure)
+      cancelAnimationFrame(raf)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ids is the module-level NAV, stable
+  }, [])
+  return active
+}
+
+const NAV_IDS = NAV.map((n) => n.id)
+
 export default function Docs() {
+  const active = useActiveSection(NAV_IDS)
   return (
     <section className="mx-auto max-w-6xl px-5 py-14">
       <p className="mono-kicker">Docs</p>
@@ -78,7 +110,11 @@ export default function Docs() {
               <a
                 key={n.id}
                 href={`#${n.id}`}
-                className="block rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                aria-current={active === n.id ? 'location' : undefined}
+                className={cn(
+                  'block rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
+                  active === n.id && 'bg-secondary font-medium text-foreground',
+                )}
               >
                 {n.label}
               </a>
