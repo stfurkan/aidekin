@@ -25,11 +25,12 @@ const VOICE_REPLY = 'You can return anything within 30 days, no receipt needed.'
 
 export function HeroChat() {
   const [phase, setPhase] = useState<'text' | 'voice'>('text')
-  // Reduced-motion users get the finished transcript immediately (lazy init, no animation).
+  // Reduced-motion users get the finished transcript immediately (lazy init, no animation);
+  // everyone else starts with the greeting already placed, so the panel is never an empty box.
   const [shown, setShown] = useState<Line[]>(() =>
     typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
       ? TEXT_SCRIPT.map((l) => ({ ...l }))
-      : [],
+      : [{ ...TEXT_SCRIPT[0] }],
   )
   const [dots, setDots] = useState(false)
   const [vState, setVState] = useState<AgentState>('listening')
@@ -55,9 +56,10 @@ export function HeroChat() {
 
     const textCycle = async () => {
       setPhase('text')
-      setShown([])
-      await wait(600)
-      for (const line of TEXT_SCRIPT) {
+      // The greeting is pre-placed (never an empty panel); the reel types the exchange after it.
+      setShown([{ ...TEXT_SCRIPT[0] }])
+      await wait(1100)
+      for (const line of TEXT_SCRIPT.slice(1)) {
         if (cancelled) return
         if (line.role === 'assistant') {
           setDots(true)

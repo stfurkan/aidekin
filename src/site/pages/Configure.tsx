@@ -74,13 +74,13 @@ export default function Configure() {
     <section className="mx-auto max-w-6xl px-5 py-14">
       <h1 className="font-display text-3xl font-semibold tracking-tight">Configure your widget</h1>
       <p className="mt-2 text-muted-foreground">
-        Tune it, watch the live preview, then copy the one-line snippet. Everything stays client-side.
+        Tune it, watch the live preview, then copy the one-line snippet. Nothing you type here leaves your browser.
       </p>
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_360px]">
         {/* Form */}
         <div className="space-y-5">
-          <Field label="Name (title)">
+          <Field label="Assistant name">
             <input className={inputCls} value={f.title} onChange={(e) => set('title', e.target.value)} />
           </Field>
 
@@ -173,6 +173,7 @@ export default function Configure() {
             </WidgetFrame>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">Type to load the model and try it for real.</p>
+          <CopySnippetButton form={f} />
         </div>
       </div>
 
@@ -235,6 +236,28 @@ function Snippet({ form }: { form: Form }) {
         </p>
       )}
     </div>
+  )
+}
+
+/** Copy the current snippet without scrolling down to the full snippet block: lives under the
+ *  sticky preview, so tune -> check -> copy happens in one place. */
+function CopySnippetButton({ form }: { form: Form }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    void navigator.clipboard.writeText(buildSnippet(form, CDN)).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-border bg-card px-4 py-2 text-sm font-medium transition-colors hover:bg-secondary"
+    >
+      {copied ? <Check className="size-4 text-primary" /> : <Copy className="size-4" />}
+      {copied ? 'Copied' : 'Copy snippet'}
+    </button>
   )
 }
 

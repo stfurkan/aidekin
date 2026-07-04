@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Upload,
   FileText,
@@ -6,6 +7,7 @@ import {
   Trash2,
   Download,
   AlertTriangle,
+  Lightbulb,
   Loader2,
   CheckCircle2,
   Database,
@@ -184,7 +186,7 @@ export default function Builder() {
         personal data.
       </Callout>
 
-      <Callout>
+      <Callout tip>
         For reliable answers, write content the way you’d want it read back: short, self-contained facts,
         and <strong>refer to pages and tools by name</strong> rather than pasting raw URLs. A compact
         on-device model reproduces names cleanly but often mangles or misreads long links.
@@ -303,11 +305,19 @@ export default function Builder() {
           type="button"
           onClick={() => void build()}
           disabled={!sources.length || building}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground transition-transform hover:-translate-y-px disabled:translate-y-0 disabled:opacity-40"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground transition-transform hover:-translate-y-px disabled:translate-y-0 disabled:bg-secondary disabled:text-muted-foreground"
         >
           {building ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
           {building ? 'Building…' : 'Build & download knowledge.bin'}
         </button>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Next: host the file anywhere with public reads (your site, a CDN, a repo), then paste its
+          URL into the{' '}
+          <Link to="/configure" className="font-medium text-primary hover:underline">
+            Configure page
+          </Link>
+          's knowledge field.
+        </p>
 
         {stage && (
           <div className="mt-4">
@@ -358,7 +368,17 @@ function ResultPanel({ result }: { result: BuildResult }) {
   )
 }
 
-function Callout({ children }: { children: ReactNode }) {
+/** Amber = a real warning (something can go wrong); the neutral tip variant is for guidance.
+ *  Two amber boxes in a row read as noise, and noise teaches people to skip warnings. */
+function Callout({ children, tip }: { children: ReactNode; tip?: boolean }) {
+  if (tip) {
+    return (
+      <div className="flex items-start gap-2.5 rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+        <Lightbulb className="mt-0.5 size-4 shrink-0 text-primary" />
+        <span>{children}</span>
+      </div>
+    )
+  }
   return (
     <div className="flex items-start gap-2.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
       <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />

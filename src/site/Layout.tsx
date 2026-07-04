@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode } from 'react'
 import { Link, NavLink } from 'react-router-dom'
-import { Menu, Moon, Sun, X } from 'lucide-react'
+import { ArrowUpRight, Menu, Moon, Sun, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GithubIcon, AidekinMark } from './icons'
 import { SiteWidget } from './SiteWidget'
@@ -72,8 +72,15 @@ function SiteHeader() {
         <nav className="ml-4 hidden items-center gap-1 md:flex">
           {NAV.map((n) =>
             n.href ? (
-              <a key={n.label} href={n.href} target="_blank" rel="noreferrer" className={navLinkClass({ isActive: false })}>
+              <a
+                key={n.label}
+                href={n.href}
+                target="_blank"
+                rel="noreferrer"
+                className={cn(navLinkClass({ isActive: false }), 'inline-flex items-center gap-1')}
+              >
                 {n.label}
+                <ArrowUpRight className="size-3 opacity-60" aria-hidden="true" />
               </a>
             ) : (
               <NavLink key={n.label} to={n.to!} className={navLinkClass}>
@@ -134,9 +141,10 @@ function SiteHeader() {
                     target="_blank"
                     rel="noreferrer"
                     onClick={closeMenu}
-                    className="rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                    className="flex items-center gap-1 rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                   >
                     {n.label}
+                    <ArrowUpRight className="size-3 opacity-60" aria-hidden="true" />
                   </a>
                 ) : (
                   <NavLink
@@ -218,6 +226,9 @@ function SiteFooter() {
           </Link>
           <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="hover:text-foreground">
             GitHub
+          </a>
+          <a href="https://github.com/stfurkan/bitgpu" target="_blank" rel="noreferrer" className="hover:text-foreground">
+            Built on bitgpu
           </a>
           <a href={`${GITHUB_URL}/issues`} target="_blank" rel="noreferrer" className="hover:text-foreground">
             Report a problem
