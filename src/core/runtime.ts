@@ -1,7 +1,7 @@
 // Small runtime/UA helpers (safe to import in workers).
 
 /** True on Safari / WebKit (Safari in the UA, but not a Chromium-based browser). */
-export function isWebKit(): boolean {
+function isWebKit(): boolean {
   const ua = navigator.userAgent
   return /Safari/.test(ua) && !/Chrome|Chromium|Android|Edg|OPR/.test(ua)
 }

@@ -6,9 +6,12 @@ import { GithubIcon, AidekinMark } from './icons'
 import { SiteWidget } from './SiteWidget'
 
 const GITHUB_URL = 'https://github.com/stfurkan/aidekin'
+// The demo is a REAL third-party embed (a fictional cafe on its own origin), which is a far more
+// honest demonstration than a page on our own site - so Demo opens it in a new tab.
+export const DEMO_URL = 'https://stfurkan.github.io/aidekin-demo/'
 
-const NAV = [
-  { to: '/demo', label: 'Demo' },
+const NAV: Array<{ to?: string; href?: string; label: string }> = [
+  { href: DEMO_URL, label: 'Demo' },
   { to: '/configure', label: 'Configure' },
   { to: '/knowledge', label: 'Knowledge' },
   { to: '/docs', label: 'Docs' },
@@ -68,11 +71,17 @@ function SiteHeader() {
       <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-5">
         <Logo />
         <nav className="ml-4 hidden items-center gap-1 md:flex">
-          {NAV.map((n) => (
-            <NavLink key={n.to} to={n.to} className={navLinkClass}>
-              {n.label}
-            </NavLink>
-          ))}
+          {NAV.map((n) =>
+            n.href ? (
+              <a key={n.label} href={n.href} target="_blank" rel="noreferrer" className={navLinkClass({ isActive: false })}>
+                {n.label}
+              </a>
+            ) : (
+              <NavLink key={n.label} to={n.to!} className={navLinkClass}>
+                {n.label}
+              </NavLink>
+            ),
+          )}
         </nav>
         <div className="ml-auto flex items-center gap-1.5">
           <ThemeToggle />
@@ -118,20 +127,32 @@ function SiteHeader() {
             className="absolute inset-x-0 top-full border-b border-border bg-background shadow-xl md:hidden"
           >
             <div className="mx-auto flex max-w-6xl flex-col gap-1 px-5 py-3">
-              {NAV.map((n) => (
-                <NavLink
-                  key={n.to}
-                  to={n.to}
-                  className={({ isActive }) =>
-                    cn(
-                      'rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
-                      isActive && 'bg-secondary text-foreground',
-                    )
-                  }
-                >
-                  {n.label}
-                </NavLink>
-              ))}
+              {NAV.map((n) =>
+                n.href ? (
+                  <a
+                    key={n.label}
+                    href={n.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                  >
+                    {n.label}
+                  </a>
+                ) : (
+                  <NavLink
+                    key={n.label}
+                    to={n.to!}
+                    className={({ isActive }) =>
+                      cn(
+                        'rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground',
+                        isActive && 'bg-secondary text-foreground',
+                      )
+                    }
+                  >
+                    {n.label}
+                  </NavLink>
+                ),
+              )}
               <Link
                 to="/configure"
                 className="mt-1 rounded-md bg-primary px-4 py-2.5 text-center text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"

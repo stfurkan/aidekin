@@ -134,8 +134,10 @@ function withinOneEdit(a: string, b: string): boolean {
 // The product promises plain text. A model that emits markup under pressure ("write me the
 // exact html embed code") gets it stripped deterministically - enforcement in code, not one
 // more prompt rule. Partial tags at a streaming edge ("<scr") are stripped too and the full
-// tag is caught on the next update.
-const stripHtmlTags = (s: string): string => s.replace(/<\/?[a-z][^<>]*>?/gi, '')
+// tag is caught on the next update. Markdown code fences get the same treatment: with the
+// HTML inside them stripped they render as bare ``` noise (the widget's renderer is
+// intentionally fence-free), so drop the fence markers themselves.
+const stripHtmlTags = (s: string): string => s.replace(/<\/?[a-z][^<>]*>?/gi, '').replace(/^[ \t]*```[a-z]*[ \t]*$\n?|```/gim, '')
 
 // A URL or email in an answer. Used by the fabrication guard below.
 const URL_OR_EMAIL = /(?:https?:\/\/|www\.)[^\s)<>"']+|[^\s@<>"']+@[^\s@<>"']+\.[^\s)<>"']+/gi

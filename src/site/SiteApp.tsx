@@ -1,13 +1,12 @@
 import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
-import { Layout } from './Layout'
+import { DEMO_URL, Layout } from './Layout'
 import { Landing } from './pages/Landing'
 import { NotFound } from './pages/NotFound'
 import { useRouteMeta } from './useRouteMeta'
 
 // Code-split the heavier / future routes so the landing stays light (lean by default).
-const Demo = lazy(() => import('./pages/Demo'))
 const Configure = lazy(() => import('./pages/Configure'))
 const Builder = lazy(() => import('./pages/Builder'))
 const Docs = lazy(() => import('./pages/Docs'))
@@ -21,7 +20,8 @@ export function SiteApp() {
       <Suspense fallback={<PageSpinner />}>
         <Routes>
           <Route path="/" element={<Landing />} />
-          <Route path="/demo" element={<Demo />} />
+          {/* /demo now lives on its own origin (a real third-party embed); redirect old links. */}
+          <Route path="/demo" element={<ExternalRedirect to={DEMO_URL} />} />
           <Route path="/configure" element={<Configure />} />
           <Route path="/knowledge" element={<Builder />} />
           {/* Keep the old /builder path as a redirect so existing links/bookmarks still work. */}
@@ -34,6 +34,11 @@ export function SiteApp() {
       </Suspense>
     </Layout>
   )
+}
+
+function ExternalRedirect({ to }: { to: string }) {
+  window.location.replace(to)
+  return <PageSpinner />
 }
 
 function PageSpinner() {

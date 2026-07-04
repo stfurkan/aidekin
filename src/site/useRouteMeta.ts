@@ -24,8 +24,6 @@ function metaForPath(pathname: string): RouteMeta {
       title: `Docs · ${SITE}`,
       description: 'Embed, configure, and ground aidekin: the data attributes, the JavaScript API, RAG, and the privacy model.',
     }
-  if (pathname === '/demo')
-    return { title: `Live demo · ${SITE}`, description: 'Try aidekin for real: the actual widget, running on-device in your browser.' }
   if (pathname === '/configure')
     return { title: `Configure · ${SITE}`, description: 'Set your options and copy a one-line embed snippet for your own site.' }
   if (pathname === '/knowledge')

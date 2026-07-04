@@ -2,6 +2,7 @@ import { type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Play, Check, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { DEMO_URL } from '../Layout'
 import { HeroChat } from '../HeroChat'
 
 const BTN_PRIMARY =
@@ -41,9 +42,9 @@ function Hero() {
             <Link to="/configure" className={BTN_PRIMARY}>
               Get the snippet <ArrowRight className="size-4" />
             </Link>
-            <Link to="/demo" className={BTN_GHOST}>
+            <a href={DEMO_URL} target="_blank" rel="noreferrer" className={BTN_GHOST}>
               <Play className="size-4" /> Live demo
-            </Link>
+            </a>
           </div>
           <p className="mono-kicker mt-6">Open source · MIT · works offline after first load</p>
         </div>
@@ -214,9 +215,9 @@ function CtaBand() {
             <Link to="/configure" className={BTN_PRIMARY}>
               Build your widget <ArrowRight className="size-4" />
             </Link>
-            <Link to="/demo" className={BTN_GHOST}>
+            <a href={DEMO_URL} target="_blank" rel="noreferrer" className={BTN_GHOST}>
               <Play className="size-4" /> See the demo
-            </Link>
+            </a>
           </div>
         </div>
       </div>

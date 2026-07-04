@@ -18,7 +18,7 @@ Yes, aidekin has full documentation on the Docs page of the website. It covers e
 
 ## Where is the demo? Can I try aidekin first?
 
-Yes. The live demo is on the Demo page; the home page also has a Live demo button. The Configure page additionally shows a live preview of your own widget while you edit its settings.
+Yes, two ways. The chat bubble in the corner of this website is the real widget, so you can try it right here. The Demo link in the menu also opens a live example site in a new tab: a fictional cafe called Copperleaf with the widget embedded exactly the way a customer would embed it, answering from the cafe's own knowledge file. The Configure page additionally shows a live preview of your own widget while you edit its settings.
 
 ## Where is aidekin from? Where are you located? Who made aidekin?
 

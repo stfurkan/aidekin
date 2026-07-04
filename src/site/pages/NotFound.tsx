@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { Play } from 'lucide-react'
+import { DEMO_URL } from '../Layout'
 
 // 404 page, in the Ledger style (mono-kicker + display heading + jade primary CTA). Rendered
 // by the catch-all route inside Layout, so it keeps the site header and footer.
@@ -21,12 +22,14 @@ export function NotFound() {
         >
           Back home
         </Link>
-        <Link
-          to="/demo"
+        <a
+          href={DEMO_URL}
+          target="_blank"
+          rel="noreferrer"
           className="inline-flex items-center gap-2 rounded-md border border-border px-5 py-2.5 text-sm font-semibold transition-colors hover:bg-secondary"
         >
           <Play className="size-4" /> Try the demo
-        </Link>
+        </a>
       </div>
     </section>
   )

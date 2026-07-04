@@ -9,7 +9,7 @@ import { AidekinMark } from './icons'
 // actual widget chrome (Bracket Core header, the real bubble + voice styling) so it reads
 // as the genuine product, not a stock mock. It alternates a TEXT cycle (types a Q&A) and
 // a VOICE cycle (the immersive ping + live caption) so the hero shows both modes and
-// their distinct designs. No model downloads here; the real thing is behind /demo.
+// their distinct designs. No model downloads here; the real thing is the corner widget + the demo site.
 
 interface Line {
   role: 'assistant' | 'user'

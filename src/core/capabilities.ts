@@ -112,44 +112,6 @@ export async function probeCapabilities(): Promise<CapabilityReport> {
   }
 }
 
-export interface DegradationPlan {
-  /** The on-device LLM (bitgpu) needs WebGPU; without it it cannot run. */
-  readonly canRunLlm: boolean
-  /** Streaming ASR (onnxruntime-web) wants WASM threads for usable latency. */
-  readonly asrThreaded: boolean
-  readonly warnings: readonly string[]
-}
-
-export function planDegradation(r: CapabilityReport): DegradationPlan {
-  const warnings: string[] = []
-  if (!r.webgpu.supported) {
-    warnings.push(
-      'WebGPU unavailable - the on-device LLM cannot run here. ASR/VAD/TTS may still work on WASM/CPU.',
-    )
-  }
-  if (!r.crossOriginIsolated) {
-    warnings.push(
-      'Page is NOT cross-origin isolated - SharedArrayBuffer/WASM threads are disabled. ASR will be slow or fail. Check the COOP/COEP headers.',
-    )
-  }
-  if (!r.wasmSimd) {
-    warnings.push('WASM SIMD unavailable - speech models (ASR/turn/TTS) will be significantly slower.')
-  }
-  if (!r.opfs) {
-    warnings.push('OPFS unavailable - model weights cannot be cached and will re-download every session.')
-  }
-  if (r.webgpu.supported && r.webgpu.maxBufferSizeMB && r.webgpu.maxBufferSizeMB < 1024) {
-    warnings.push(
-      `Low GPU maxBufferSize (${r.webgpu.maxBufferSizeMB}MB) - the LLM may run slowly or fail to allocate.`,
-    )
-  }
-  return {
-    canRunLlm: r.webgpu.supported,
-    asrThreaded: r.wasmThreads,
-    warnings,
-  }
-}
-
 // ── Widget mode resolution ───────────────────────────────────────────────────
 // Text needs only WebGPU (the LLM); the embedder runs single-threaded WASM. Voice
 // additionally needs threaded WASM (VAD + ASR decoder) → cross-origin isolation.

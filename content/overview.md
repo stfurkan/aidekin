@@ -15,7 +15,7 @@ Cloud chat widgets charge per message and send your visitors' data to a vendor's
 - Configure your widget and copy the snippet: the Configure page
 - Build a knowledge file from your own content: the Knowledge page
 - Read the full documentation: the Docs page
-- Try the live demo: the Demo page
+- Try the live demo: the chat bubble on this site, or the Demo link in the menu (a real example site with the widget embedded)
 
 ## Where to start
 
