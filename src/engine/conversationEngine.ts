@@ -104,6 +104,21 @@ const RAG_INSTRUCTION =
   'NAME; do not write URLs, code, HTML, or markdown. Do not mention the block or use phrases like "the ' +
   'reference", "the context", "the text", "based on", or "according to".'
 
+// Always-on grounding discipline (added whenever a retriever is configured). The rule the model
+// applies to EVERY turn, in any language: the harm we prevent is a wrong claim about the OWNER'S
+// site/business, not the use of world knowledge. So it may greet, discuss itself, recall what the
+// user said, and answer clearly general questions - but it must never assert a site/business fact
+// it was not given. No keywords, no hard-coded phrases: the multilingual model does the judging.
+const SITE_GROUNDING =
+  'Facts about this specific site, business, or product - whether it HAS or offers a feature, ' +
+  'service, plan, app, integration, or payment option, and its prices, hours, or policies - may ' +
+  'ONLY come from an <info> block or from what the user told you. If you are asked whether it offers ' +
+  'or supports something and were not given the answer, do NOT answer yes or no from assumption and ' +
+  'do NOT invent details: say in one sentence that you do not have that information. This overrides ' +
+  'your general knowledge for anything specific to this site or business. Greetings, small talk, ' +
+  'questions about yourself, recalling what the user told you, and clearly general questions ' +
+  'unrelated to this site are answered normally.'
+
 // Conversational mechanics, appended to EVERY system prompt (custom or default). A small model
 // primed by info-answering instructions treats any input as a query to answer, so a bare
 // "hello again" gets a dictionary-style definition of the phrase instead of a greeting back.
@@ -216,7 +231,7 @@ export class ConversationEngine {
    *  retrieved context + the question. */
   private composedSystem(): string {
     const parts = [this.systemPrompt, CHAT_INSTRUCTION]
-    if (this.retriever) parts.push(RAG_INSTRUCTION)
+    if (this.retriever) parts.push(RAG_INSTRUCTION, SITE_GROUNDING)
     return parts.join('\n\n')
   }
 
@@ -426,6 +441,9 @@ export class ConversationEngine {
       )
       this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
       if (relevant.length) this.applyContext(userText, relevant)
+      // Nothing cleared the gate: no per-turn injection. The always-on SITE_GROUNDING rule (in the
+      // system prompt) tells the model to abstain on site questions it wasn't given, while still
+      // greeting, recalling what the user said, and answering general questions - in any language.
     } catch (err) {
       this.cb.onError?.('RAG', (err as Error).message)
     }
