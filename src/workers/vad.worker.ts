@@ -10,7 +10,9 @@ import * as ort from 'onnxruntime-web/wasm'
 import { FrameProcessor, type FrameProcessorOptions } from '@ricky0123/vad-web/dist/frame-processor'
 import { Message } from '@ricky0123/vad-web/dist/messages'
 import { SileroV5 } from '@ricky0123/vad-web/dist/models'
+import { log as vadLog } from '@ricky0123/vad-web/dist/logging'
 import { getModelAsset } from '../core/modelStore'
+import { dlog } from '../core/log'
 import { fmtBytes } from '../core/format'
 import { wasmThreads } from '../core/runtime'
 import { ORT_WASM_CDN } from '../models/registry'
@@ -22,6 +24,12 @@ const post = (m: VadOut, transfer: Transferable[] = []): void => ctx.postMessage
 ort.env.wasm.wasmPaths = ORT_WASM_CDN
 ort.env.logLevel = 'error' // hide benign "node not assigned to preferred EP" warnings
 ort.env.wasm.numThreads = wasmThreads()
+
+// @ricky0123/vad-web logs "VAD | debug > Loading VAD..." to console.log unconditionally (its
+// mkLogger has no level gate). Route its debug through our gated logger so a customer's production
+// console stays clean - dlog is off unless this is a dev build - and keep warnings visible.
+vadLog.debug = (m: string): void => dlog('[vad]', m)
+vadLog.warn = (m: string): void => console.warn('[vad]', m)
 
 let fp: FrameProcessor | null = null
 
