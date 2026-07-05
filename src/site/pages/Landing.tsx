@@ -45,7 +45,7 @@ function Hero() {
         <div>
           <p className="mono-kicker">00 / Entirely in the browser</p>
           <h1 className="mt-5 text-balance font-display text-4xl font-semibold leading-[1.05] tracking-tight sm:text-5xl md:text-[3.35rem]">
-            An AI agent that runs inside your visitor’s <span className="ink-accent">browser</span>.
+            An AI assistant that runs inside your visitor’s <span className="ink-accent">browser</span>.
           </h1>
           <p className="mt-5 max-w-md text-pretty text-lg text-muted-foreground">
             One script tag. The model, retrieval, and voice all execute on-device. No backend, no
@@ -140,7 +140,7 @@ function HowItWorks() {
 function Features() {
   const items = [
     { icon: MessageSquareText, t: 'Text chat', d: 'The recommended default: a fast, lightweight chat that works on any modern WebGPU browser.' },
-    { icon: Mic, t: 'Voice · beta', d: 'Flip on the mic and the same agent talks back. The speech models (~1.6 GB) download only on first use, best on desktop.' },
+    { icon: Mic, t: 'Voice · beta', d: 'Flip on the mic and the same assistant talks back. The speech models (~1.6 GB) download only on first use, best on desktop.' },
     { icon: Database, t: 'Local RAG', d: 'Feed it your own content. Retrieval runs in the browser; your data never leaves it.' },
     { icon: Coins, t: 'Zero per-message cost', d: 'The model runs on the visitor’s device. No tokens, no metering, no surprise bills.' },
     { icon: ShieldCheck, t: 'Private by design', d: 'No backend, no API keys, nothing to leak. Works behind corporate firewalls.' },

@@ -11,7 +11,7 @@
   <text x="210" y="172" font-size="80" font-weight="700" letter-spacing="-2" fill="#17191c">aidekin</text>
 
   <!-- headline -->
-  <text x="104" y="330" font-size="52" font-weight="700" letter-spacing="-1" fill="#17191c">Your own on-device voice and text agent,</text>
+  <text x="104" y="330" font-size="52" font-weight="700" letter-spacing="-1" fill="#17191c">Your on-device voice and text assistant,</text>
   <text x="104" y="394" font-size="52" font-weight="700" letter-spacing="-1" fill="#17191c">running entirely <tspan fill="#0e7c66">in the browser</tspan>.</text>
 
   <!-- subline -->

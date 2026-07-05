@@ -219,7 +219,7 @@ function SiteFooter() {
           <AidekinMark className="mt-0.5 size-4 shrink-0 text-foreground lg:mt-0" coreClassName="fill-primary" />
           <span>
             <span className="font-medium text-foreground">aidekin</span>, your own voice and text
-            agent, running 100% in the browser.
+            assistant, running 100% in the browser.
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 lg:justify-end">
