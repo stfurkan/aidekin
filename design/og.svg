@@ -15,8 +15,8 @@
   <text x="104" y="394" font-size="52" font-weight="700" letter-spacing="-1" fill="#17191c">running entirely <tspan fill="#0e7c66">in the browser</tspan>.</text>
 
   <!-- subline -->
-  <text x="104" y="470" font-size="28" fill="#5b6068">One script tag. No backend, no API keys, no per-message cost.</text>
+  <text x="104" y="470" font-size="28" fill="#5b6068">One script tag. No API keys. Nothing leaves the device.</text>
 
   <!-- footer facts (mono-ish) -->
-  <text x="104" y="540" font-size="24" font-family="'SF Mono', Menlo, Consolas, monospace" fill="#0e7c66" letter-spacing="1">no backend   ·   runs offline   ·   open source (MIT)</text>
+  <text x="104" y="540" font-size="24" font-family="'SF Mono', Menlo, Consolas, monospace" fill="#0e7c66" letter-spacing="1">0 servers   ·   $0 per message   ·   open source (MIT)</text>
 </svg>
