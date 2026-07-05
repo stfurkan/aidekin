@@ -431,10 +431,16 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       try {
         // Pre-check storage: voice adds ~1.6 GB. Fail fast with a clear, actionable message
         // instead of a QuotaExceededError mid-download (best practice for large downloads).
+        // BUT only when there is a real, persistent storage grant to run out of. An ephemeral
+        // session (Safari Private Browsing) reports a SMALL quota; there voice still runs - the
+        // weights stream/buffer uncached and re-download next visit, which private mode implies -
+        // so a small quota must NOT block it. Blocking only makes sense on a large-quota device
+        // that is genuinely full. (A small quota that's nearly full = private/ephemeral → proceed.)
         const { estimateStorage } = await import('@/core/storage')
         const est = await estimateStorage().catch(() => null)
         if (voiceGen.current !== gen) return
-        if (est && est.quotaBytes > 0 && est.quotaBytes - est.usageBytes < 1_700_000_000) {
+        const PERSISTENT_QUOTA = 4_000_000_000 // below this the session is ephemeral (private) - never block
+        if (est && est.quotaBytes >= PERSISTENT_QUOTA && est.quotaBytes - est.usageBytes < 1_700_000_000) {
           throw new Error('Not enough free storage for voice (about 1.6 GB needed). Try text instead, or free up space.')
         }
         await ensureLoaded(engine)

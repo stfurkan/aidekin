@@ -545,6 +545,20 @@ async function downloadAsset(key: string, url: string, onProgress?: ProgressFn):
   // bytes are already in memory here, so writeBufferToOpfs holds the handle only briefly.
   // Best-effort: a cache-write failure must never fail the load.
   const buf = await withRetry(() => fetchToBuffer(url, onProgress), { onRetry })
-  if (dir && persist) await writeBufferToOpfs(dir, key, buf).catch(() => undefined)
+  if (dir && persist) {
+    // Persist so the NEXT load is cache-served. This write can still fail on the largest files (a
+    // sync-handle throw on a >1 GB write, or OPFS quota). Retry transient failures; and if it
+    // ultimately can't cache, LOG why rather than swallowing it - a silent failure here is exactly
+    // what makes the big voice weights re-download every session.
+    await withRetry(() => writeBufferToOpfs(dir, key, buf), {
+      shouldRetry: (e) => !(e instanceof DOMException && e.name === 'QuotaExceededError'),
+      onRetry,
+    }).catch((e) => {
+      const err = e as { name?: string; message?: string }
+      console.warn(
+        `[aidekin] cache write-back failed for ${key} (${err?.name || 'Error'}: ${err?.message || String(e)}); it will re-download next session`,
+      )
+    })
+  }
   return buf
 }
