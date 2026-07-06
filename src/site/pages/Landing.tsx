@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
@@ -254,6 +254,25 @@ function CostLedger() {
 }
 
 function DemoProof() {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    v.muted = true // set imperatively so muted autoplay is allowed in every browser
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)')
+    // It sits below the fold, so only play while visible, and never when the visitor
+    // asked for reduced motion - the poster still stays up in that case.
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (reduce.matches) return
+        if (entry.isIntersecting) void v.play().catch(() => {})
+        else v.pause()
+      },
+      { threshold: 0.25 },
+    )
+    io.observe(v)
+    return () => io.disconnect()
+  }, [])
   return (
     <Section
       index="04 / On a real site"
@@ -277,12 +296,17 @@ function DemoProof() {
           </span>
           <ArrowUpRight className="size-4 text-muted-foreground transition-colors group-hover:text-foreground" />
         </div>
-        <img
-          src="/copperleaf-demo.jpg"
-          alt="The Copperleaf Café demo site with the aidekin chat launcher in the corner"
-          loading="lazy"
-          width={1380}
-          height={864}
+        <video
+          ref={videoRef}
+          src="/copperleaf-demo.mp4"
+          poster="/copperleaf-demo.jpg"
+          muted
+          loop
+          playsInline
+          preload="none"
+          width={1280}
+          height={800}
+          aria-label="The aidekin widget answering questions from the café's own knowledge file on the Copperleaf Café demo site"
           className="block w-full"
         />
       </a>
