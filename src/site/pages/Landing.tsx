@@ -259,12 +259,18 @@ function DemoProof() {
     const v = videoRef.current
     if (!v) return
     v.muted = true // set imperatively so muted autoplay is allowed in every browser
-    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)')
-    // It sits below the fold, so only play while visible, and never when the visitor
-    // asked for reduced motion - the poster still stays up in that case.
+    // Respect reduced motion: leave it on the poster (which matches the video's first frame)
+    // and never load or play the video.
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    // Warm the video up front so its first frame is decoded before it scrolls into view.
+    // Without this, calling play() on a cold (preload=none) video makes Safari clear the
+    // poster and flash a blank frame while it fetches and decodes, then pop in the video.
+    v.preload = 'auto'
+    v.load()
+    // It sits below the fold, so only play while actually visible (and pause when it scrolls
+    // away), but by now the first frame is already decoded, so starting is seamless.
     const io = new IntersectionObserver(
       ([entry]) => {
-        if (reduce.matches) return
         if (entry.isIntersecting) void v.play().catch(() => {})
         else v.pause()
       },
