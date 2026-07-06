@@ -1,6 +1,6 @@
 # What is aidekin?
 
-aidekin is a 100% client-side, open-source AI assistant you embed on any website with one script tag. Your visitors get a private voice and text agent that runs entirely in their own browser.
+aidekin is a 100% client-side, open-source AI assistant you embed on any website with one script tag. Your visitors get a private voice and text assistant that runs entirely in their own browser.
 
 There is no backend, no API keys, and no per-message cost. The language model, retrieval, and speech all run on the visitor's device using WebGPU. Nothing the visitor types or says leaves their machine.
 
