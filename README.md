@@ -1,12 +1,12 @@
 # aidekin
 
-**Your own voice + text AI agent, embedded with one script tag, running 100% in the visitor's browser.**
+**Your own voice + text AI assistant, embedded with one script tag, running 100% in the visitor's browser.**
 
-aidekin is an open-source, client-side AI assistant you drop onto any website. Your visitors get a private voice and text agent that runs entirely on their own device via WebGPU, powered by [bitgpu](https://github.com/stfurkan/bitgpu), our own inference engine for 1-bit LLMs. There is no backend, no API keys, and no per-message cost. Nothing they type or say leaves their machine.
+aidekin is an open-source, client-side AI assistant you drop onto any website. Your visitors get a private voice and text assistant that runs entirely on their own device via WebGPU, powered by [bitgpu](https://github.com/stfurkan/bitgpu), our own inference engine for 1-bit LLMs. There is no backend, no API keys, and no per-message cost. Nothing they type or say leaves their machine.
 
 [aidekin.com](https://aidekin.com) · [Configure](https://aidekin.com/configure) · [Knowledge builder](https://aidekin.com/knowledge) · [Docs](https://aidekin.com/docs) · [Live demo](https://stfurkan.github.io/aidekin-demo/) · MIT licensed
 
-[![The aidekin widget on the Copperleaf Café demo site](public/copperleaf-demo.jpg)](https://stfurkan.github.io/aidekin-demo/)
+[![The aidekin widget answering on the Copperleaf Café demo site](public/copperleaf-demo.gif)](https://stfurkan.github.io/aidekin-demo/)
 
 *Copperleaf Café: a fictional shop on its own domain, running the real embed with its own knowledge file. [Try it live.](https://stfurkan.github.io/aidekin-demo/)*
 
