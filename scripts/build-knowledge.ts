@@ -21,12 +21,28 @@ function arg(name: string, fallback = ''): string {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback
 }
 
+// Reduce HTML to structured text: drop boilerplate (nav/header/footer/aside/script/style),
+// keep headings as Markdown and block ends as line breaks, decode common entities. Regex-based
+// to match the DOM-based browser builder closely without pulling a DOM into the CLI.
 function stripHtml(html: string): string {
   return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/<(script|style|noscript|template|nav|header|footer|aside|form|svg)\b[\s\S]*?<\/\1>/gi, '')
+    .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, n: string, t: string) =>
+      `\n\n${'#'.repeat(Number(n))} ${t.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()}\n`,
+    )
+    .replace(/<li[^>]*>/gi, '\n- ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|section|article|tr|li|ul|ol|blockquote|pre|table|dd|dt|figcaption)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
@@ -38,18 +54,25 @@ async function extractFileNode(path: string): Promise<string> {
   if (lower.endsWith('.pdf')) {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
     const doc = await pdfjs.getDocument({ data: new Uint8Array(await readFile(path)) }).promise
-    let out = ''
+    const pages: string[] = []
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p)
       const content = await page.getTextContent()
-      out += (content.items as Array<{ str?: string }>).map((i) => i.str ?? '').join(' ') + '\n'
+      // Preserve line breaks via pdfjs's hasEOL so paragraphs and headers survive.
+      let text = ''
+      for (const it of content.items as Array<{ str?: string; hasEOL?: boolean }>) {
+        text += (it.str ?? '') + (it.hasEOL ? '\n' : ' ')
+      }
+      pages.push(text)
     }
-    return out.trim()
+    return pages.join('\n\n').replace(/([A-Za-z])-\n([a-z])/g, '$1$2').trim()
   }
   if (/\.docx?$/.test(lower)) {
     const mammoth = await import('mammoth')
-    const { value } = await mammoth.extractRawText({ buffer: await readFile(path) })
-    return value.trim()
+    // convertToHtml (not extractRawText) keeps headings/lists, which stripHtml turns into
+    // Markdown the chunker can section-split.
+    const { value } = await mammoth.convertToHtml({ buffer: await readFile(path) })
+    return stripHtml(value)
   }
   let text = await readFile(path, 'utf8')
   if (/\.html?$/i.test(lower)) text = stripHtml(text)

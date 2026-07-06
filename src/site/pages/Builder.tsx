@@ -28,10 +28,56 @@ interface BuildResult {
 
 type Stage = { label: string; pct: number } | null
 
-// Extract plain text from a dropped file. PDF (pdfjs) and Word .docx (mammoth) are
-// lazy-loaded only when such a file is added, so they never ship in the rest of the
-// bundle (this route is already code-split).
+// Extract clean, structured plain text from a dropped file. PDF (pdfjs) and Word .docx
+// (mammoth) are lazy-loaded only when such a file is added, so they never ship in the rest
+// of the bundle (this route is already code-split). The goal throughout: preserve headings
+// and paragraph breaks so the heading-aware chunker can split content into topical chunks,
+// and drop boilerplate, instead of handing the chunker one undifferentiated blob.
 let pdfWorkerReady = false
+
+// Turn an HTML string into structured text: drop boilerplate (nav, header, footer, forms,
+// scripts), prefer the <main>/<article> content when a page has it, and convert headings to
+// Markdown and block elements to line breaks so the chunker can section-split.
+function htmlToStructuredText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  doc
+    .querySelectorAll(
+      'script,style,noscript,template,svg,iframe,nav,header,footer,aside,form,button,' +
+        '[role="navigation"],[role="banner"],[role="contentinfo"],[aria-hidden="true"]',
+    )
+    .forEach((el) => el.remove())
+  const root = doc.querySelector('main,article,[role="main"]') ?? doc.body ?? doc.documentElement
+  const BLOCK = new Set([
+    'P', 'DIV', 'SECTION', 'ARTICLE', 'UL', 'OL', 'LI', 'TR', 'TABLE', 'THEAD', 'TBODY',
+    'BLOCKQUOTE', 'PRE', 'HR', 'FIGCAPTION', 'DD', 'DT', 'ADDRESS', 'MAIN', 'BR',
+  ])
+  const parts: string[] = []
+  const visit = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = (node.textContent ?? '').replace(/\s+/g, ' ')
+      if (t.trim()) parts.push(t)
+      return
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return
+    const el = node as HTMLElement
+    const h = /^H([1-6])$/.exec(el.tagName)
+    if (h) {
+      const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim()
+      if (text) parts.push(`\n\n${'#'.repeat(Number(h[1]))} ${text}\n`)
+      return
+    }
+    if (el.tagName === 'LI') parts.push('\n- ')
+    else if (BLOCK.has(el.tagName)) parts.push('\n')
+    for (const child of Array.from(el.childNodes)) visit(child)
+    if (BLOCK.has(el.tagName)) parts.push('\n')
+  }
+  visit(root)
+  return parts.join('').replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+// Join words split across a line break by a hyphen ("break-\nfast" -> "breakfast"), a common
+// PDF wrap artifact, while leaving hyphenated compounds that are not line-wrapped alone.
+const dehyphenate = (s: string): string => s.replace(/([A-Za-z])-\n([a-z])/g, '$1$2')
 
 async function extractFile(file: File): Promise<string> {
   const name = file.name.toLowerCase()
@@ -44,27 +90,34 @@ async function extractFile(file: File): Promise<string> {
     }
     const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) })
     const doc = await task.promise
-    let out = ''
+    const pages: string[] = []
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p)
       const content = await page.getTextContent()
-      out += (content.items as Array<{ str?: string }>).map((it) => it.str ?? '').join(' ') + '\n'
+      // Preserve line breaks (pdfjs marks them with hasEOL) instead of flattening the page to
+      // one space-joined line, so paragraphs survive and headers/footers stay on their own line.
+      let text = ''
+      for (const it of content.items as Array<{ str?: string; hasEOL?: boolean }>) {
+        text += it.str ?? ''
+        text += it.hasEOL ? '\n' : ' '
+      }
+      pages.push(text)
     }
     await task.destroy()
-    return out.trim()
+    return dehyphenate(pages.join('\n\n')).trim()
   }
 
   if (/\.docx?$/.test(name)) {
     const mammoth = await import('mammoth')
-    const { value } = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() })
-    return value.trim()
+    // convertToHtml (not extractRawText) so headings and lists survive as structure the
+    // chunker can split on; then reduce that HTML to clean Markdown-ish text.
+    const { value } = await mammoth.convertToHtml({ arrayBuffer: await file.arrayBuffer() })
+    return htmlToStructuredText(value)
   }
 
   const raw = await file.text()
   if (/\.(html?|xhtml)$/.test(name) || file.type.includes('html')) {
-    const doc = new DOMParser().parseFromString(raw, 'text/html')
-    doc.querySelectorAll('script,style,noscript').forEach((el) => el.remove())
-    return doc.body?.textContent?.trim() ?? raw
+    return htmlToStructuredText(raw)
   }
   return raw
 }
@@ -108,9 +161,7 @@ export default function Builder() {
       const res = await fetch(u)
       if (!res.ok) throw new Error(String(res.status))
       const html = await res.text()
-      const doc = new DOMParser().parseFromString(html, 'text/html')
-      doc.querySelectorAll('script,style,noscript').forEach((el) => el.remove())
-      add(new URL(u).hostname + new URL(u).pathname, doc.body?.textContent?.trim() ?? html)
+      add(new URL(u).hostname + new URL(u).pathname, htmlToStructuredText(html))
       setUrl('')
     } catch {
       setError(`Couldn't fetch ${u}. The page must allow cross-origin requests (CORS).`)
