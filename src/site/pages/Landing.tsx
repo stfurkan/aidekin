@@ -299,7 +299,7 @@ function DemoProof() {
         <video
           ref={videoRef}
           src="/copperleaf-demo.mp4"
-          poster="/copperleaf-demo.jpg"
+          poster="/copperleaf-demo-poster.jpg"
           muted
           loop
           playsInline
