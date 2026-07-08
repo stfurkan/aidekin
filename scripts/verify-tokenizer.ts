@@ -1,12 +1,13 @@
-// Headless parity gate: the standalone LlmTokenizer (@huggingface/tokenizers + @huggingface/jinja)
-// must be BYTE-EXACT with @huggingface/transformers' AutoTokenizer for our model, across a broad +
-// fuzz corpus (encode), decode round-trips, chat-template renders, and streaming decode. This is the
-// guard that lets us drop @huggingface/transformers: run it on every version bump.  Run: npm run verify-tokenizer
+// Headless parity gate: bitgpu/chat's ChatTokenizer (which inlines @huggingface/tokenizers +
+// @huggingface/jinja) must be BYTE-EXACT with @huggingface/transformers' AutoTokenizer for our model,
+// across a broad + fuzz corpus (encode), decode round-trips, chat-template renders, and streaming
+// decode. It is the guard that the on-device text boundary matches the reference: run it on every
+// bitgpu version bump.  Run: npm run verify-tokenizer
 import { AutoTokenizer } from '@huggingface/transformers'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LlmTokenizer } from '../src/core/tokenizer'
+import { ChatTokenizer } from 'bitgpu/chat'
 
 const ID = 'onnx-community/Bonsai-1.7B-ONNX'
 const CACHE = join(dirname(fileURLToPath(import.meta.url)), '..', 'node_modules', '.cache', 'tok-parity')
@@ -29,7 +30,7 @@ const check = (ok: boolean, label: string, detail = ''): void => {
 const tokJson = await hubJson('tokenizer.json')
 const tokCfg = (await hubJson('tokenizer_config.json')) as Record<string, unknown>
 const ref = await AutoTokenizer.from_pretrained(ID)
-const mine = new LlmTokenizer(tokJson, tokCfg)
+const mine = new ChatTokenizer(tokJson, tokCfg)
 
 const refEnc = (t: string): number[] => Array.from(ref.encode(t, { add_special_tokens: false }), Number)
 

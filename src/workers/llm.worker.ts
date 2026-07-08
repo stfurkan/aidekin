@@ -1,115 +1,31 @@
 /// <reference lib="webworker" />
 // LLM worker: the "brain" - PrismML Bonsai (Qwen3-architecture, 1-bit/binary weights) run on WebGPU
-// via our own bitgpu engine (NO transformers.js / onnxruntime). The tokenizer is the
-// standalone LlmTokenizer (@huggingface/tokenizers + @huggingface/jinja, byte-exact with HF). Streams
-// tokens, strips Qwen3 <think> blocks, toggles reasoning via the chat template's enable_thinking flag,
-// reuses the engine's cross-turn KV cache (prefill only the new turn), and logs tokens/sec.
-import { createEngine, type Engine, type GenerateResult } from 'bitgpu'
+// via our own bitgpu engine. The text boundary - tokenizer, chat-template rendering, <think>
+// stripping, UTF-8-safe streaming, and cross-turn KV-cache reuse with exact token bookkeeping - is
+// owned by bitgpu/chat's createChat (the same @huggingface tokenizer/jinja libs we used, inlined into
+// bitgpu and verified byte-exact, see scripts/verify-tokenizer.ts). This worker keeps only the
+// message protocol and the latest-wins / barge-in coordinator; chat.send does the rest, and it fixes
+// the reuse-delta <|im_end|> bookkeeping our hand-rolled version got subtly wrong on turn 2+.
+import { createEngine, type Engine } from 'bitgpu'
+import { createChat, type Chat } from 'bitgpu/chat'
 import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
-import { LlmTokenizer } from '../core/tokenizer'
-import { getModelAssetStream } from '../core/modelStore'
+import { getModelAsset, getModelAssetStream } from '../core/modelStore'
 import { withRetry } from '../core/retry'
 import { dlog, setDebug } from '../core/log'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope
 const post = (m: LlmOut): void => ctx.postMessage(m)
 
-// ── Qwen3 <think> stripping ──────────────────────────────────────────────────
-// Bonsai keeps Qwen3's chat template and can emit <think>...</think> blocks we must never show or
-// speak. This strips them from the token STREAM (tags can straddle token boundaries), holding back
-// only a possible partial tag at each chunk's edge.
-const THINK_OPEN = '<think>'
-const THINK_CLOSE = '</think>'
-function holdback(s: string, tag: string): number {
-  const max = Math.min(s.length, tag.length - 1)
-  for (let k = max; k > 0; k--) if (tag.startsWith(s.slice(s.length - k))) return s.length - k
-  return s.length
-}
-class ThinkFilter {
-  private inThink = false
-  private hold = ''
-  push(text: string): string {
-    let s = this.hold + text
-    this.hold = ''
-    let out = ''
-    for (;;) {
-      if (!this.inThink) {
-        const i = s.indexOf(THINK_OPEN)
-        if (i === -1) {
-          const safe = holdback(s, THINK_OPEN)
-          out += s.slice(0, safe)
-          this.hold = s.slice(safe)
-          return out
-        }
-        out += s.slice(0, i)
-        s = s.slice(i + THINK_OPEN.length)
-        this.inThink = true
-      } else {
-        const i = s.indexOf(THINK_CLOSE)
-        if (i === -1) {
-          this.hold = s.slice(holdback(s, THINK_CLOSE))
-          return out
-        }
-        s = s.slice(i + THINK_CLOSE.length)
-        this.inThink = false
-      }
-    }
-  }
-  flush(): string {
-    const r = this.inThink ? '' : this.hold
-    this.hold = ''
-    this.inThink = false
-    return r
-  }
-}
-
-/** True iff `next` is exactly `cached` plus one new trailing user turn - a clean append, so the engine
- *  can extend its KV cache with just that turn instead of re-prefilling. We track committed MESSAGES
- *  (not token ids) because Bonsai's template renders past assistant turns differently from the live one
- *  (empty <think> block), so a re-tokenized history is never a token-prefix of what's cached. */
-function isCleanAppend(cached: readonly ChatMessage[] | null, next: readonly ChatMessage[]): boolean {
-  if (!cached || next.length !== cached.length + 1) return false
-  if (next[next.length - 1].role !== 'user') return false
-  for (let i = 0; i < cached.length; i++) {
-    if (next[i].role !== cached[i].role || next[i].content !== cached[i].content) return false
-  }
-  return true
-}
-
-/** Chat-template wrappers, derived from the tokenizer at init (never hardcoded). `genPrompt` is what
- *  add_generation_prompt appends; `userPrefix`/`userSuffix` wrap a user turn. null when the model isn't
- *  standard ChatML, in which case cross-turn reuse is disabled (full-prefill each turn - correct, slower). */
-let chatWrap: { genPrompt: string; userPrefix: string; userSuffix: string } | null = null
-
-function deriveChatWrap(tk: LlmTokenizer): typeof chatWrap {
-  try {
-    const render = (msgs: ChatMessage[], agp: boolean): string => tk.applyChatTemplate(msgs, { addGenerationPrompt: agp, enableThinking: false })
-    const SENT = 'SENT'
-    const userOnly = render([{ role: 'user', content: SENT }], false)
-    const userGen = render([{ role: 'user', content: SENT }], true)
-    const genPrompt = userGen.slice(userOnly.length) // e.g. "<|im_start|>assistant\n<think>\n\n</think>\n\n"
-    const i = userOnly.indexOf(SENT)
-    if (i < 0 || !genPrompt.includes('assistant')) return null
-    const userPrefix = userOnly.slice(0, i) // "<|im_start|>user\n"
-    const userSuffix = userOnly.slice(i + SENT.length) // "<|im_end|>\n"
-    if (!userPrefix.includes('<|im_start|>') || !userSuffix.includes('<|im_end|>')) return null
-    return { genPrompt, userPrefix, userSuffix }
-  } catch {
-    return null
-  }
-}
-
 // ── worker state ─────────────────────────────────────────────────────────────
 let currentId: number | null = null
 let engine: Engine | null = null
-let tokenizer: LlmTokenizer | null = null
-let eosTokenId = 151645
+let chat: Chat | null = null
 let maxSeqLen = 2048
 let abortController: AbortController | null = null
 
-/** Keep the system prompt plus as many of the most recent messages as plausibly fit the model's
- *  KV window (rough 4 chars/token, generous slack for the template + generation room). Recovery
- *  path for transcripts that outgrow maxSeqLen (e.g. persisted history restored on reload). */
+/** Keep the system prompt plus as many of the most recent messages as plausibly fit the model's KV
+ *  window (~4 chars/token, generous slack for the template + generation room). Recovery path for
+ *  transcripts that outgrow maxSeqLen (e.g. persisted history restored on reload). */
 function fitToWindow(messages: readonly ChatMessage[]): ChatMessage[] {
   const budgetChars = Math.max(512, maxSeqLen - 700) * 4
   const out = [...messages]
@@ -135,21 +51,9 @@ interface GenJob {
 }
 let running = false
 let queued: GenJob | null = null
-// A background system-prompt prewarm (engine.prefill). runGeneration awaits it before deciding
-// cache reuse, so a prewarm prefill can never overlap a decode and the first turn sees the warm cache.
+// A background system-prompt prewarm (chat.prewarm). runGeneration awaits it before generating so a
+// prewarm prefill never overlaps a decode and the first turn sees the warm cache.
 let prewarmPromise: Promise<void> | null = null
-
-// ── cross-turn cache bookkeeping ───────────────────────────────────────────────
-// The engine owns the physical KV cache (generate(delta, {reuseCache}) / resetCache). We track the
-// committed conversation it represents so the next clean append can extend it. `invalidateCache` is
-// set on abort: the partial cache no longer matches a clean prefix and must be reset.
-let cachedMessages: ChatMessage[] | null = null
-let invalidateCache = false
-
-function dropCache(): void {
-  engine?.resetCache()
-  cachedMessages = null
-}
 
 ctx.onmessage = (ev: MessageEvent<LlmIn>) => {
   void handle(ev.data)
@@ -163,10 +67,7 @@ async function handle(msg: LlmIn): Promise<void> {
       await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false, msg.seed, msg.promptLookup)
     } else if (msg.kind === 'abort') {
       if (queued && msg.id === queued.id) queued = null // cancel a queued turn before it ever starts
-      if (msg.id === currentId) {
-        invalidateCache = true // partial generation -> cache no longer matches a clean prefix
-        abortController?.abort()
-      }
+      if (msg.id === currentId) abortController?.abort() // chat.send owns the cache bookkeeping on abort
     } else if (msg.kind === 'prewarm') {
       await prewarm(msg.system, msg.messages)
     }
@@ -177,21 +78,25 @@ async function handle(msg: LlmIn): Promise<void> {
 
 async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
   setDebug(msg.debug ?? false)
-  eosTokenId = msg.eosTokenId ?? 151645
   maxSeqLen = msg.maxSeqLen ?? 2048
-  dropCache()
+  chat?.reset()
+  chat = null
   engine?.dispose() // re-init must not leak the previous GPUDevice (~300 MB VRAM)
   engine = null
   const onRetry = (n: number, _e: unknown, ms: number): void => console.warn(`[aidekin] LLM load failed (transient); retry ${n} in ${ms}ms`)
 
-  // Tokenizer (standalone, byte-exact with transformers.js). The ~7MB tokenizer.json is fetched once.
-  tokenizer = await withRetry(() => LlmTokenizer.load({ modelId: msg.tokenizerModelId }), { onRetry })
-  chatWrap = deriveChatWrap(tokenizer)
-  if (!chatWrap) console.warn('[aidekin] LLM: non-ChatML template - cross-turn KV reuse disabled')
+  // Tokenizer JSON, routed through the OPFS model cache so a fully cached model boots offline (the
+  // ~7MB tokenizer.json is fetched once). createChat is given the preloaded JSON, so bitgpu/chat never
+  // fetches it itself and our caching + offline behaviour is preserved. Fetched with the engine below.
+  const base = `https://huggingface.co/${msg.tokenizerModelId}/resolve/main`
+  const fetchTokJson = (file: string): Promise<unknown> =>
+    withRetry(async (): Promise<unknown> => {
+      const bytes = await getModelAsset(`llm-tokenizer/${msg.tokenizerModelId}/${file}`, `${base}/${file}`)
+      return JSON.parse(new TextDecoder().decode(bytes)) as unknown
+    }, { onRetry })
 
-  // Engine: STREAM the ~290MB data file (OPFS-cached; chunks flow straight into GPU buffers, so
-  // the whole file never sits in the worker heap - the peak that got the tab killed on phones).
-  // The tiny manifest + aux still come through fetchArrayBuffer.
+  // STREAM the ~290MB data file (OPFS-cached; chunks flow straight into GPU buffers, so the whole file
+  // never sits in the worker heap - the peak that got the tab killed on phones). Manifest + aux are small.
   const fetchStream = async (url: string): Promise<ReadableStream<Uint8Array>> => {
     if (url === msg.dataUrl) {
       return getModelAssetStream('llm-bonsai-1.7b-q1', url, (p) =>
@@ -208,28 +113,38 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
     if ((res.headers.get('content-type') ?? '').includes('text/html')) throw new Error(`${url} returned HTML (SPA fallback), not model data`)
     return res.arrayBuffer()
   }
-  engine = await withRetry(
-    () =>
-      createEngine({
-        manifestUrl: msg.manifestUrl,
-        dataUrl: msg.dataUrl,
-        auxUrl: msg.auxUrl,
-        maxSeqLen: msg.maxSeqLen ?? 2048,
-        kvCache: msg.kvCache,
-        fetchStream,
-        fetchArrayBuffer,
-        onProgress: (p) => post({ kind: 'load', label: 'LLM', detail: p.phase, loaded: 0, total: 0 }),
-      }),
-    { onRetry },
-  )
+
+  const [tokJson, tokCfg, eng] = await Promise.all([
+    fetchTokJson('tokenizer.json'),
+    fetchTokJson('tokenizer_config.json'),
+    withRetry(
+      () =>
+        createEngine({
+          manifestUrl: msg.manifestUrl,
+          dataUrl: msg.dataUrl,
+          auxUrl: msg.auxUrl,
+          maxSeqLen: msg.maxSeqLen ?? 2048,
+          kvCache: msg.kvCache,
+          fetchStream,
+          fetchArrayBuffer,
+          onProgress: (p) => post({ kind: 'load', label: 'LLM', detail: p.phase, loaded: 0, total: 0 }),
+        }),
+      { onRetry },
+    ),
+  ])
+  engine = eng
 
   // Surface an unexpected GPU device loss (driver reset, OS reclaim) instead of hanging "thinking".
   const current = engine
   void current.lost.then((info) => {
     if (info.reason === 'destroyed' || engine !== current) return // dispose/re-init, not a failure
     engine = null
+    chat = null
     post({ kind: 'error', message: `LLM: GPU device lost (${info.message || info.reason}); close and reopen the chat to reload` })
   })
+
+  chat = await createChat(engine, { tokenizer: { json: tokJson, config: tokCfg as Record<string, unknown> } })
+  if (!chat.tokenizer.hasChatTemplate) console.warn('[aidekin] LLM: non-ChatML template - cross-turn KV reuse disabled')
 
   await warmup()
   const cap = engine.capabilities
@@ -237,44 +152,37 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
 }
 
 /** Warm the decode path once so the user's FIRST message isn't a cold start. Best-effort; resets the
- *  cache afterward so nothing leaks into the conversation. */
+ *  chat afterward so nothing leaks into the conversation. */
 async function warmup(): Promise<void> {
-  if (!engine || !tokenizer) return
+  if (!chat) return
   try {
     const t0 = performance.now()
-    const ids = tokenizer.encode(tokenizer.applyChatTemplate([{ role: 'user', content: 'Hi' }], { addGenerationPrompt: true, enableThinking: false }), false)
-    await engine.generate(ids, { maxTokens: 1, ...SAMPLING, stopTokens: [eosTokenId] })
-    engine.resetCache()
+    await chat.send([{ role: 'user', content: 'Hi' }], { maxTokens: 1, ...SAMPLING })
+    chat.reset()
     dlog(`[aidekin] LLM warmup ${(performance.now() - t0).toFixed(0)}ms`)
   } catch (e) {
     console.warn('[aidekin] LLM warmup skipped:', (e as Error).message)
   }
 }
 
-/** Prefill the static system prompt into the KV cache at load, so the user's FIRST turn is a cheap
- *  cache-append instead of a cold full prefill (the otherwise-hidden few seconds before the first
- *  token). We render the system block and drop its trailing newline so the cache ends exactly at
- *  <|im_end|>; the standard cache-reuse delta (which begins with "\n", see runGeneration) then
- *  reconstructs the first [system,user] prompt token-for-token. Best-effort; skipped mid-generation. */
+/** Prefill the static system prompt (or a restored transcript) into the KV cache at load, so the
+ *  user's FIRST turn is a cheap cache-append instead of a cold full prefill. chat.prewarm renders the
+ *  prefix so it ends exactly at <|im_end|>; the next turn's reuse delta continues token-for-token.
+ *  Best-effort; skipped mid-generation and on non-ChatML templates. */
 async function prewarm(system: ChatMessage, messages?: readonly ChatMessage[]): Promise<void> {
-  if (!engine || !tokenizer || !chatWrap || running) return // need ChatML wrappers; never disturb a live turn
+  if (!chat || running || !chat.tokenizer.hasChatTemplate) return // never disturb a live turn
+  const c = chat
   const job = (async () => {
     try {
-      // Prefer the full transcript (a restored conversation): warming it makes the returning
-      // visitor's first turn a cache-append instead of a multi-second full prefill. Fall back to
-      // just the system prompt when the transcript is trivial or too long to leave append room.
+      // Prefer the full transcript (a restored conversation); fall back to just the system prompt when
+      // it is trivial or too long to leave append room. Length estimated with the chat's own tokenizer.
       let transcript: readonly ChatMessage[] = messages && messages.length > 1 ? messages : [system]
-      let str = tokenizer.applyChatTemplate(transcript as ChatMessage[], { addGenerationPrompt: false, enableThinking: false }).replace(/\n$/, '')
-      let ids = tokenizer.encode(str, false)
-      if (transcript.length > 1 && ids.length > maxSeqLen - 600) {
-        transcript = [system]
-        str = tokenizer.applyChatTemplate([system], { addGenerationPrompt: false, enableThinking: false }).replace(/\n$/, '')
-        ids = tokenizer.encode(str, false)
-      }
+      const tokenCount = (msgs: readonly ChatMessage[]): number =>
+        c.tokenizer.encode(c.tokenizer.applyChatTemplate([...msgs], { addGenerationPrompt: false }), false).length
+      if (transcript.length > 1 && tokenCount(transcript) > maxSeqLen - 600) transcript = [system]
       const t0 = performance.now()
-      await engine.prefill(ids)
-      cachedMessages = [...transcript] // the cache now represents exactly this prefix; the next clean append reuses it
-      dlog(`[aidekin] LLM prewarm ${(performance.now() - t0).toFixed(0)}ms (${ids.length} tok, ${transcript.length} msg)`)
+      await c.prewarm([...transcript])
+      dlog(`[aidekin] LLM prewarm ${(performance.now() - t0).toFixed(0)}ms (${transcript.length} msg)`)
     } catch (e) {
       console.warn('[aidekin] LLM prewarm skipped:', (e as Error).message)
     }
@@ -283,21 +191,17 @@ async function prewarm(system: ChatMessage, messages?: readonly ChatMessage[]): 
   await job
 }
 
-// Sampling params for the bitgpu engine's do_sample. Temperature is 0.3 (down from 0.5): this is a
-// knowledge assistant, so we bias toward the highest-probability, context-faithful continuation and
-// away from the "creative" tail that invents details. topP is accepted but not applied (a no-op) -
-// bitgpu's sampler is bit-exact with the transformers.js v4.2.0 reference we validate against, where
-// top_p is also disabled.
+// Sampling params for the bitgpu engine's do_sample. Temperature is 0.3: this is a knowledge assistant,
+// so we bias toward the highest-probability, context-faithful continuation and away from the "creative"
+// tail that invents details. topP is accepted but not applied (a no-op) - bitgpu's sampler is bit-exact
+// with the transformers.js v4.2.0 reference we validate against, where top_p is also disabled.
 const SAMPLING = { temperature: 0.3, topK: 20, topP: 0.85, repetitionPenalty: 1.15, noRepeatNgramSize: 0 } as const
 
 /** Coordinator: enqueue this turn as the latest, abort anything running, and drain the queue ONE
  *  generation at a time. */
 async function generate(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean): Promise<void> {
   queued = { id, messages, allowThink, resetCache, seed, promptLookup } // latest-wins
-  if (currentId !== null && currentId >= 0) {
-    invalidateCache = true
-    abortController?.abort()
-  }
+  if (currentId !== null && currentId >= 0) abortController?.abort()
   if (running) return
   running = true
   try {
@@ -316,9 +220,8 @@ async function generate(id: number, messages: readonly ChatMessage[], allowThink
 }
 
 async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean): Promise<void> {
-  if (!engine || !tokenizer) throw new Error('LLM not initialized')
+  if (!chat) throw new Error('LLM not initialized')
   currentId = id
-  invalidateCache = false
   abortController = new AbortController()
 
   // If a system-prompt prewarm is still in flight, let it finish first: it populates the cache this
@@ -328,104 +231,43 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
     prewarmPromise = null
   }
 
-  // Reuse the engine's cache only on a clean append (committed conversation + one new user turn), in
-  // non-thinking mode (a stripped <think> block isn't reflected in the cached tokens), with ChatML
-  // wrappers available. Then feed ONLY the new turn's delta; otherwise rebuild the whole prompt.
-  const canReuse = !resetCache && !allowThink && chatWrap !== null && cachedMessages !== null && isCleanAppend(cachedMessages, messages)
-
-  // Diagnostic: when a turn does NOT reuse the cache, log which condition blocked it. Pinpoints why a
-  // first turn pays a full prefill despite the load-time prewarm (e.g. resetCache set, a longer-than
-  // -expected message list from resumed history, or a system-content mismatch).
-  if (!canReuse) {
-    dlog(
-      `[aidekin] LLM full-prefill (no reuse) · resetCache=${resetCache} think=${allowThink} ` +
-        `chatWrap=${chatWrap !== null} cached=${cachedMessages ? cachedMessages.length : 'null'} msgs=${messages.length} ` +
-        `cleanAppend=${cachedMessages ? isCleanAppend(cachedMessages, messages) : 'n/a'}`,
-    )
-  }
-
-  let inputIds: number[]
-  if (canReuse) {
-    const userText = messages[messages.length - 1].content
-    const w = chatWrap as NonNullable<typeof chatWrap>
-    const deltaStr = `\n${w.userPrefix}${userText}${w.userSuffix}${w.genPrompt}`
-    inputIds = tokenizer.encode(deltaStr, false)
-  } else {
-    dropCache() // engine.resetCache() so the full prefill starts a fresh sequence
-    inputIds = tokenizer.encode(tokenizer.applyChatTemplate(messages as ChatMessage[], { addGenerationPrompt: true, enableThinking: allowThink }), false)
-  }
-
-  const think = new ThinkFilter()
-  const stream = tokenizer.createDecoderStream(true)
-  let full = ''
-  let nTokens = 0
-  const onToken = (tokenId: number): void => {
-    if (currentId !== id) return
-    nTokens++
-    const text = stream.push(tokenId)
-    if (!text) return
-    const clean = think.push(text)
-    if (clean) {
-      full += clean
-      post({ kind: 'token', id, text: clean })
-    }
-  }
-
-  const genOpts = {
+  // chat.send owns the reuse decision (clean append, non-think, ChatML), the reuse delta (with correct
+  // <|im_end|> re-insertion), <think> stripping, and the cross-turn cache bookkeeping. We pass
+  // reuseCache=false when the caller forces a reset (new session / cleared chat / system change).
+  const opts = {
     maxTokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
-    ...SAMPLING,
+    temperature: SAMPLING.temperature,
+    topK: SAMPLING.topK,
+    topP: SAMPLING.topP,
+    repetitionPenalty: SAMPLING.repetitionPenalty,
+    noRepeatNgramSize: SAMPLING.noRepeatNgramSize,
     seed, // undefined in production (entropy); fixed by the behavioral eval for determinism
     promptLookup: promptLookup ?? false,
-    stopTokens: [eosTokenId],
-    reuseCache: canReuse,
-    onToken,
+    reuseCache: !resetCache,
+    think: allowThink,
     signal: abortController.signal,
+    onText: (delta: string): void => {
+      if (currentId === id) post({ kind: 'token', id, text: delta })
+    },
   }
-  let msgsUsed = messages
-  let result: GenerateResult
+
+  let result
   try {
-    result = await engine.generate(inputIds, genOpts)
+    result = await chat.send([...messages], opts)
   } catch (err) {
     if (!/maxSeqLen/.test((err as Error).message)) throw err
-    // The transcript outgrew the model's KV window (the engine clamps maxTokens, so this only
-    // happens when the PROMPT alone no longer fits). Recover instead of bricking the chat: drop
-    // the cache, keep the system prompt + the most recent turns, and full-prefill once.
-    dropCache()
-    msgsUsed = fitToWindow(messages)
-    console.warn(`[aidekin] LLM transcript exceeded the ${maxSeqLen}-token window; trimmed ${messages.length - msgsUsed.length} old message(s) and retried`)
-    inputIds = tokenizer.encode(tokenizer.applyChatTemplate(msgsUsed as ChatMessage[], { addGenerationPrompt: true, enableThinking: allowThink }), false)
-    result = await engine.generate(inputIds, { ...genOpts, reuseCache: false })
+    // The transcript outgrew the model's KV window (only the PROMPT can trigger this; maxTokens is
+    // clamped by the engine). Recover instead of bricking the chat: keep the system prompt + the most
+    // recent turns and full-prefill once (a trimmed list is not a clean append, so chat.send rebuilds).
+    const trimmed = fitToWindow(messages)
+    console.warn(`[aidekin] LLM transcript exceeded the ${maxSeqLen}-token window; trimmed ${messages.length - trimmed.length} old message(s) and retried`)
+    result = await chat.send(trimmed, { ...opts, reuseCache: false })
   }
 
-  // flush any buffered decode + think tail
-  let tail = think.push(stream.flush())
-  tail += think.flush()
-  if (tail && currentId === id) {
-    full += tail
-    post({ kind: 'token', id, text: tail })
-  }
-
-  // ── cache bookkeeping ──
-  if (invalidateCache || abortController.signal.aborted) {
-    invalidateCache = false
-    dropCache() // barge-in mid-generation -> cache unreliable
-  } else if (allowThink) {
-    dropCache() // think turns emit reasoning the stored (stripped) reply won't reproduce
-  } else if (full.trim()) {
-    cachedMessages = [...msgsUsed, { role: 'assistant', content: full }] // engine cache now holds [prompt + reply] (msgsUsed may be a trimmed transcript)
-  } else {
-    dropCache() // empty reply -> nothing committed; don't risk a stale reuse
-  }
-
-  const tps = result.tokensPerSecond
-  const nd = Math.max(1, result.tokens.length - 1)
-  const per = result.decodeMs / nd
-  const tm = result.timing
-  const other = Math.max(0, per - tm.gpuMs - tm.recordMs - tm.readbackMs) // CPU sample + onToken decode/stream + writeBuffer
   dlog(
-    `[aidekin] LLM(bonsai) done id=${id} ${canReuse ? 'cache-reuse' : 'full-prefill'} tokens=${nTokens} ${tps.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms) | per-token ${per.toFixed(1)}ms = gpu ${tm.gpuMs.toFixed(1)} + record ${tm.recordMs.toFixed(1)} + readback ${tm.readbackMs.toFixed(1)} + other ${other.toFixed(1)}` +
-      (result.speculation ? ` | pld ${result.speculation.accepted}/${result.speculation.drafted} accepted in ${result.speculation.steps} steps` : ''),
+    `[aidekin] LLM(bonsai) done id=${id} ${result.reusedCache ? 'cache-reuse' : 'full-prefill'} ` +
+      `${result.tokensPerSecond.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms, ${result.tokens.length} tok)`,
   )
-  post({ kind: 'done', id, text: full, tps, speculation: result.speculation })
+  post({ kind: 'done', id, text: result.text, tps: result.tokensPerSecond })
   if (currentId === id) currentId = null
 }
