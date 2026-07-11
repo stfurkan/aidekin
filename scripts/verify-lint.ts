@@ -19,13 +19,18 @@ function codes(sources: { name: string; text: string }[]): Set<LintCode> {
 const one = (name: string, text: string): { name: string; text: string }[] => [{ name, text }]
 
 // ── secrets fire (safety; over-warning is the safe direction) ─────────────────
+// These fixtures are FAKE (formats only, nothing functional). They are assembled from fragments at
+// runtime on purpose: keeping the secret-shaped literals out of the source file means this test - the
+// test FOR the secret detector - does not itself trip GitHub's secret scanner. The lint still sees the
+// fully-joined value. Do NOT inline these back into single string literals.
+const j = (...parts: string[]): string => parts.join('')
 const SECRETS: [string, string][] = [
-  ['AWS access key', 'internal AKIAIOSFODNN7EXAMPLE do not share'],
-  ['OpenAI-style key', 'token sk-abcdefghijklmnopqrstuvwxyz012345'],
-  ['GitHub token', 'ci uses ghp_ABCdef0123456789ABCdef0123456789ABCD'],
-  ['Slack token', 'bot xoxb-123456789012-abcdefABCDEF'],
-  ['Google API key', 'maps AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456 key'], // AIza + 35 chars = 39 total
-  ['private key block', '-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----'],
+  ['AWS access key', `internal ${j('AKIA', 'IOSFODNN7EXAMPLE')} do not share`], // AWS docs' own dummy key
+  ['OpenAI-style key', `token ${j('sk-', 'abcdefghijklmnopqrstuvwxyz012345')}`],
+  ['GitHub token', `ci uses ${j('ghp_', 'ABCdef0123456789ABCdef0123456789ABCD')}`],
+  ['Slack token', `bot ${j('xoxb-', '123456789012-abcdefABCDEF')}`],
+  ['Google API key', `maps ${j('AIza', 'SyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456')} key`], // AIza + 35 chars = 39 total
+  ['private key block', j('-----BEGIN RSA ', 'PRIVATE KEY-----\nMIIabc\n-----END RSA ', 'PRIVATE KEY-----')],
 ]
 for (const [label, text] of SECRETS) check(codes(one(label, text)).has('secret'), `secret fires: ${label}`)
 
