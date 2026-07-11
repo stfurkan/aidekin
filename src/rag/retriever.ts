@@ -20,7 +20,9 @@ export async function createRetriever(knowledgeUrl: string): Promise<RetrieverIn
   const retriever: Retriever = {
     async retrieve(query: string, k: number): Promise<RetrievedChunk[]> {
       const qvec = await embedQuery(query)
-      return store.search(qvec, k).map((h) => ({ text: h.text, score: h.score, source: h.source }))
+      // Hybrid: semantic (cosine) fused with lexical (BM25). lexMatch lets an exact-term query ground
+      // even when the embedding underscores it; the query embedding is the only real cost, unchanged.
+      return store.searchHybrid(qvec, query, k).map((h) => ({ text: h.text, score: h.score, source: h.source, lexMatch: h.lexMatch }))
     },
   }
   return { retriever, count: store.count }

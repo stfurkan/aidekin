@@ -23,6 +23,9 @@ export interface RetrievedChunk {
   readonly text: string
   readonly score?: number
   readonly source?: string
+  /** Hybrid-retrieval signal: the chunk contains every distinctive term of the query. The gate
+   *  accepts this even below the cosine threshold, so exact-term queries ground reliably. */
+  readonly lexMatch?: boolean
 }
 
 /** Pluggable retriever - null = no RAG, and then nothing RAG-related ever loads. */
@@ -129,6 +132,12 @@ const CHAT_INSTRUCTION =
   'conversation was never answered, address it in your reply. You are open-source software running ' +
   'entirely in this browser: you have no location, workplace, team, or creator organization, and ' +
   'you must never invent one.'
+
+// Hybrid retrieval: a strong lexical match (all distinctive query terms present) can rescue a chunk
+// that scored just under the cosine gate - but only if it is still semantically PLAUSIBLE, i.e. within
+// this margin of the gate. Without the floor an incidental term hit (the greeting "hello" matching a
+// "hello@..." email) would ground an off-topic turn; with it, only near-miss chunks are rescued.
+const RAG_LEX_MARGIN = 0.1
 
 /** Preserve the original word's leading capitalization when substituting the brand spelling. */
 const matchCase = (firstChar: string, brand: string): string =>
@@ -433,11 +442,14 @@ export class ConversationEngine {
       // bge retrieval instruction (see embedder.embedQuery), which sharpens the on-topic vs
       // off-topic score gap, so an off-topic message (a greeting, small-talk) scores below the
       // gate and is dropped here rather than pulled in and recited.
-      const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore)
+      // Hybrid gate: clear the cosine threshold, OR be a strong lexical match (all distinctive query
+      // terms present) so an exact menu-term query grounds even when the embedding underscores it.
+      // Greetings have no distinctive terms, so lexMatch is never set for them and abstention holds.
+      const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore || (h.lexMatch && (h.score ?? 0) >= this.ragMinScore - RAG_LEX_MARGIN))
       // Log the scores so the gate can be calibrated against real greetings vs questions.
       dlog(
         `[aidekin] RAG "${userText.slice(0, 40)}" top=${(hits[0]?.score ?? 0).toFixed(3)} ` +
-          `used=${relevant.length}/${hits.length} (gate ${this.ragMinScore})`,
+          `used=${relevant.length}/${hits.length} (gate ${this.ragMinScore}, lex ${hits.filter((h) => h.lexMatch).length})`,
       )
       this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
       if (relevant.length) this.applyContext(userText, relevant)

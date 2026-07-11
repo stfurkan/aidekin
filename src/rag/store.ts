@@ -26,7 +26,32 @@ export interface SearchHit {
   text: string
   score: number
   source?: string
+  /** True when the chunk contains every DISTINCTIVE (corpus-rare, non-stopword) term of the query.
+   *  A scale-free lexical-relevance signal the engine's gate accepts even when cosine is moderate, so
+   *  an exact menu-term query ("do you have matcha") grounds even if the embedding scores it low. A
+   *  greeting has no distinctive terms, so this is never true for it - the abstention gate stays intact. */
+  lexMatch?: boolean
 }
+
+// ── lexical side of hybrid retrieval ──────────────────────────────────────────
+// A lexical signal over the chunk texts (already in the index, so no format change). It does NOT
+// reorder the semantic ranking - that hurt precision - it only lets the engine's gate rescue a chunk
+// that scored just under the cosine threshold but is an exact term match. Pure set arithmetic over a
+// small chunk set, so it adds no meaningful latency.
+//
+// Terms are matched EXACTLY, by design - no stemming. The embedding already handles morphology (park
+// vs parking embed close), and the distinctive terms this gate targets are invariant nouns and names
+// (matcha, gluten, a product SKU) that appear verbatim in question and content. Stemming would add
+// over-match risk (university/universe -> univers) for negligible recall, so exact-match is the scope.
+const DISTINCTIVE_DF_RATIO = 0.5 // a query term is "distinctive" if it occurs in <= half the chunks
+// Function words that never signal topic. df-thresholding already drops corpus-common words; this
+// also drops short function words a tiny corpus might not make common on its own.
+const STOP = new Set(
+  ('a an and are as at be been by can could do does for from had has have how i if in into is it its ' +
+    'me my no not of on or our so that the their them then there these they this to us was we were what ' +
+    'when where which who why will with would you your').split(' '),
+)
+const lexTokens = (s: string): string[] => (s.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((t) => t.length >= 2 && !STOP.has(t))
 
 export interface IndexHeader {
   modelId: string
@@ -128,27 +153,65 @@ export class VectorStore {
     return new VectorStore(int8, scales, texts, meta.map((m) => m.source), dim, count, header)
   }
 
-  /** The chunk text at a given row (used by the parity-guard script). */
-  textAt(i: number): string {
-    return this.texts[i]
+  // Lazily-built lexical index over the chunk texts: document frequency per term (for distinctiveness)
+  // and a term set per chunk (for containment). Built on the first hybrid query, then cached. No BM25,
+  // no scoring - the lexical side is a gate rescue only, never a re-ranker.
+  private lex?: { df: Map<string, number>; docSets: Set<string>[] }
+
+  private buildLex(): void {
+    const docSets = this.texts.map((t) => new Set(lexTokens(t)))
+    const df = new Map<string, number>()
+    for (const s of docSets) for (const w of s) df.set(w, (df.get(w) ?? 0) + 1)
+    this.lex = { df, docSets }
   }
 
-  /** Top-k by cosine (≈ dot product, since both query and stored rows are unit vectors). */
-  search(query: Float32Array, k: number): SearchHit[] {
+  /** Full cosine (≈ dot product; query and stored rows are unit vectors) for every row. */
+  private cosineAll(query: Float32Array): number[] {
     const { int8, scales, dim, count } = this
-    const scored = new Array<{ i: number; score: number }>(count)
+    const out = new Array<number>(count)
     for (let i = 0; i < count; i++) {
       const base = i * dim
       const scale = scales[i]
       let dot = 0
       for (let j = 0; j < dim; j++) dot += query[j] * int8[base + j] * scale
-      scored[i] = { i, score: dot }
+      out[i] = dot
     }
-    scored.sort((a, b) => b.score - a.score)
-    return scored.slice(0, Math.max(0, k)).map((s) => ({
-      text: this.texts[s.i],
-      score: s.score,
-      source: this.sources[s.i] || undefined,
-    }))
+    return out
+  }
+
+  /** The chunk text at a given row (used by the parity-guard script). */
+  textAt(i: number): string {
+    return this.texts[i]
+  }
+
+  /** Top-k by cosine. Kept for the parity guard; runtime retrieval uses searchHybrid. */
+  search(query: Float32Array, k: number): SearchHit[] {
+    const cos = this.cosineAll(query)
+    return Array.from({ length: this.count }, (_, i) => ({ i, score: cos[i] }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(0, k))
+      .map((s) => ({ text: this.texts[s.i], score: s.score, source: this.sources[s.i] || undefined }))
+  }
+
+  /** Hybrid retrieval: cosine RANKING (semantic precision preserved - the lexical side never reorders)
+   *  plus a per-chunk `lexMatch` flag = the chunk contains every DISTINCTIVE (corpus-rare, non-stopword)
+   *  query term. The engine's gate admits a lexMatch chunk that scored just under the cosine threshold,
+   *  so an exact-term query ("do you have matcha", "what do you recommend") grounds even when the
+   *  embedding underscores it. queryText is the raw user query for lexical tokenization. */
+  searchHybrid(query: Float32Array, queryText: string, k: number): SearchHit[] {
+    if (!this.lex) this.buildLex()
+    const count = this.count
+    const cos = this.cosineAll(query)
+    const qterms = [...new Set(lexTokens(queryText))]
+    const distinctive = qterms.filter((t) => t.length >= 3 && (this.lex!.df.get(t) ?? 0) <= Math.max(1, count * DISTINCTIVE_DF_RATIO))
+    return Array.from({ length: count }, (_, i) => ({ i, score: cos[i] }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(0, k))
+      .map((s) => ({
+        text: this.texts[s.i],
+        score: s.score,
+        source: this.sources[s.i] || undefined,
+        lexMatch: distinctive.length > 0 && distinctive.every((t) => this.lex!.docSets[s.i].has(t)),
+      }))
   }
 }
