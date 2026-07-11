@@ -14,7 +14,7 @@
 // so its existing load UI + error handling are byte-identical.
 
 import { LLM, llmHistoryTokens, llmMaxSeqLen, llmModelUrls } from '../models/registry'
-import type { ChatMessage, Device, LlmIn, LlmOut } from '../protocol/messages'
+import type { ChatMessage, Device, LlmConfidence, LlmIn, LlmOut } from '../protocol/messages'
 import { SentenceChunker, speakable } from '../pipeline/sentenceChunker'
 import { debugEnabled, dlog } from '../core/log'
 
@@ -70,6 +70,10 @@ export interface EngineOptions {
   /** Let the model think on EVERY turn (slower, more accurate). RAG turns always think
    *  regardless; this controls plain (non-RAG) turns. Default false (fast). */
   reasoning?: boolean
+  /** Ask the worker for per-token confidence (bitgpu logprobs) on every turn, exposed via
+   *  {@link lastGenStats}. Costs a few % (disables speculation for the turn), so default false;
+   *  turn on when a caller wants the "not sure about this" signal. */
+  measureConfidence?: boolean
   /** localStorage key to persist history across reloads (per host origin). Unset = no persistence. */
   persistKey?: string
   /** Approximate token budget for retained history (system prompt is never dropped). */
@@ -220,9 +224,10 @@ export class ConversationEngine {
   private readonly maxHistoryTokens: number
   private readonly samplerSeed?: number
   private promptLookup: boolean
+  private readonly measureConfidence: boolean
   private readonly brandName: string | null
-  /** tok/s + speculation stats of the last completed generation (measurement/eval). */
-  lastGenStats: { tps?: number; speculation?: { steps: number; drafted: number; accepted: number } } | null = null
+  /** tok/s + speculation + confidence stats of the last completed generation (measurement/eval/UI). */
+  lastGenStats: { tps?: number; speculation?: { steps: number; drafted: number; accepted: number }; confidence?: LlmConfidence } | null = null
 
   private systemPrompt: string
   private messages: Turn[]
@@ -285,6 +290,7 @@ export class ConversationEngine {
     this.maxHistoryTokens = opts.maxHistoryTokens ?? llmHistoryTokens()
     this.samplerSeed = opts.samplerSeed
     this.promptLookup = opts.promptLookup ?? false
+    this.measureConfidence = opts.measureConfidence ?? false
     const brand = opts.brandName?.trim() ?? ''
     this.brandName = /^[a-z]{6,}$/i.test(brand) ? brand : null
     this.systemPrompt = opts.systemPrompt
@@ -511,7 +517,7 @@ export class ConversationEngine {
     this.chunker.reset()
     this.assistant = ''
     this.cb.onGenerationStart?.()
-    const msg: LlmIn = { kind: 'generate', id, messages: request, think, resetCache: this.cacheDirty, seed: this.samplerSeed, promptLookup: this.promptLookup }
+    const msg: LlmIn = { kind: 'generate', id, messages: request, think, resetCache: this.cacheDirty, seed: this.samplerSeed, promptLookup: this.promptLookup, wantConfidence: this.measureConfidence || undefined }
     this.cacheDirty = false
     this.llm.postMessage(msg)
     return new Promise<string>((resolve) => {
@@ -534,7 +540,7 @@ export class ConversationEngine {
       }
     } else if (m.kind === 'done') {
       if (m.id !== this.currentId) return // stale generation (superseded/aborted)
-      this.lastGenStats = { tps: m.tps, speculation: m.speculation }
+      this.lastGenStats = { tps: m.tps, speculation: m.speculation, confidence: m.confidence }
       this.finish(m.text)
     } else if (m.kind === 'error') {
       // A superseded turn's error (e.g. its unwind after an abort) must not settle the turn

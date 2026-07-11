@@ -6,9 +6,9 @@
 // bitgpu and verified byte-exact, see scripts/verify-tokenizer.ts). This worker keeps only the
 // message protocol and the latest-wins / barge-in coordinator; chat.send does the rest, and it fixes
 // the reuse-delta <|im_end|> bookkeeping our hand-rolled version got subtly wrong on turn 2+.
-import { createEngine, type Engine } from 'bitgpu'
+import { createEngine, type Engine, type TokenLogprobs } from 'bitgpu'
 import { createChat, type Chat } from 'bitgpu/chat'
-import type { ChatMessage, LlmIn, LlmOut } from '../protocol/messages'
+import type { ChatMessage, LlmConfidence, LlmIn, LlmOut } from '../protocol/messages'
 import { getModelAsset, getModelAssetStream } from '../core/modelStore'
 import { withRetry } from '../core/retry'
 import { dlog, setDebug } from '../core/log'
@@ -46,6 +46,7 @@ interface GenJob {
   resetCache: boolean
   seed?: number
   promptLookup?: boolean
+  wantConfidence?: boolean
 }
 let running = false
 let queued: GenJob | null = null
@@ -62,7 +63,7 @@ async function handle(msg: LlmIn): Promise<void> {
     if (msg.kind === 'init') {
       await init(msg)
     } else if (msg.kind === 'generate') {
-      await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false, msg.seed, msg.promptLookup)
+      await generate(msg.id, msg.messages, msg.think ?? false, msg.resetCache ?? false, msg.seed, msg.promptLookup, msg.wantConfidence)
     } else if (msg.kind === 'abort') {
       if (queued && msg.id === queued.id) queued = null // cancel a queued turn before it ever starts
       if (msg.id === currentId) abortController?.abort() // chat.send owns the cache bookkeeping on abort
@@ -197,8 +198,8 @@ const SAMPLING = { temperature: 0.3, topK: 20, topP: 0.85, repetitionPenalty: 1.
 
 /** Coordinator: enqueue this turn as the latest, abort anything running, and drain the queue ONE
  *  generation at a time. */
-async function generate(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean): Promise<void> {
-  queued = { id, messages, allowThink, resetCache, seed, promptLookup } // latest-wins
+async function generate(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean, wantConfidence?: boolean): Promise<void> {
+  queued = { id, messages, allowThink, resetCache, seed, promptLookup, wantConfidence } // latest-wins
   if (currentId !== null && currentId >= 0) abortController?.abort()
   if (running) return
   running = true
@@ -207,7 +208,7 @@ async function generate(id: number, messages: readonly ChatMessage[], allowThink
       const job = queued
       queued = null
       try {
-        await runGeneration(job.id, job.messages, job.allowThink, job.resetCache, job.seed, job.promptLookup)
+        await runGeneration(job.id, job.messages, job.allowThink, job.resetCache, job.seed, job.promptLookup, job.wantConfidence)
       } catch (err) {
         post({ kind: 'error', id: job.id, message: `LLM: ${(err as Error).message}` })
       }
@@ -217,7 +218,22 @@ async function generate(id: number, messages: readonly ChatMessage[], allowThink
   }
 }
 
-async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean): Promise<void> {
+/** Summarize per-token logprobs (bitgpu's true full-vocab log-softmax) into a compact confidence
+ *  signal: the geometric-mean token probability, and the fraction of tokens emitted below p=0.3. */
+const LOW_CONF_LOGPROB = Math.log(0.3)
+function summarizeConfidence(logprobs: TokenLogprobs[]): LlmConfidence {
+  const n = logprobs.length
+  if (!n) return { meanProb: 1, lowConfFrac: 0, tokens: 0 }
+  let sum = 0
+  let low = 0
+  for (const lp of logprobs) {
+    sum += lp.logprob
+    if (lp.logprob < LOW_CONF_LOGPROB) low++
+  }
+  return { meanProb: Math.exp(sum / n), lowConfFrac: low / n, tokens: n }
+}
+
+async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean, wantConfidence?: boolean): Promise<void> {
   if (!chat) throw new Error('LLM not initialized')
   const c = chat
   currentId = id
@@ -246,6 +262,10 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
     promptLookup: promptLookup ?? 'auto', // measure draft acceptance on probation, drop speculation when it doesn't pay; output is bit-identical either way. Explicit false still disables it.
     reuseCache: !resetCache,
     think: allowThink,
+    // Opt-in per turn: ask bitgpu for the emitted tokens' true logprobs so we can report confidence.
+    // Costs a few % (it disables promptLookup and routes greedy turns through the sampler path), so it
+    // is only set when the caller asked; hot paths leave it off.
+    ...(wantConfidence ? { logprobs: 5 } : {}),
     signal: abortController.signal,
     onText: (delta: string): void => {
       if (currentId === id) post({ kind: 'token', id, text: delta })
@@ -257,10 +277,13 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
     },
   })
 
+  // logprobs align 1:1 with the emitted tokens; summarize into a confidence signal for the caller.
+  const confidence = result.logprobs ? summarizeConfidence(result.logprobs) : undefined
   dlog(
     `[aidekin] LLM(bonsai) done id=${id} ${result.reusedCache ? 'cache-reuse' : 'full-prefill'} ` +
-      `${result.tokensPerSecond.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms, ${result.tokens.length} tok)`,
+      `${result.tokensPerSecond.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms, ${result.tokens.length} tok)` +
+      (confidence ? ` conf=${confidence.meanProb.toFixed(2)} low=${(confidence.lowConfFrac * 100).toFixed(0)}%` : ''),
   )
-  post({ kind: 'done', id, text: result.text, tps: result.tokensPerSecond })
+  post({ kind: 'done', id, text: result.text, tps: result.tokensPerSecond, confidence })
   if (currentId === id) currentId = null
 }

@@ -30,6 +30,16 @@ type Lifecycle = LoadProgress | ReadyEvent | WorkerErrorEvent
 
 export type Device = 'webgpu' | 'wasm'
 
+/** A compact summary of the model's per-token certainty for one answer, from bitgpu's true logprobs.
+ *  `meanProb` is the geometric-mean token probability (exp of the mean logprob), a single 0..1
+ *  confidence; `lowConfFrac` is the fraction of tokens the model emitted below p=0.3 (where it was
+ *  effectively guessing). Both fall as an answer gets shakier. */
+export interface LlmConfidence {
+  readonly meanProb: number
+  readonly lowConfFrac: number
+  readonly tokens: number
+}
+
 // ── VAD worker (Silero gate) ─────────────────────────────────────────────────
 export type VadIn =
   | { readonly kind: 'init'; readonly assetBase: string }
@@ -92,6 +102,10 @@ export type LlmIn =
        *  transcript - set when the history prefix changed non-append (new session,
        *  cleared chat, system-prompt change, or a sliding-window trim). */
       readonly resetCache?: boolean
+      /** Opt-in per turn: ask the engine for per-token logprobs and return a `confidence` summary
+       *  on `done`. Costs a few % (disables promptLookup, routes through the sampler path), so it is
+       *  OFF by default and never set on hot paths unless a caller wants the signal. */
+      readonly wantConfidence?: boolean
     }
   | { readonly kind: 'abort'; readonly id: number }
   // Prewarm the KV cache with the (static) system prompt at load, so the user's FIRST turn is a
@@ -114,6 +128,9 @@ export type LlmOut =
       readonly tps?: number
       /** Present when prompt-lookup decoding ran: verify steps, drafted and accepted counts. */
       readonly speculation?: { steps: number; drafted: number; accepted: number }
+      /** Present only when the turn set `wantConfidence`: a summary of the model's per-token
+       *  certainty for the emitted answer (derived from bitgpu's true logprobs). */
+      readonly confidence?: LlmConfidence
     }
 
 // ── TTS worker (Supertonic) ──────────────────────────────────────────────────
