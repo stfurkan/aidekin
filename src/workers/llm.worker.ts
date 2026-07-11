@@ -20,19 +20,17 @@ const post = (m: LlmOut): void => ctx.postMessage(m)
 let currentId: number | null = null
 let engine: Engine | null = null
 let chat: Chat | null = null
-let maxSeqLen = 2048
 let abortController: AbortController | null = null
 
-/** Keep the system prompt plus as many of the most recent messages as plausibly fit the model's KV
- *  window (~4 chars/token, generous slack for the template + generation room). Recovery path for
- *  transcripts that outgrow maxSeqLen (e.g. persisted history restored on reload). */
-function fitToWindow(messages: readonly ChatMessage[]): ChatMessage[] {
-  const budgetChars = Math.max(512, maxSeqLen - 700) * 4
+/** onOverflow trim policy: keep the system prompt plus as many of the most recent messages as fit the
+ *  model's KV window, measured EXACTLY with chat.countTokens (not a char estimate), reserving `reserve`
+ *  tokens of the window for the answer. bitgpu calls this only when a prompt overruns maxSeqLen (e.g. a
+ *  long persisted transcript restored on reload) and retries once with a clean full prefill of the result. */
+function trimToWindow(c: Chat, messages: readonly ChatMessage[], window: number, reserve: number, think: boolean): ChatMessage[] {
+  const budget = Math.max(256, window - reserve)
   const out = [...messages]
   const head = out[0]?.role === 'system' ? 1 : 0
-  let chars = out.reduce((n, m) => n + m.content.length, 0)
-  while (chars > budgetChars && out.length - head > 1) {
-    chars -= out[head].content.length
+  while (out.length - head > 1 && c.countTokens(out, { addGenerationPrompt: true, think }) > budget) {
     out.splice(head, 1) // drop the oldest non-system message; the latest user turn is always kept
   }
   return out
@@ -78,7 +76,6 @@ async function handle(msg: LlmIn): Promise<void> {
 
 async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
   setDebug(msg.debug ?? false)
-  maxSeqLen = msg.maxSeqLen ?? 2048
   chat?.reset()
   chat = null
   engine?.dispose() // re-init must not leak the previous GPUDevice (~300 MB VRAM)
@@ -177,9 +174,10 @@ async function prewarm(system: ChatMessage, messages?: readonly ChatMessage[]): 
       // Prefer the full transcript (a restored conversation); fall back to just the system prompt when
       // it is trivial or too long to leave append room. Length estimated with the chat's own tokenizer.
       let transcript: readonly ChatMessage[] = messages && messages.length > 1 ? messages : [system]
-      const tokenCount = (msgs: readonly ChatMessage[]): number =>
-        c.tokenizer.encode(c.tokenizer.applyChatTemplate([...msgs], { addGenerationPrompt: false }), false).length
-      if (transcript.length > 1 && tokenCount(transcript) > maxSeqLen - 600) transcript = [system]
+      // Length measured exactly with the chat's own tokenizer (chat.countTokens); fall back to just the
+      // system prompt when a restored transcript is too long to leave the next turn append room.
+      const window = engine?.capabilities.maxSeqLen ?? 2048
+      if (transcript.length > 1 && c.countTokens([...transcript], { addGenerationPrompt: false }) > window - 600) transcript = [system]
       const t0 = performance.now()
       await c.prewarm([...transcript])
       dlog(`[aidekin] LLM prewarm ${(performance.now() - t0).toFixed(0)}ms (${transcript.length} msg)`)
@@ -221,6 +219,7 @@ async function generate(id: number, messages: readonly ChatMessage[], allowThink
 
 async function runGeneration(id: number, messages: readonly ChatMessage[], allowThink: boolean, resetCache: boolean, seed?: number, promptLookup?: boolean): Promise<void> {
   if (!chat) throw new Error('LLM not initialized')
+  const c = chat
   currentId = id
   abortController = new AbortController()
 
@@ -231,38 +230,32 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
     prewarmPromise = null
   }
 
+  const maxTokens = allowThink ? 1024 : 512 // room for the (stripped) <think> block + answer
+
   // chat.send owns the reuse decision (clean append, non-think, ChatML), the reuse delta (with correct
-  // <|im_end|> re-insertion), <think> stripping, and the cross-turn cache bookkeeping. We pass
-  // reuseCache=false when the caller forces a reset (new session / cleared chat / system change).
-  const opts = {
-    maxTokens: allowThink ? 1024 : 512, // room for the (stripped) <think> block + answer
-    temperature: SAMPLING.temperature,
-    topK: SAMPLING.topK,
-    topP: SAMPLING.topP,
-    repetitionPenalty: SAMPLING.repetitionPenalty,
-    noRepeatNgramSize: SAMPLING.noRepeatNgramSize,
+  // <|im_end|> re-insertion), <think> stripping, and the cross-turn cache bookkeeping. reuseCache=false
+  // forces a full prefill when the caller resets (new session / cleared chat / system change). onOverflow
+  // is bitgpu's window-recovery hook: only the PROMPT can overrun maxSeqLen (a long restored transcript),
+  // and bitgpu hands us the count + window, takes our trimmed list, and retries ONCE with a clean prefill.
+  // (chat.send also offers stopSequences and format:'json' / {json:{schema}} for stops + schema-valid
+  //  JSON; this knowledge-assistant flow needs neither.)
+  const result = await c.send([...messages], {
+    maxTokens,
+    ...SAMPLING,
     seed, // undefined in production (entropy); fixed by the behavioral eval for determinism
-    promptLookup: promptLookup ?? false,
+    promptLookup: promptLookup ?? 'auto', // measure draft acceptance on probation, drop speculation when it doesn't pay; output is bit-identical either way. Explicit false still disables it.
     reuseCache: !resetCache,
     think: allowThink,
     signal: abortController.signal,
     onText: (delta: string): void => {
       if (currentId === id) post({ kind: 'token', id, text: delta })
     },
-  }
-
-  let result
-  try {
-    result = await chat.send([...messages], opts)
-  } catch (err) {
-    if (!/maxSeqLen/.test((err as Error).message)) throw err
-    // The transcript outgrew the model's KV window (only the PROMPT can trigger this; maxTokens is
-    // clamped by the engine). Recover instead of bricking the chat: keep the system prompt + the most
-    // recent turns and full-prefill once (a trimmed list is not a clean append, so chat.send rebuilds).
-    const trimmed = fitToWindow(messages)
-    console.warn(`[aidekin] LLM transcript exceeded the ${maxSeqLen}-token window; trimmed ${messages.length - trimmed.length} old message(s) and retried`)
-    result = await chat.send(trimmed, { ...opts, reuseCache: false })
-  }
+    onOverflow: ({ maxSeqLen: window }): ChatMessage[] => {
+      const trimmed = trimToWindow(c, messages, window, maxTokens, allowThink)
+      console.warn(`[aidekin] LLM transcript exceeded the ${window}-token window; trimmed ${messages.length - trimmed.length} old message(s) and retried`)
+      return trimmed
+    },
+  })
 
   dlog(
     `[aidekin] LLM(bonsai) done id=${id} ${result.reusedCache ? 'cache-reuse' : 'full-prefill'} ` +
