@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Upload,
@@ -13,6 +13,7 @@ import {
   Database,
 } from 'lucide-react'
 import { chunkText } from '@/rag/chunker'
+import { lintKnowledge, type Lint } from '@/rag/lint'
 import { serializeIndex, type IndexChunk } from '@/rag/store'
 
 interface Source {
@@ -170,20 +171,22 @@ export default function Builder() {
 
   const totalChars = sources.reduce((n, s) => n + s.text.length, 0)
 
+  // Chunk + lint reactively as sources change. Pure text work (no model, no network), so it is
+  // instant and lets the author fix structural problems and secret leaks BEFORE building the file.
+  const chunked = useMemo(
+    () => sources.flatMap((s) => chunkText(s.text).map((text) => ({ text, source: s.name }))),
+    [sources],
+  )
+  const lints = useMemo(() => lintKnowledge(sources, chunked), [sources, chunked])
+
   const build = useCallback(async () => {
     if (!sources.length) return
     setError(null)
     setResult(null)
     try {
-      // 1. Chunk every source.
-      const texts: IndexChunk['text'][] = []
-      const meta: { source: string }[] = []
-      for (const s of sources) {
-        for (const c of chunkText(s.text)) {
-          texts.push(c)
-          meta.push({ source: s.name })
-        }
-      }
+      // 1. Chunk every source (reuse the memoized chunks the lints already ran on).
+      const texts: IndexChunk['text'][] = chunked.map((c) => c.text)
+      const meta = chunked.map((c) => ({ source: c.source }))
       if (!texts.length) throw new Error('No text to index.')
 
       // 2. Embed in batches (loads the ~22 MB embedder once, then runs on WASM).
@@ -215,7 +218,7 @@ export default function Builder() {
     } finally {
       setStage(null)
     }
-  }, [sources])
+  }, [sources, chunked])
 
   const building = stage !== null
 
@@ -350,6 +353,8 @@ export default function Builder() {
         </div>
       )}
 
+      {lints.length > 0 && <LintPanel lints={lints} />}
+
       {/* Build */}
       <div className="mt-6">
         <button
@@ -385,6 +390,31 @@ export default function Builder() {
 
       {result && <ResultPanel result={result} />}
     </section>
+  )
+}
+
+/** Advisory, non-blocking warnings about the chunks the file will be built from. Already ordered
+ *  secrets-first (safety) by lintChunks. The author can still build; these just flag likely problems. */
+function LintPanel({ lints }: { lints: Lint[] }) {
+  return (
+    <div className="mt-6 space-y-2">
+      {lints.map((l, i) => (
+        <div
+          key={`${l.code}-${l.source ?? ''}-${i}`}
+          className={`flex items-start gap-2.5 rounded-lg border px-4 py-2.5 text-sm ${
+            l.severity === 'danger'
+              ? 'border-destructive/40 bg-destructive/6 text-destructive'
+              : 'border-amber-500/30 bg-amber-500/6 text-amber-700 dark:text-amber-400'
+          }`}
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <span className="flex-1">
+            {l.source && <span className="font-medium">{l.source}: </span>}
+            {l.message}
+          </span>
+        </div>
+      ))}
+    </div>
   )
 }
 

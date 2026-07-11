@@ -23,7 +23,8 @@
     "verify-embedder": "tsx scripts/verify-embedder.ts",
     "verify-turn": "tsx scripts/verify-turn.ts",
     "eval:chat": "node scripts/eval-chat.mjs",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "verify-lint": "tsx scripts/verify-lint.ts"
   },
   "dependencies": {
     "@huggingface/tokenizers": "0.1.3",
