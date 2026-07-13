@@ -431,6 +431,28 @@ export async function getModelAsset(
 }
 
 /**
+ * OPFS-cached fetch for a SMALL model-config file (the engine manifest / aux, a config JSON): serve
+ * from cache when present, else fetch, REJECT an SPA-fallback HTML response, then persist best-effort.
+ * The reject matters because a missing SAME-ORIGIN file returns index.html with a 200; caching that as
+ * model data would poison OPFS permanently. This is what makes a warm cache boot truly offline for the
+ * engine's manifest + aux too, not only the tokenizer and weights. Use getModelAsset(Stream) for the
+ * large weight files (streaming, resume, cross-tab locking).
+ */
+export async function getSmallAsset(key: string, url: string): Promise<ArrayBuffer> {
+  const cached = await opfsRead(key)
+  if (cached) return cached
+  const res = await fetch(url)
+  if (!res.ok) throw httpError(url, res.status, res)
+  if ((res.headers.get('content-type') ?? '').includes('text/html')) {
+    throw new Error(`${url} returned HTML (SPA fallback), not model data`)
+  }
+  const buf = await res.arrayBuffer()
+  const dir = await opfsDir()
+  if (dir) await writeBufferToOpfs(dir, key, buf).catch(() => undefined) // best-effort; load still succeeds from buf
+  return buf
+}
+
+/**
  * Stream a model asset WITHOUT ever holding the whole file in memory: served straight from the
  * OPFS file when cached; otherwise downloaded to OPFS (locked, resumable, no read-back) and then
  * streamed from disk. Cache-less sessions (private browsing, quota exhaustion) pipe the network

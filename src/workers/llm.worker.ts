@@ -9,7 +9,7 @@
 import { createEngine, type Engine, type TokenLogprobs } from 'bitgpu'
 import { createChat, type Chat } from 'bitgpu/chat'
 import type { ChatMessage, LlmConfidence, LlmIn, LlmOut } from '../protocol/messages'
-import { getModelAsset, getModelAssetStream } from '../core/modelStore'
+import { getModelAsset, getModelAssetStream, getSmallAsset } from '../core/modelStore'
 import { withRetry } from '../core/retry'
 import { dlog, setDebug } from '../core/log'
 
@@ -94,7 +94,7 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
     }, { onRetry })
 
   // STREAM the ~290MB data file (OPFS-cached; chunks flow straight into GPU buffers, so the whole file
-  // never sits in the worker heap - the peak that got the tab killed on phones). Manifest + aux are small.
+  // never sits in the worker heap - the peak that got the tab killed on phones).
   const fetchStream = async (url: string): Promise<ReadableStream<Uint8Array>> => {
     if (url === msg.dataUrl) {
       return getModelAssetStream('llm-bonsai-1.7b-q1', url, (p) =>
@@ -105,7 +105,17 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
     if (!res.ok) throw new Error(`fetch ${url} failed: HTTP ${res.status}`)
     return res.body as ReadableStream<Uint8Array>
   }
+  // Manifest + aux are small but must ALSO come from the OPFS cache, or a warm-cache boot dies offline
+  // on them (bitgpu routes the manifest through fetchJson and the aux through fetchArrayBuffer, neither
+  // of which touched the store before). getSmallAsset keeps the SPA-fallback guard so a bad deploy that
+  // serves index.html is never cached as model data.
+  const fetchJson = (url: string): Promise<unknown> =>
+    withRetry(async (): Promise<unknown> => {
+      const bytes = await getSmallAsset(`llm-manifest/${msg.tokenizerModelId}`, url)
+      return JSON.parse(new TextDecoder().decode(bytes)) as unknown
+    }, { onRetry })
   const fetchArrayBuffer = async (url: string): Promise<ArrayBuffer> => {
+    if (url === msg.auxUrl) return getSmallAsset(`llm-aux/${msg.tokenizerModelId}`, url)
     const res = await fetch(url)
     if (!res.ok) throw new Error(`fetch ${url} failed: HTTP ${res.status}`)
     if ((res.headers.get('content-type') ?? '').includes('text/html')) throw new Error(`${url} returned HTML (SPA fallback), not model data`)
@@ -123,6 +133,7 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
           auxUrl: msg.auxUrl,
           maxSeqLen: msg.maxSeqLen ?? 2048,
           kvCache: msg.kvCache,
+          fetchJson,
           fetchStream,
           fetchArrayBuffer,
           onProgress: (p) => post({ kind: 'load', label: 'LLM', detail: p.phase, loaded: 0, total: 0 }),
