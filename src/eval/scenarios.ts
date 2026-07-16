@@ -110,6 +110,13 @@ export const SCENARIOS: Scenario[] = [
     expect: { mustMatch: [/blue/i], maxChars: 400 },
   },
   {
+    // A referential follow-up ("it") carries no entity, so retrieving on it alone finds nothing;
+    // coreference retrieval must widen the query with the prior exchange so it still grounds.
+    name: 'referential follow-up grounds via coreference retrieval',
+    turns: ['do you have documentation?', 'where can I find it?'],
+    expect: { mustMatch: [/docs|documentation|page|website/i], grounded: true },
+  },
+  {
     name: 'supersede mid-reply: both turns recorded, latest answered',
     turns: ['how are you today?', 'what is your name?'],
     supersede: true,

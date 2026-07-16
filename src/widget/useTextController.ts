@@ -102,6 +102,10 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const voiceGen = useRef(0)
   const userStreamingId = useRef<number | null>(null)
   const levelRef = useRef(0)
+  // Device-speed tracking for the "slower side" banner: the best decode rate seen and how many
+  // replies have completed, so the cold first turn can't mislabel a healthy device (see onGenerationEnd).
+  const bestTps = useRef(0)
+  const perfTurns = useRef(0)
   // Latest callbacks, read by the (mount-once) engine so it never goes stale. Written in an
   // effect (the sanctioned latest-ref pattern): the engine only reads it asynchronously.
   const cbRef = useRef(opts)
@@ -164,10 +168,19 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
             streamingId.current = null
             setStatus('ready')
             // Performance-based expectation setting: the static pre-download heuristic can't tell
-            // a flagship phone (~15-19 tok/s, fine) from a budget one (~2-5 tok/s, painful). The
-            // first real reply gives a MEASURED decode rate; under reading speed, say so once.
+            // a flagship phone (~15-19 tok/s, fine) from a budget one (~2-5 tok/s, painful). But the
+            // FIRST reply is a cold sample - GPU pipelines and a cold prefill warm up on it, and a
+            // short reply has a high fixed-overhead ratio - so it reads slow on a device that is
+            // actually fine (a common false "slower side" on capable machines). Judge steady state:
+            // track the best rate seen, clear the flag the instant any reply clears reading speed, and
+            // only raise it once the device has had a warm turn and still cannot keep up.
             const tps = engineRef.current?.lastGenStats?.tps
-            if (tps !== undefined && tps > 0 && tps < 6) setSlowDevice(true)
+            if (tps !== undefined && tps > 0) {
+              perfTurns.current++
+              bestTps.current = Math.max(bestTps.current, tps)
+              if (bestTps.current >= 6) setSlowDevice(false)
+              else if (perfTurns.current >= 2) setSlowDevice(true)
+            }
           },
           onError: (where, message) => {
             setError(`${where}: ${message}`)

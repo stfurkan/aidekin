@@ -433,10 +433,30 @@ export class ConversationEngine {
     return this.withRag(clean)
   }
 
+  /** Build the RETRIEVAL query (not the answer prompt) for this turn. A short or referential
+   *  follow-up ("how much is it", "and the price?") carries no entity of its own, so retrieving on it
+   *  alone misses the fact it refers to - the model still remembers the topic in its KV cache, but the
+   *  per-turn knowledge lookup fetches nothing useful. When the message looks referential, prepend the
+   *  previous exchange so the lookup resolves the pronoun to what it points at. Self-terms queries
+   *  ("how much is matcha") and first turns are returned unchanged, so specific and single-turn
+   *  retrieval - and the behavioral eval - are untouched. English-only, matching the rest of the stack. */
+  private retrievalQueryFor(userText: string): string {
+    const wc = userText.trim().split(/\s+/).filter(Boolean).length
+    const referential = wc <= 3 || /\b(it|its|it's|that|this|these|those|them|they|one|ones|the same)\b/i.test(userText)
+    if (!referential) return userText
+    const prior = this.messages.filter((m) => m.role !== 'system').slice(-3, -1) // the exchange before this turn
+    if (!prior.length) return userText
+    // Cap each prior turn from the start (the entity is usually named early) so a long reply can't
+    // swamp the query embedding.
+    const ctx = prior.map((m) => m.content.replace(/\s+/g, ' ').trim().slice(0, 160)).join(' ')
+    return ctx ? `${ctx} ${userText}` : userText
+  }
+
   private async withRag(userText: string): Promise<string> {
     try {
       const t0 = performance.now()
-      const hits = await this.retriever!.retrieve(userText, this.ragTopK)
+      const query = this.retrievalQueryFor(userText)
+      const hits = await this.retriever!.retrieve(query, this.ragTopK)
       // Ground only on chunks that clear the relevance gate. The query is embedded with the
       // bge retrieval instruction (see embedder.embedQuery), which sharpens the on-topic vs
       // off-topic score gap, so an off-topic message (a greeting, small-talk) scores below the
@@ -447,8 +467,9 @@ export class ConversationEngine {
       const relevant = hits.filter((h) => (h.score ?? 0) >= this.ragMinScore || (h.lexMatch && (h.score ?? 0) >= this.ragMinScore - RAG_LEX_MARGIN))
       // Log the scores so the gate can be calibrated against real greetings vs questions.
       dlog(
-        `[aidekin] RAG "${userText.slice(0, 40)}" top=${(hits[0]?.score ?? 0).toFixed(3)} ` +
-          `used=${relevant.length}/${hits.length} (gate ${this.ragMinScore}, lex ${hits.filter((h) => h.lexMatch).length})`,
+        `[aidekin] RAG "${userText.slice(0, 40)}"${query !== userText ? ' (coref->retrieval query widened)' : ''} ` +
+          `top=${(hits[0]?.score ?? 0).toFixed(3)} used=${relevant.length}/${hits.length} ` +
+          `(gate ${this.ragMinScore}, lex ${hits.filter((h) => h.lexMatch).length})`,
       )
       this.cb.onRetrieval?.({ used: relevant.length, tookMs: performance.now() - t0 })
       if (relevant.length) this.applyContext(userText, relevant)
