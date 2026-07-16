@@ -212,7 +212,7 @@ export class ConversationEngine {
   private clauseSink: ((clause: string) => void) | null = null
   private supersededSink: (() => void) | null = null
   private readonly persistKey?: string
-  private readonly samplerSeed?: number
+  private samplerSeed?: number
   private promptLookup: boolean
   private readonly measureConfidence: boolean
   private readonly brandName: string | null
@@ -702,6 +702,12 @@ export class ConversationEngine {
   /** Toggle prompt-lookup speculative decoding at runtime (measurement/eval). */
   setPromptLookup(on: boolean): void {
     this.promptLookup = on
+  }
+
+  /** Set the sampler seed at runtime (eval-only: the recall-robustness probe sweeps seeds on one
+   *  loaded engine). Unset (undefined) restores production entropy seeding. */
+  setSamplerSeed(seed?: number): void {
+    this.samplerSeed = seed
   }
 
   /** Toggle internal reasoning on plain (non-RAG) turns. */

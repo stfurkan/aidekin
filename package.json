@@ -24,6 +24,7 @@
     "verify-turn": "tsx scripts/verify-turn.ts",
     "eval:chat": "node scripts/eval-chat.mjs",
     "eval:session": "node scripts/eval-session.mjs",
+    "eval:recall": "node scripts/eval-recall.mjs",
     "lint": "eslint .",
     "verify-lint": "tsx scripts/verify-lint.ts"
   },
