@@ -78,12 +78,17 @@ export type LlmIn =
   | {
       readonly kind: 'init'
       readonly manifestUrl: string //     engine manifest.json (manifest-format model)
-      readonly dataUrl: string //         the ~290MB weights data file (e.g. HF onnx_data)
+      readonly dataUrl: string //         the ~237MB weights data file (the Bonsai GGUF)
       readonly auxUrl: string //          the small aux file (LUTs)
       readonly tokenizerModelId: string // HF repo for tokenizer.json + tokenizer_config.json
       readonly eosTokenId?: number //     stop token (default 151645)
       readonly maxSeqLen?: number //      KV-cache length cap (default 2048)
-      readonly kvCache?: 'f32' | 'f16' // KV storage precision ('f16' halves KV memory; engine falls back to f32 without shader-f16)
+      readonly kvCache?: 'f32' | 'f16' | 'q8' // KV storage precision ('f16' halves KV memory and needs shader-f16; 'q8' quarters it on every adapter; f32 default)
+      readonly overflow?: 'error' | 'sinks' // window-overflow policy: 'error' throws (default), 'sinks' rolls the window (unbounded chat in fixed memory)
+      // Namespace for cross-reload KV-cache snapshots (chat.save/restore). Set = persistence on
+      // (snapshots stored in IndexedDB, keyed by this + model + kvCache mode); unset = no snapshot
+      // persistence. Mirrors the orchestrator's localStorage persistKey so both gate together.
+      readonly persistSession?: string
       readonly debug?: boolean //         enable info-level worker logs (see core/log.ts)
     }
   | {
@@ -108,6 +113,9 @@ export type LlmIn =
       readonly wantConfidence?: boolean
     }
   | { readonly kind: 'abort'; readonly id: number }
+  // Start a fresh conversation: forget the chat's committed transcript + KV cache (chat.reset) and
+  // delete the persisted snapshot so a reload after "new chat" does NOT restore the old conversation.
+  | { readonly kind: 'reset-session' }
   // Prewarm the KV cache with the (static) system prompt at load, so the user's FIRST turn is a
   // cache-append instead of a cold full prefill. Best-effort; the worker runs it when idle.
   | {
@@ -126,6 +134,9 @@ export type LlmOut =
       readonly id: number
       readonly text: string
       readonly tps?: number
+      /** True when this turn extended the KV cache (clean append) instead of a full prefill - the
+       *  signal that cross-turn reuse (or a restored session snapshot) is working. */
+      readonly reusedCache?: boolean
       /** Present when prompt-lookup decoding ran: verify steps, drafted and accepted counts. */
       readonly speculation?: { steps: number; drafted: number; accepted: number }
       /** Present only when the turn set `wantConfidence`: a summary of the model's per-token

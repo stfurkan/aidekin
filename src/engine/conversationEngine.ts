@@ -13,7 +13,7 @@
 // In adopted mode the orchestrator stays in charge of load/ready/error lifecycle,
 // so its existing load UI + error handling are byte-identical.
 
-import { LLM, llmHistoryTokens, llmMaxSeqLen, llmModelUrls } from '../models/registry'
+import { LLM, llmMaxSeqLen, llmModelUrls } from '../models/registry'
 import type { ChatMessage, Device, LlmConfidence, LlmIn, LlmOut } from '../protocol/messages'
 import { SentenceChunker, speakable } from '../pipeline/sentenceChunker'
 import { debugEnabled, dlog } from '../core/log'
@@ -42,14 +42,11 @@ export interface EngineCallbacks {
   onGenerationStart?: () => void
   /** Fired when a generation ends or aborts (voice → settle to idle). */
   onGenerationEnd?: () => void
-  /** Owned-worker load progress: pct in [0,1] + a human detail (e.g. "142 / 290 MB"). */
+  /** Owned-worker load progress: pct in [0,1] + a human detail (e.g. "142 / 237 MB"). */
   onLoadStatus?: (pct: number, detail: string) => void
   onError?: (where: string, message: string) => void
   /** RAG telemetry: how many chunks were injected and how long retrieval took. */
   onRetrieval?: (info: { used: number; tookMs: number }) => void
-  /** Fired when the sliding window dropped old turns so the UI can show a subtle
-   *  "earlier messages trimmed" marker instead of forgetting silently. */
-  onHistoryTrimmed?: (info: { dropped: number }) => void
 }
 
 export interface EngineOptions {
@@ -74,10 +71,10 @@ export interface EngineOptions {
    *  {@link lastGenStats}. Costs a few % (disables speculation for the turn), so default false;
    *  turn on when a caller wants the "not sure about this" signal. */
   measureConfidence?: boolean
-  /** localStorage key to persist history across reloads (per host origin). Unset = no persistence. */
+  /** localStorage key to persist history across reloads (per host origin). Unset = no persistence.
+   *  Also namespaces the worker's cross-reload KV-cache snapshot (bitgpu chat.save/restore), so a
+   *  returning visitor's first turn is a cache-append with no re-prefill of the whole history. */
   persistKey?: string
-  /** Approximate token budget for retained history (system prompt is never dropped). */
-  maxHistoryTokens?: number
   /** Fixed sampler seed for deterministic replies. Eval-only; leave unset in production. */
   samplerSeed?: number
   /** Prompt-lookup speculative decoding (bitgpu experimental; identical output, speed varies
@@ -91,12 +88,6 @@ export interface EngineOptions {
   brandName?: string
   callbacks?: EngineCallbacks
 }
-
-// Must fit the model's KV window: 2048 tokens minus up to 512 generated minus template overhead.
-// The 4-chars/token estimate runs optimistic for chat text, so stay well under that ceiling; the
-// worker additionally trims and retries if a transcript still outgrows the window.
-// Rough token estimate (about 4 chars/token), good enough for a sliding-window trim.
-const approxTokens = (s: string): number => Math.ceil(s.length / 4)
 
 // Static answering rules for grounded (RAG) turns. Kept in the SYSTEM PROMPT (the cached
 // prefix), NOT re-injected into every user turn, so they are prefilled once and only the
@@ -221,13 +212,12 @@ export class ConversationEngine {
   private clauseSink: ((clause: string) => void) | null = null
   private supersededSink: (() => void) | null = null
   private readonly persistKey?: string
-  private readonly maxHistoryTokens: number
   private readonly samplerSeed?: number
   private promptLookup: boolean
   private readonly measureConfidence: boolean
   private readonly brandName: string | null
-  /** tok/s + speculation + confidence stats of the last completed generation (measurement/eval/UI). */
-  lastGenStats: { tps?: number; speculation?: { steps: number; drafted: number; accepted: number }; confidence?: LlmConfidence } | null = null
+  /** tok/s + speculation + confidence + cache-reuse of the last completed generation (measurement/eval/UI). */
+  lastGenStats: { tps?: number; reusedCache?: boolean; speculation?: { steps: number; drafted: number; accepted: number }; confidence?: LlmConfidence } | null = null
 
   private systemPrompt: string
   private messages: Turn[]
@@ -287,7 +277,6 @@ export class ConversationEngine {
     this.chunkClauses = opts.chunkClauses ?? false
     this.alwaysThink = opts.reasoning ?? false
     this.persistKey = opts.persistKey
-    this.maxHistoryTokens = opts.maxHistoryTokens ?? llmHistoryTokens()
     this.samplerSeed = opts.samplerSeed
     this.promptLookup = opts.promptLookup ?? false
     this.measureConfidence = opts.measureConfidence ?? false
@@ -324,6 +313,10 @@ export class ConversationEngine {
       eosTokenId: LLM.eosTokenId,
       maxSeqLen: llmMaxSeqLen(),
       kvCache: LLM.kvCache,
+      overflow: LLM.overflow, // 'sinks': the conversation grows unbounded; the engine rolls the window
+      // Persist the KV cache across reloads only when text persistence is on. Mirroring persistKey
+      // keeps both gated together; the worker namespaces the snapshot with this + model + mode.
+      persistSession: this.persistKey,
       debug: debugEnabled(),
     }
     try {
@@ -540,7 +533,7 @@ export class ConversationEngine {
       }
     } else if (m.kind === 'done') {
       if (m.id !== this.currentId) return // stale generation (superseded/aborted)
-      this.lastGenStats = { tps: m.tps, speculation: m.speculation, confidence: m.confidence }
+      this.lastGenStats = { tps: m.tps, reusedCache: m.reusedCache, speculation: m.speculation, confidence: m.confidence }
       this.finish(m.text)
     } else if (m.kind === 'error') {
       // A superseded turn's error (e.g. its unwind after an abort) must not settle the turn
@@ -634,6 +627,9 @@ export class ConversationEngine {
     this.abort()
     this.messages = [{ role: 'system', content: this.composedSystem() }]
     this.markDirty('chat reset')
+    // Forget the worker's committed transcript AND delete its persisted KV snapshot, so a reload
+    // right after "new chat" starts fresh instead of restoring the conversation we just cleared.
+    this.llm?.postMessage({ kind: 'reset-session' } satisfies LlmIn)
     this.schedulePrewarm() // re-warm the system prefix so the first turn of the NEW chat is a cache-append
     this.persist()
   }
@@ -746,62 +742,20 @@ export class ConversationEngine {
 
   private pushUser(text: string): void {
     this.messages.push({ role: 'user', content: text })
-    this.trim()
     this.persist()
   }
 
   private pushAssistant(text: string, model?: string): void {
     this.messages.push(model ? { role: 'assistant', content: text, model } : { role: 'assistant', content: text })
-    this.trim()
     this.persist()
   }
 
-  /** Sliding window. When over budget, keep three anchors - the system prompt (0)
-   *  and the FIRST user+assistant exchange (1,2) - and drop the OLDEST middle turns
-   *  in user/assistant pairs, always preserving the most recent exchanges. Pinning
-   *  the opening keeps the "attention sink" + the conversation's framing; evicting
-   *  the middle (not the head) is what good local-LLM chats do. */
-  private trim(): void {
-    const budget = this.maxHistoryTokens
-    // Count the MODEL form (augmented grounded turns are larger) - that's what actually
-    // fills the context window the worker prefills.
-    const tok = (m: Turn): number => approxTokens(m.model ?? m.content)
-    let total = this.messages.reduce((n, m) => n + tok(m), 0)
-    if (total <= budget) return
-    // Hysteresis: trim well BELOW the budget in one bite. Every trim invalidates the worker's
-    // clean-append chain and forces a full prefill (~10s on an 8 GB machine), so trimming
-    // minimally would re-trim and full-prefill on EVERY turn once the budget is first crossed.
-    const target = Math.floor(budget * 0.6)
-    const head = Math.min(3, this.messages.length) // system + first exchange
-    const keepTail = 4 // always keep the last couple of exchanges verbatim
-    let dropped = 0
-    let slimmed = 0
-    // Slim BEFORE dropping: the frozen <info> blocks on older grounded user turns are the bulk
-    // of the window (up to ~375 tokens each) and only mattered for their own turn's answer.
-    // Stripping them keeps the actual conversation; both paths dirty the cache prefix anyway.
-    // (Assistant turns' model field is the raw reply that keeps KV reuse alive - never strip it.)
-    for (let i = head; i < this.messages.length - keepTail && total > target; i++) {
-      const m = this.messages[i]
-      if (m.role === 'user' && m.model) {
-        total -= tok(m) - approxTokens(m.content)
-        delete m.model
-        slimmed++
-      }
-    }
-    while (total > target && this.messages.length - dropped > head + keepTail + 1) {
-      // Drop the oldest middle pair (user+assistant) to keep history coherent.
-      const a = this.messages[head]
-      const b = this.messages[head + 1]
-      if (!a) break
-      total -= tok(a) + (b ? tok(b) : 0)
-      this.messages.splice(head, b ? 2 : 1)
-      dropped += b ? 2 : 1
-    }
-    if (dropped > 0 || slimmed > 0) {
-      this.markDirty(`history trimmed (${dropped} dropped, ${slimmed} slimmed)`) // the prefix changed → worker must re-prefill
-    }
-    if (dropped > 0) this.cb.onHistoryTrimmed?.({ dropped })
-  }
+  // No conversation-side sliding window: the LLM runs kvCache 'q8' with overflow 'sinks', so the
+  // engine keeps a fixed window (attention sinks + the recent turns) and evicts the middle itself
+  // as the chat grows - the transcript stays whole for display and cache-appends never break on a
+  // trim. The one remaining overflow guard is prompt-side, in the worker: a SINGLE rendered prompt
+  // larger than the window (e.g. a huge paste, or a cold re-prefill after the cache is dirtied)
+  // still throws, and chat.send's onOverflow trims that one prompt and retries.
 
   private hydrate(): Turn[] {
     const fresh: Turn[] = [{ role: 'system', content: this.composedSystem() }]

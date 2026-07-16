@@ -247,7 +247,7 @@ function TextView({
   canVoice: boolean
   onTalk: () => void
 }) {
-  const { turns, status, loadPct, cached, error, send, stop, retry, trimmed, slowDevice } = controller
+  const { turns, status, loadPct, cached, error, send, stop, retry, slowDevice } = controller
   const [draft, setDraft] = useState('')
   const { scrollRef, onScroll } = useStickyAutoScroll(turns, status)
   const loading = status === 'loading'
@@ -278,11 +278,6 @@ function TextView({
         className="convo-scroll flex flex-1 flex-col gap-2.5 overflow-y-auto px-3.5 py-3"
       >
         {turns.length === 0 && <EmptyState greeting={greeting} />}
-        {trimmed && turns.length > 0 && (
-          <p className="mono-kicker self-center py-1 text-center text-[10px] normal-case tracking-normal">
-            earlier messages trimmed to keep replies fast
-          </p>
-        )}
         {slowDevice && turns.length > 0 && (
           <p className="mono-kicker self-center py-1 text-center text-[10px] normal-case tracking-normal">
             this device is on the slower side for on-device AI · replies may take a while

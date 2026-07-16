@@ -332,7 +332,7 @@ async function writeBufferToOpfs(dir: FileSystemDirectoryHandle, key: string, bu
 
 export async function hasModelAsset(key: string): Promise<boolean> {
   // Metadata-only check (marker + file size). Never read the content here: answering a boolean by
-  // materializing a ~290 MB weight file in memory was a real main-thread memory spike per mount.
+  // materializing a ~237 MB weight file in memory was a real main-thread memory spike per mount.
   const dir = await opfsDir()
   if (!dir) return false
   const expected = await readMarker(dir, key)
@@ -457,7 +457,7 @@ export async function getSmallAsset(key: string, url: string): Promise<ArrayBuff
  * OPFS file when cached; otherwise downloaded to OPFS (locked, resumable, no read-back) and then
  * streamed from disk. Cache-less sessions (private browsing, quota exhaustion) pipe the network
  * body straight through - they re-download next visit, which those sessions imply anyway. The
- * buffered fallback was the last remaining ~290MB peak, and iOS Safari kills the tab for it.
+ * buffered fallback was the last remaining ~237MB peak, and iOS Safari kills the tab for it.
  */
 export async function getModelAssetStream(key: string, url: string, onProgress?: ProgressFn): Promise<ReadableStream<Uint8Array>> {
   const cached = await opfsReadStream(key)

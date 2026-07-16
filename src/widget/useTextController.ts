@@ -1,6 +1,6 @@
 // React hook wrapping the ConversationEngine for the TEXT widget. Owns the engine,
 // projects its history into UI turns, streams the assistant reply, and gates model
-// loading: the ~290 MB LLM downloads on first open (loadOnMount) or first send -
+// loading: the ~237 MB LLM downloads on first open (loadOnMount) or first send -
 // nothing heavy loads before the widget is opened.
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
@@ -34,8 +34,6 @@ export interface TextController {
   /** Re-attempt model load after an error. */
   retry: () => void
   clear: () => void
-  /** True once the sliding window has dropped old turns (UI shows a subtle marker). */
-  trimmed: boolean
   /** True once a reply MEASURED under reading speed (<6 tok/s) - the UI sets expectations. */
   slowDevice: boolean
   /** Unload the model from memory, clear its on-disk cache, and reset to 'cold' so the
@@ -79,17 +77,16 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceLoadPct, setVoiceLoadPct] = useState(0)
   const [voiceCached, setVoiceCached] = useState<boolean | null>(null)
-  const [trimmed, setTrimmed] = useState(false)
   const [slowDevice, setSlowDevice] = useState(false)
   const [muted, setMuted] = useState(false)
 
   // Has the LLM been downloaded before? Check the SAME OPFS cache + key the worker writes
-  // (modelStore.getModelAsset('llm-bonsai-1.7b-q1')). The old opfsModelCache.hasLlmCache() looked in
-  // a different dir (aidekin-llm-cache) that nothing writes to, so it always returned false - which
-  // made repeat visits say "Downloading" and disabled "Remove downloaded model" before a mode pick.
+  // (modelStore.getModelAssetStream('llm-bonsai-1.7b-q1_0-gguf')). The old opfsModelCache.hasLlmCache()
+  // looked in a different dir (aidekin-llm-cache) that nothing writes to, so it always returned false -
+  // which made repeat visits say "Downloading" and disabled "Remove downloaded model" before a mode pick.
   useEffect(() => {
     void import('@/core/modelStore')
-      .then(({ hasModelAsset }) => hasModelAsset('llm-bonsai-1.7b-q1'))
+      .then(({ hasModelAsset }) => hasModelAsset('llm-bonsai-1.7b-q1_0-gguf'))
       .then(setCached)
       .catch(() => undefined)
   }, [])
@@ -172,7 +169,6 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
             const tps = engineRef.current?.lastGenStats?.tps
             if (tps !== undefined && tps > 0 && tps < 6) setSlowDevice(true)
           },
-          onHistoryTrimmed: () => setTrimmed(true),
           onError: (where, message) => {
             setError(`${where}: ${message}`)
             setStatus('error')
@@ -194,7 +190,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       if (restored.length) setTurns(restored)
       // NOTE: we no longer auto-load the brain on mount. ChatPanel calls preload() once the
       // user enters a conversation (picks a mode / lands in the text view), so just opening to
-      // the Type/Talk picker does not pull the ~290 MB model before a choice is made.
+      // the Type/Talk picker does not pull the ~237 MB model before a choice is made.
     }
 
     return () => {
@@ -299,7 +295,7 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
       cbRef.current.onMessage?.('user', text)
       // Optimistic feedback: show the thinking dots the instant the message is sent, so there is
       // no dead air before onGenerationStart fires. Only when the model is already on disk
-      // (cached) or loaded (ready) - i.e. just "preparing" - not a fresh ~290 MB download, where
+      // (cached) or loaded (ready) - i.e. just "preparing" - not a fresh ~237 MB download, where
       // the progress bar is the right feedback instead.
       if (cached || status === 'ready') setStatus('thinking')
       void ensureLoaded(engine)
@@ -330,7 +326,6 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     streamingId.current = null
     setTurns([])
     setError(null)
-    setTrimmed(false)
     setStatus((s) => (s === 'cold' || s === 'loading' ? s : 'ready'))
   }, [])
 
@@ -512,7 +507,6 @@ export function useTextController(config: WidgetConfig, opts: Options = {}): Tex
     stop,
     retry,
     clear,
-    trimmed,
     slowDevice,
     forgetModel,
     voiceState,

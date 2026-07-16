@@ -81,7 +81,7 @@ function Hero() {
 function StatLedger() {
   const stats: Array<[string, string]> = [
     ['0', 'servers'],
-    ['~290 MB', 'one-time download'],
+    ['~237 MB', 'one-time download'],
     ['1', 'script tag'],
     ['$0', 'per message'],
   ]
@@ -332,7 +332,7 @@ function Faq() {
     },
     {
       q: 'What does the visitor download?',
-      a: 'About 290 MB for text chat (the language model), once, then cached. Turning on voice adds its speech models (about 1.6 GB) the first time you use it, also cached. After that it works offline. It runs on WebGPU, so visitors on recent desktop browsers get the full experience.',
+      a: 'About 237 MB for text chat (the language model), once, then cached. Turning on voice adds its speech models (about 1.6 GB) the first time you use it, also cached. After that it works offline. It runs on WebGPU, so visitors on recent desktop browsers get the full experience.',
     },
     {
       q: 'Where does my data go?',

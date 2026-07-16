@@ -8,7 +8,7 @@
 //   • IndexedDB                    → our "aidekin" fallback
 // In a normal window this persists on disk across restarts; in a private window
 // it is ephemeral and wiped when the session closes.
-// (LLM "is it cached?" detection: modelStore.hasModelAsset('llm-bonsai-1.7b-q1').)
+// (LLM "is it cached?" detection: modelStore.hasModelAsset('llm-bonsai-1.7b-q1_0-gguf').)
 
 const OPFS_DIR = 'aidekin-models'
 

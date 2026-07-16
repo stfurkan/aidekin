@@ -137,7 +137,7 @@ export default function Docs() {
               page, or read the <A href="#config">configuration reference</A> below.
             </P>
             <Callout>
-              The first visit downloads the model (about 290&nbsp;MB for text) and caches it in the
+              The first visit downloads the model (about 237&nbsp;MB for text) and caches it in the
               browser. Repeat visits load from cache. Nothing is sent to a server.
             </Callout>
           </Doc>
@@ -290,7 +290,7 @@ export default function Docs() {
             </P>
             <List
               items={[
-                ['One-time download', 'about 290 MB for text. Voice adds about 1.6 GB more the first time it is used. Cached after the first load.'],
+                ['One-time download', 'about 237 MB for text. Voice adds about 1.6 GB more the first time it is used. Cached after the first load.'],
                 ['Per-site caching', 'browsers partition storage by site, so a visitor downloads once per site that embeds the widget, then loads from cache. This is a privacy protection, not a bug.'],
                 ['Offline', 'after the first load, it keeps working with no network.'],
               ]}

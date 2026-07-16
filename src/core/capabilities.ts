@@ -52,7 +52,7 @@ async function detectWebGpu(): Promise<WebGpuInfo> {
     }
     const info = adapter.info
     // A software-fallback adapter (e.g. SwiftShader) "supports" WebGPU, but LLM decode on it is
-    // unusable - it must not greenlight the 290MB download. The flag lives on the adapter in
+    // unusable - it must not greenlight the 237MB download. The flag lives on the adapter in
     // older Chrome and on adapter.info in the current spec; check both.
     const fallback =
       (adapter as GPUAdapter & { isFallbackAdapter?: boolean }).isFallbackAdapter === true ||

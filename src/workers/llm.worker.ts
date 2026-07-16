@@ -7,9 +7,10 @@
 // message protocol and the latest-wins / barge-in coordinator; chat.send does the rest, and it fixes
 // the reuse-delta <|im_end|> bookkeeping our hand-rolled version got subtly wrong on turn 2+.
 import { createEngine, type Engine, type TokenLogprobs } from 'bitgpu'
-import { createChat, type Chat } from 'bitgpu/chat'
+import { createChat, type Chat, type ChatSnapshot } from 'bitgpu/chat'
 import type { ChatMessage, LlmConfidence, LlmIn, LlmOut } from '../protocol/messages'
 import { getModelAsset, getModelAssetStream, getSmallAsset } from '../core/modelStore'
+import { sessionDelete, sessionGet, sessionPut } from '../core/sessionStore'
 import { withRetry } from '../core/retry'
 import { dlog, setDebug } from '../core/log'
 
@@ -21,6 +22,21 @@ let currentId: number | null = null
 let engine: Engine | null = null
 let chat: Chat | null = null
 let abortController: AbortController | null = null
+
+// ── cross-reload session (chat.save/restore) ─────────────────────────────────
+// Non-null only when persistence is opted in (init.persistSession set). Keyed by session
+// namespace + model + kvCache mode + window, so a snapshot is never restored across a model or
+// mode change (chat.restore would throw on mismatch anyway; the key avoids even attempting it).
+let sessionKey: string | null = null
+// The load restored a conversation from its snapshot, so the cache is already warm with the whole
+// transcript: the main thread's first prewarm (which would re-prefill it) is skipped once.
+let restoredThisLoad = false
+// Coalesced, best-effort snapshot writes: at most one save runs at a time; a save requested while
+// one is in flight sets `saveAgain` so a trailing save captures the latest turn. `sessionEpoch`
+// bumps on reset-session so a save that completes after a "new chat" never rewrites the deleted snapshot.
+let saving = false
+let saveAgain = false
+let sessionEpoch = 0
 
 /** onOverflow trim policy: keep the system prompt plus as many of the most recent messages as fit the
  *  model's KV window, measured EXACTLY with chat.countTokens (not a char estimate), reserving `reserve`
@@ -67,6 +83,8 @@ async function handle(msg: LlmIn): Promise<void> {
     } else if (msg.kind === 'abort') {
       if (queued && msg.id === queued.id) queued = null // cancel a queued turn before it ever starts
       if (msg.id === currentId) abortController?.abort() // chat.send owns the cache bookkeeping on abort
+    } else if (msg.kind === 'reset-session') {
+      await resetSession()
     } else if (msg.kind === 'prewarm') {
       await prewarm(msg.system, msg.messages)
     }
@@ -81,6 +99,11 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
   chat = null
   engine?.dispose() // re-init must not leak the previous GPUDevice (~300 MB VRAM)
   engine = null
+  restoredThisLoad = false
+  // Snapshot persistence is opt-in (persistSession set) and namespaced so a snapshot is only ever
+  // restored into the SAME model + kvCache mode + window it was saved from.
+  const kvMode = msg.kvCache ?? 'f32'
+  sessionKey = msg.persistSession ? `${msg.persistSession}::${msg.dataUrl}::${kvMode}/${msg.overflow ?? 'error'}/${msg.maxSeqLen ?? 2048}` : null
   const onRetry = (n: number, _e: unknown, ms: number): void => console.warn(`[aidekin] LLM load failed (transient); retry ${n} in ${ms}ms`)
 
   // Tokenizer JSON, routed through the OPFS model cache so a fully cached model boots offline (the
@@ -93,11 +116,13 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
       return JSON.parse(new TextDecoder().decode(bytes)) as unknown
     }, { onRetry })
 
-  // STREAM the ~290MB data file (OPFS-cached; chunks flow straight into GPU buffers, so the whole file
-  // never sits in the worker heap - the peak that got the tab killed on phones).
+  // STREAM the ~237MB GGUF data file (OPFS-cached; chunks flow straight into GPU buffers, so the whole
+  // file never sits in the worker heap - the peak that got the tab killed on phones). The cache key
+  // carries the container ('...q1_0-gguf'): it changed from the old ONNX key so a returning visitor
+  // re-streams the GGUF instead of the marker serving stale ONNX bytes for the new URL.
   const fetchStream = async (url: string): Promise<ReadableStream<Uint8Array>> => {
     if (url === msg.dataUrl) {
-      return getModelAssetStream('llm-bonsai-1.7b-q1', url, (p) =>
+      return getModelAssetStream('llm-bonsai-1.7b-q1_0-gguf', url, (p) =>
         post({ kind: 'load', label: 'LLM', file: 'weights', detail: `weights ${Math.round((100 * p.loaded) / (p.total || 1))}%`, loaded: p.loaded, total: p.total || 0 }),
       )
     }
@@ -109,13 +134,15 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
   // on them (bitgpu routes the manifest through fetchJson and the aux through fetchArrayBuffer, neither
   // of which touched the store before). getSmallAsset keeps the SPA-fallback guard so a bad deploy that
   // serves index.html is never cached as model data.
+  // Keys carry the '-gguf' container tag for the same reason as the weights key: the manifest + aux
+  // content differs from the old ONNX pair, so a returning visitor must fetch the GGUF ones afresh.
   const fetchJson = (url: string): Promise<unknown> =>
     withRetry(async (): Promise<unknown> => {
-      const bytes = await getSmallAsset(`llm-manifest/${msg.tokenizerModelId}`, url)
+      const bytes = await getSmallAsset(`llm-manifest-gguf/${msg.tokenizerModelId}`, url)
       return JSON.parse(new TextDecoder().decode(bytes)) as unknown
     }, { onRetry })
   const fetchArrayBuffer = async (url: string): Promise<ArrayBuffer> => {
-    if (url === msg.auxUrl) return getSmallAsset(`llm-aux/${msg.tokenizerModelId}`, url)
+    if (url === msg.auxUrl) return getSmallAsset(`llm-aux-gguf/${msg.tokenizerModelId}`, url)
     const res = await fetch(url)
     if (!res.ok) throw new Error(`fetch ${url} failed: HTTP ${res.status}`)
     if ((res.headers.get('content-type') ?? '').includes('text/html')) throw new Error(`${url} returned HTML (SPA fallback), not model data`)
@@ -133,6 +160,7 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
           auxUrl: msg.auxUrl,
           maxSeqLen: msg.maxSeqLen ?? 2048,
           kvCache: msg.kvCache,
+          overflow: msg.overflow, // 'sinks' = unbounded chat in a fixed window (the engine evicts the middle)
           fetchJson,
           fetchStream,
           fetchArrayBuffer,
@@ -155,9 +183,72 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
   chat = await createChat(engine, { tokenizer: { json: tokJson, config: tokCfg as Record<string, unknown> } })
   if (!chat.tokenizer.hasChatTemplate) console.warn('[aidekin] LLM: non-ChatML template - cross-turn KV reuse disabled')
 
-  await warmup()
+  await warmup() // exercises the decode path on a throwaway turn and resets to empty...
+  await restoreSession() // ...then brings the persisted conversation back into a warm cache (no re-prefill)
   const cap = engine.capabilities
   post({ kind: 'ready', info: `bitgpu (${cap.useSubgroups ? 'subgroups SG=' + cap.subgroupSize : 'workgroup fallback'}, kv ${cap.kvCache})` })
+}
+
+/** Bring back the persisted conversation so the next turn extends the cache with no re-prefill.
+ *  Best-effort: a missing snapshot is a fresh start; a stale one (model / kvCache mode / window
+ *  changed) throws in chat.restore and is discarded. Runs AFTER warmup so warmup's reset can't wipe it. */
+async function restoreSession(): Promise<void> {
+  if (!sessionKey || !chat) return
+  try {
+    const snap = await sessionGet<ChatSnapshot>(sessionKey)
+    if (!snap) return
+    await chat.restore(snap) // validates model + kvCache mode; throws on mismatch
+    restoredThisLoad = true
+    dlog(`[aidekin] LLM session restored (${snap.committed?.length ?? 0} msg) - first turn is a cache-append`)
+  } catch (e) {
+    console.warn('[aidekin] LLM session restore skipped:', (e as Error).message)
+    void sessionDelete(sessionKey) // a snapshot that no longer fits this model/mode is dead weight
+  }
+}
+
+/** New conversation: forget the transcript + KV cache and delete the persisted snapshot, so a
+ *  reload after "new chat" starts fresh instead of restoring the old conversation. The epoch bump
+ *  makes any save still in flight (from the just-ended conversation) a no-op. */
+async function resetSession(): Promise<void> {
+  sessionEpoch++
+  saveAgain = false
+  restoredThisLoad = false
+  chat?.reset()
+  if (sessionKey) await sessionDelete(sessionKey)
+}
+
+/** Persist the conversation snapshot after a completed turn. Coalesced (one write at a time, a
+ *  trailing write captures the latest turn) and best-effort - a quota/write failure is swallowed.
+ *  Guarded by sessionEpoch so a save that finishes after a reset-session never rewrites the deleted
+ *  snapshot. chat.save() queues behind in-flight turns and returns null when nothing is committed. */
+function scheduleSave(): void {
+  if (!sessionKey || !chat) return
+  if (saving) {
+    saveAgain = true
+    return
+  }
+  saving = true
+  const key = sessionKey
+  void (async () => {
+    try {
+      do {
+        saveAgain = false
+        const epoch = sessionEpoch
+        const snap = await chat?.save()
+        if (snap && sessionEpoch === epoch && sessionKey === key) {
+          await sessionPut(key, snap)
+          // A reset-session ('new chat') can land while chat.save()/sessionPut are in flight, racing
+          // its own delete against this write. Re-check after the PUT: if the epoch moved, that clear
+          // must win, so undo the snapshot we just wrote (a cleared conversation leaves nothing to restore).
+          if (sessionEpoch !== epoch) await sessionDelete(key)
+        }
+      } while (saveAgain && chat && sessionKey === key)
+    } catch (e) {
+      dlog(`[aidekin] LLM session save skipped: ${(e as Error).message}`)
+    } finally {
+      saving = false
+    }
+  })()
 }
 
 /** Warm the decode path once so the user's FIRST message isn't a cold start. Best-effort; resets the
@@ -179,6 +270,14 @@ async function warmup(): Promise<void> {
  *  prefix so it ends exactly at <|im_end|>; the next turn's reuse delta continues token-for-token.
  *  Best-effort; skipped mid-generation and on non-ChatML templates. */
 async function prewarm(system: ChatMessage, messages?: readonly ChatMessage[]): Promise<void> {
+  if (restoredThisLoad) {
+    // A snapshot restore already warmed the cache with the whole transcript; re-prefilling it here
+    // would be redundant work (prewarm always prefills). Consume the flag so a later prewarm (e.g.
+    // after a system-prompt change) still runs.
+    restoredThisLoad = false
+    dlog('[aidekin] LLM prewarm skipped (session restored)')
+    return
+  }
   if (!chat || running || !chat.tokenizer.hasChatTemplate) return // never disturb a live turn
   const c = chat
   const job = (async () => {
@@ -295,6 +394,7 @@ async function runGeneration(id: number, messages: readonly ChatMessage[], allow
       `${result.tokensPerSecond.toFixed(1)} tok/s (ttft ${result.prefillMs.toFixed(0)}ms, ${result.tokens.length} tok)` +
       (confidence ? ` conf=${confidence.meanProb.toFixed(2)} low=${(confidence.lowConfFrac * 100).toFixed(0)}%` : ''),
   )
-  post({ kind: 'done', id, text: result.text, tps: result.tokensPerSecond, confidence })
+  post({ kind: 'done', id, text: result.text, tps: result.tokensPerSecond, reusedCache: result.reusedCache, confidence })
   if (currentId === id) currentId = null
+  scheduleSave() // persist the extended conversation off the critical path (after the reply is delivered)
 }

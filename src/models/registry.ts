@@ -20,38 +20,43 @@ const ortVersion = typeof __ORT_VERSION__ === 'string' ? __ORT_VERSION__ : 'late
 const vadVersion = typeof __VAD_VERSION__ === 'string' ? __VAD_VERSION__ : 'latest'
 
 // ── LLM (the "brain"): PrismML Bonsai on our bitgpu engine ────────────────────
-// Bonsai is a Qwen3-architecture model with 1-bit (binary, sign-packed) linear weights,
-// exported to ONNX by onnx-community. It runs on our own raw-WebGPU engine (bitgpu), NOT
-// transformers.js / ort-web: those dequantize the packed weights to fp16 in VRAM (~3.4 GB
-// for the 1.7B) and have no fast low-bit WebGPU kernel on Apple GPUs - which is exactly why
-// we built bitgpu. It keeps the weights packed (~0.5 GB VRAM) and decodes them in-shader.
-// The shipped `model_q1.onnx_data` is the LUT-compressed 1-bit data, a ~290 MB download.
-// Bonsai keeps the Qwen3 chat template + <think> behaviour, so prompt handling is standard ChatML.
+// Bonsai is a Qwen3-architecture model with 1-bit (binary, sign-packed) linear weights. It runs on
+// our own raw-WebGPU engine (bitgpu), NOT transformers.js / ort-web: those dequantize the packed
+// weights to fp16 in VRAM (~3.4 GB for the 1.7B) and have no fast low-bit WebGPU kernel on Apple
+// GPUs - which is exactly why we built bitgpu. It keeps the weights packed (~0.5 GB VRAM) and decodes
+// them in-shader. We stream the GGUF container (prism-ml/Bonsai-1.7B-gguf, Bonsai-1.7B-Q1_0.gguf, a
+// ~237 MB download - smaller than the old ONNX one); the upstream project verified the 1-bit sign
+// stream is byte-identical and greedy decode bit-exact across the two containers, so this is a pure
+// download-size win. Bonsai keeps the Qwen3 chat template + <think> behaviour (standard ChatML).
 export const LLM = {
   // Run on our own bitgpu engine (no transformers.js / onnxruntime for the brain).
   tokenizerModelId: 'onnx-community/Bonsai-1.7B-ONNX', // HF repo for tokenizer.json + tokenizer_config.json
   eosTokenId: 151645, //                                  <|im_end|>
-  maxSeqLen: 2048, //                                     KV-cache length cap
-  // f16 KV storage (the industry standard): halves KV memory (2048-position cache ~448MB ->
-  // ~224MB, the difference between fitting and an OS tab-kill on iOS). All math stays f32;
-  // gated by the bitgpu verify suite (forward cosine 1.0, 96/96 greedy token agreement vs f32)
-  // and the behavioral eval. The engine falls back to f32 silently without shader-f16.
+  maxSeqLen: 2048, //                                     KV-cache length cap (fixed under sinks; never grows)
+  // f16 KV storage (the industry standard): halves KV memory vs f32 (~112KB/token, 2048-position
+  // cache ~229MB), the difference between fitting and an OS tab-kill on iOS. All attention math stays
+  // f32; gated by the bitgpu verify suite (forward cosine 1.0, greedy token agreement vs f32) and our
+  // behavioral eval (21/21). Falls back to f32 silently on adapters without shader-f16 (e.g. Firefox).
+  // NOTE: bitgpu also offers 'q8' (quarters KV memory, needs no adapter feature) - measured
+  // near-lossless on GREEDY fixtures (logits cosine >= 0.99997), but it regresses our multi-turn recall
+  // eval: under sampling, q8's tiny logit deviation tips the 1.7B model's knife-edge recall/abstain
+  // boundary (it forgot "my favorite color is blue" and abstained). f16 keeps that boundary, and the q8
+  // memory saving (~100MB on a 3.4GB-VRAM model) is not worth a measured recall regression here.
   kvCache: 'f16' as const,
+  // Unbounded conversations in fixed memory: past the window the engine keeps the first `sinkTokens`
+  // positions (attention sinks) plus the recent window and EVICTS the middle instead of throwing, so
+  // a long chat continues as cheap cache-appends with no full re-prefill. The model genuinely forgets
+  // the evicted middle - the trade we accept for open-ended chat (vs 'error' + prompt-side trimming).
+  overflow: 'sinks' as const,
 } as const
 
-/** Device-aware LLM window. Phones get 1024 positions: with f16 KV that is ~112MB of GPU memory
- *  (vs ~224MB at 2048), and the growth transient shrinks to match - headroom that matters on iOS,
- *  where the OS kills the heaviest tab on memory events like opening the keyboard. The cost is
- *  earlier history trimming in long chats, on phones only. */
+/** Device-aware LLM window (the fixed sink-mode window: conversations are unbounded regardless, this
+ *  only sets how much recent context the model keeps in-cache before evicting the middle). Phones get
+ *  1024 positions: with f16 KV that is ~114MB of GPU memory (vs ~229MB at 2048) - headroom that matters
+ *  on iOS, where the OS kills the heaviest tab on memory events like opening the keyboard. */
 export function llmMaxSeqLen(): number {
   const mobile = typeof navigator !== 'undefined' && /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent)
   return mobile ? 1024 : LLM.maxSeqLen
-}
-
-/** History-retention budget matched to the window: the 2048 window keeps the tuned 1100; the
- *  mobile 1024 window keeps ~400 so system prompt + retrieved context + reply still fit. */
-export function llmHistoryTokens(): number {
-  return llmMaxSeqLen() >= 2048 ? 1100 : 400
 }
 
 // ── ASR (Nemotron 3.5 streaming, FP16 → WebGPU - the ONE AND ONLY engine) ─────
@@ -195,19 +200,20 @@ export const ORT_WASM_CDN = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortV
  *   • override  → set `VITE_MODEL_CDN` to your own bucket / a local `/models` mirror
  *                 (e.g. `VITE_MODEL_CDN=/models npm run dev` after `npm run fetch-models`)
  */
-/** URLs for the LLM (manifest-format) model. The ~290MB data file streams from the HF Hub (free,
- *  CORS-clean, cached to OPFS); the tiny manifest + aux are served same-origin from /models/llm.
+/** URLs for the LLM (manifest-format) model. The ~237MB GGUF data file streams from the HF Hub (free,
+ *  CORS-clean, cached to OPFS); the tiny manifest + aux are served same-origin from /llm.
  *  This is independent of VITE_MODEL_CDN (which only redirects the speech models) so a plain
- *  `npm run dev` works: manifest + aux + (in dev) the data file all load from the local public/models/llm
- *  mirror; production serves the manifest + aux from /models/llm and streams the 290MB data from the HF Hub. */
+ *  `npm run dev` works: manifest + aux + (in dev) the data file all load from the local public/llm
+ *  mirror; production serves the manifest + aux from /llm and streams the 237MB .gguf from the HF Hub. */
 export function llmModelUrls(): { manifestUrl: string; dataUrl: string; auxUrl: string } {
-  // manifest + aux (160KB) are COMMITTED to public/llm so they ship in the deploy (served same-origin,
-  // independent of the speech VITE_MODEL_CDN). The 290MB data file is NOT committed: dev reads the local
-  // mirror (public/llm/model_q1.onnx_data, gitignored), prod streams from the HF Hub (free, OPFS-cached).
+  // manifest + aux (~82KB) are COMMITTED to public/llm so they ship in the deploy (served same-origin,
+  // independent of the speech VITE_MODEL_CDN). The 237MB GGUF is NOT committed: dev reads the local
+  // mirror (public/llm/Bonsai-1.7B-Q1_0.gguf, gitignored), prod streams the .gguf from its own HF repo
+  // (prism-ml/Bonsai-1.7B-gguf - separate from the ONNX tokenizer repo, which hosts no GGUF files).
   return {
     manifestUrl: '/llm/manifest.json',
-    auxUrl: '/llm/bonsai.aux.bin',
-    dataUrl: import.meta.env.DEV ? '/llm/model_q1.onnx_data' : `${HF_RESOLVE(LLM.tokenizerModelId)}/onnx/model_q1.onnx_data`,
+    auxUrl: '/llm/Bonsai-1.7B-Q1_0.aux.bin',
+    dataUrl: import.meta.env.DEV ? '/llm/Bonsai-1.7B-Q1_0.gguf' : `${HF_RESOLVE('prism-ml/Bonsai-1.7B-gguf')}/Bonsai-1.7B-Q1_0.gguf`,
   }
 }
 
