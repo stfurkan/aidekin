@@ -33,16 +33,19 @@ export const LLM = {
   tokenizerModelId: 'onnx-community/Bonsai-1.7B-ONNX', // HF repo for tokenizer.json + tokenizer_config.json
   eosTokenId: 151645, //                                  <|im_end|>
   maxSeqLen: 2048, //                                     KV-cache length cap (fixed under sinks; never grows)
-  // f16 KV storage (the industry standard): halves KV memory vs f32 (~112KB/token, 2048-position
-  // cache ~229MB), the difference between fitting and an OS tab-kill on iOS. All attention math stays
-  // f32; gated by the bitgpu verify suite (forward cosine 1.0, greedy token agreement vs f32) and our
-  // behavioral eval (21/21). Falls back to f32 silently on adapters without shader-f16 (e.g. Firefox).
-  // NOTE: bitgpu also offers 'q8' (quarters KV memory, needs no adapter feature) - measured
-  // near-lossless on GREEDY fixtures (logits cosine >= 0.99997), but it regresses our multi-turn recall
-  // eval: under sampling, q8's tiny logit deviation tips the 1.7B model's knife-edge recall/abstain
-  // boundary (it forgot "my favorite color is blue" and abstained). f16 keeps that boundary, and the q8
-  // memory saving (~100MB on a 3.4GB-VRAM model) is not worth a measured recall regression here.
-  kvCache: 'f16' as const,
+  // q8 KV storage: quarters KV memory vs f32 (~63KB/token, 2048-position cache ~129MB vs f16's ~229MB),
+  // the difference between fitting and an OS tab-kill on iOS. All attention math stays f32; gated by the
+  // bitgpu verify suite (logits cosine >= 0.99997 vs f32 on greedy fixtures) and our behavioral evals.
+  // Chosen over f16 for two reasons: (1) q8 needs NO adapter feature, so it holds ~129MB on EVERY GPU -
+  // whereas f16 silently falls back to f32 (~458MB) on adapters without shader-f16 (e.g. Firefox), so q8
+  // makes memory uniform across browsers instead of ballooning on the ones that need headroom most.
+  // (2) It is behaviorally at parity with f16: the multi-seed robustness gate (`eval:robustness`) is
+  // 100% on every abstention/injection/over-refusal guard on both modes, and multi-seed recall
+  // (`eval:recall`) is identical (both ~50% - a 1.7B model limit, NOT a KV-precision one). The earlier
+  // "q8 regresses recall" read was a single-seed artifact: the golden set's seed 42 happens to land a
+  // recall for f16 and miss for q8, but across seeds neither is better. See the eval:recall/eval:robustness
+  // gates and the multi-turn scenario note in scenarios.ts for why recall quality is gated multi-seed.
+  kvCache: 'q8' as const,
   // Unbounded conversations in fixed memory: past the window the engine keeps the first `sinkTokens`
   // positions (attention sinks) plus the recent window and EVICTS the middle instead of throwing, so
   // a long chat continues as cheap cache-appends with no full re-prefill. The model genuinely forgets
