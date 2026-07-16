@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- Multi-seed robustness probe (dev only: not a vite build input, never deployed).
+     Run headlessly via `npm run eval:robustness`. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>aidekin robustness</title>
+    <style>
+      body { font: 13px/1.5 ui-monospace, monospace; margin: 24px; background: #101311; color: #d6e2da; }
+      pre { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h3>aidekin robustness (borderline behaviors x seeds)</h3>
+    <pre id="out">starting...</pre>
+    <script type="module" src="/src/eval/robustness.ts"></script>
+  </body>
+</html>

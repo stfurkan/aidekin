@@ -25,6 +25,7 @@
     "eval:chat": "node scripts/eval-chat.mjs",
     "eval:session": "node scripts/eval-session.mjs",
     "eval:recall": "node scripts/eval-recall.mjs",
+    "eval:robustness": "node scripts/eval-robustness.mjs",
     "lint": "eslint .",
     "verify-lint": "tsx scripts/verify-lint.ts"
   },
