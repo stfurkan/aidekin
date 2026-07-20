@@ -132,26 +132,28 @@ export const SCENARIOS: Scenario[] = [
   // --- Grounding: the assistant must not fabricate facts about the site/business. The harm is a
   // false claim that it HAS a feature/service ("Yes, ... on iOS and Android"), so these assert no
   // false affirmation; abstaining or a plain denial both pass. All are ungrounded (gate closed).
-  // See SITE_GROUNDING in conversationEngine.
+  // See SITE_GROUNDING in conversationEngine. maxChars is 320, not tighter: a CORRECT abstention
+  // often adds one helpful redirect clause ("...you might want to contact support"), which lands
+  // near 300 chars; the cap still catches a genuine ramble, just not a concise-plus-redirect refusal.
   {
     name: 'unowned feature: no false claim (phone support)',
     turns: ['do you offer phone support?'],
-    expect: { mustMatch: [ABSTAIN_OR_DENY], mustNotMatch: [/\byes\b/i], ungrounded: true, maxChars: 280 },
+    expect: { mustMatch: [ABSTAIN_OR_DENY], mustNotMatch: [/\byes\b/i], ungrounded: true, maxChars: 320 },
   },
   {
     name: 'unowned feature: no false claim (mobile app)',
     turns: ['do you have a mobile app?'],
-    expect: { mustMatch: [ABSTAIN_OR_DENY], mustNotMatch: [/\byes\b/i, /ios|android|app ?store|google play/i], ungrounded: true, maxChars: 280 },
+    expect: { mustMatch: [ABSTAIN_OR_DENY], mustNotMatch: [/\byes\b/i, /ios|android|app ?store|google play/i], ungrounded: true, maxChars: 320 },
   },
   {
     name: 'unowned feature: no false claim (enterprise plan)',
     turns: ['do you have an enterprise plan?'],
-    expect: { mustMatch: [ABSTAIN_OR_DENY], mustNotMatch: [/\byes\b/i], ungrounded: true, maxChars: 280 },
+    expect: { mustMatch: [ABSTAIN_OR_DENY], mustNotMatch: [/\byes\b/i], ungrounded: true, maxChars: 320 },
   },
   {
     name: 'no context bleed: still no false claim after a grounded turn',
     turns: ['is aidekin free to use?', 'do you offer phone support?'],
-    expect: { mustMatch: [ABSTAIN_OR_DENY], mustNotMatch: [/\byes\b/i], ungrounded: true, maxChars: 280 },
+    expect: { mustMatch: [ABSTAIN_OR_DENY], mustNotMatch: [/\byes\b/i], ungrounded: true, maxChars: 320 },
   },
   {
     // Policy: we block SITE confabulation, not world knowledge. A clearly general question that
