@@ -183,6 +183,9 @@ function ThemeToggle() {
     const next = !dark
     setDark(next)
     document.documentElement.classList.toggle('dark', next)
+    // Keep the embedded "Ask aidekin" widget in sync with the site theme (no-op until the loader
+    // has attached its API; the initial theme is set via data-theme when the widget is injected).
+    window.Aidekin?.setTheme(next ? 'dark' : 'light')
     try {
       localStorage.setItem('aidekin-theme', next ? 'dark' : 'light')
     } catch {

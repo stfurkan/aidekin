@@ -30,6 +30,11 @@ export function SiteWidget() {
     }
     s.defer = true
     s.dataset.aidekin = '' // marks the script for the loader's currentScript fallback
+    // Match the site's theme instead of the visitor's OS: the site is light by default (only an
+    // explicit toggle sets dark), so the widget should be too. The pre-paint script in index.html has
+    // already applied the `dark` class by now, so this reads the site's actual current theme. The
+    // toggle in Layout keeps them in sync afterward via window.Aidekin.setTheme.
+    s.dataset.theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light'
     s.dataset.mode = 'both'
     s.dataset.title = 'aidekin'
     s.dataset.launcherLabel = 'Ask aidekin'
