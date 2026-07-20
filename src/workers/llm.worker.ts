@@ -160,6 +160,12 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
           auxUrl: msg.auxUrl,
           maxSeqLen: msg.maxSeqLen ?? 2048,
           kvCache: msg.kvCache,
+          // f16 activations in the decode GEMVs (f32 accumulation): ~2x ALU rate on packed-f16 GPUs
+          // (NVIDIA/AMD), ~neutral on Apple. Numerically near-lossless (near-identical distribution at
+          // our temperature 0.3). Like kvCache:'f16' it needs the shader-f16 feature + subgroup path and
+          // auto-falls-back to f32 without them (no memory penalty, unlike f16 KV), so it is always safe
+          // to set. capabilities.activation reports whether it actually engaged.
+          activation: 'f16',
           overflow: msg.overflow, // 'sinks' = unbounded chat in a fixed window (the engine evicts the middle)
           fetchJson,
           fetchStream,
@@ -186,7 +192,7 @@ async function init(msg: Extract<LlmIn, { kind: 'init' }>): Promise<void> {
   await warmup() // exercises the decode path on a throwaway turn and resets to empty...
   await restoreSession() // ...then brings the persisted conversation back into a warm cache (no re-prefill)
   const cap = engine.capabilities
-  post({ kind: 'ready', info: `bitgpu (${cap.useSubgroups ? 'subgroups SG=' + cap.subgroupSize : 'workgroup fallback'}, kv ${cap.kvCache})` })
+  post({ kind: 'ready', info: `bitgpu (${cap.useSubgroups ? 'subgroups SG=' + cap.subgroupSize : 'workgroup fallback'}, kv ${cap.kvCache}, act ${cap.activation})` })
 }
 
 /** Bring back the persisted conversation so the next turn extends the cache with no re-prefill.
