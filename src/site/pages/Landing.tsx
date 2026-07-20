@@ -121,12 +121,12 @@ function HowItWorks() {
     <Section index="01 / How it works" title="Live in three steps" subtitle="From zero to your own assistant in a couple of minutes.">
       <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border md:grid-cols-3">
         {steps.map((s) => (
-          <div key={s.n} className="flex flex-col bg-background p-6">
+          <div key={s.n} className="flex min-w-0 flex-col bg-background p-6">
             <span className="font-mono text-sm text-primary">{s.n}</span>
             <h3 className="mt-3 font-display text-lg font-semibold">{s.t}</h3>
             <p className="mt-2 text-sm text-muted-foreground">{s.b}</p>
             {s.code && (
-              <code className="mt-4 block overflow-x-auto whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 font-mono text-xs text-muted-foreground">
+              <code className="mt-4 block max-w-full overflow-x-auto whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 font-mono text-xs text-muted-foreground">
                 {s.code}
               </code>
             )}
