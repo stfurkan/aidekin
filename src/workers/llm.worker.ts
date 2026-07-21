@@ -308,9 +308,13 @@ async function prewarm(system: ChatMessage, messages?: readonly ChatMessage[]): 
 
 // Sampling params for the bitgpu engine's do_sample. Temperature is 0.3: this is a knowledge assistant,
 // so we bias toward the highest-probability, context-faithful continuation and away from the "creative"
-// tail that invents details. topP is accepted but not applied (a no-op) - bitgpu's sampler is bit-exact
-// with the transformers.js v4.2.0 reference we validate against, where top_p is also disabled.
-const SAMPLING = { temperature: 0.3, topK: 20, topP: 0.85, repetitionPenalty: 1.15, noRepeatNgramSize: 0 } as const
+// tail that invents details. NO topP: it was a silent no-op through bitgpu 0.16 (so all our gated
+// behavior was validated without it), and 0.17 actually applies topP - leaving 0.85 in would have
+// activated an untested nucleus filter and shifted every eval. minP: 0.05 keeps only tokens with at
+// least 5% of the top token's probability, culling the extreme low-prob tail that can flip the first
+// token into the wrong language (the 1.7B occasionally answers English input in Spanish/Russian); at
+// temp 0.3 the pool is already tight, so this is otherwise distribution-preserving.
+const SAMPLING = { temperature: 0.3, topK: 20, minP: 0.05, repetitionPenalty: 1.15, noRepeatNgramSize: 0 } as const
 
 /** Coordinator: enqueue this turn as the latest, abort anything running, and drain the queue ONE
  *  generation at a time. */
